@@ -471,3 +471,40 @@ The implementation should make best-effort attempts to prevent mis-behaving or h
 Purpose: Minimize copying by creating a virtual buffer composed of actual buffer content.
 
 Like a `TypedArray` view of an `ArrayBuffer`, but able to represent both partial and cross-buffer views.
+
+## Update 2025-12-29-A
+
+Most of what's been implemented so far is not useful.
+
+The encoders in protocol.esm.js currently allocate their own buffers, which defeats the purposes of using ring buffers and buffer pools:
+- Minimal copies
+- Minimum system calls
+
+Input ring buffers:
+- Everything configurable
+- Default 256K total size (?)
+- Preferred read = min(64K, distance to end of buffer)
+- If the preferred read < 16K, abandon the remainder of the ring and move the write head back to the start of the ring (due to decreasing data-per-read efficiency)
+- If there's yet-to-be-processed data within the preferred-read zone (PRZ) from prior ring activity, migrate chunks from the PRZ into pool buffers
+  - The VirtualBuffer instances for this data must automatically and transparently update to reference the new storage
+- Data bound for web-workers must also be migrated out of the ring, since the main ring must not be transferred to a web worker via `postMessage`
+
+Output ring buffers:
+- Everything configurable
+- Default 256K total size (?)
+- If any ACKs are ready to be sent, wait for room, if necessary, and then construct them (directly in the ring)
+- If there is data pending, wait for room, if necessary
+  - If all the data (with header) will fit into the remaining buffer, add it
+  - If there is at least 16K remaining in the buffer, add as much as will fit
+  - Move back to the start of the ring to add the rest
+
+Output from web workers should be consolidated into the output ring.
+
+It is expected that header information will be encoded and decoded in the main thread and passed to/accepted from web workers as objects (only data transferred directly as array buffers).
+
+### Buffer Pool
+
+- Managed in the main thread
+- Pre-allocates minimum buffers and adds additional as required/based on demand
+- Releases excess buffers over time
+- Transfers (filled and empty) buffers to/from workers via `postMessage`

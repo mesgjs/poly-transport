@@ -23,6 +23,8 @@ test/
 ├── unit/
 │   ├── protocol.test.js
 │   ├── buffer-manager.test.js
+│   ├── protocol-codec.test.js
+│   ├── transport-output-pump.test.js
 │   ├── flow-control.test.js
 │   ├── channel.test.js
 │   └── transport/
@@ -56,13 +58,10 @@ test/
 
 ### 1. Protocol Layer Tests ([`test/unit/protocol.test.js`](../test/unit/protocol.test.js))
 
-#### Header Encoding/Decoding
-- ✓ Encode ACK message header
-- ✓ Encode channel-control message header
-- ✓ Encode channel-data message header
-- ✓ Decode valid headers
+#### Protocol Constants + Validation (pure)
+- ✓ Verify protocol constants (message types, reserved channels, etc)
+- ✓ Validate decoded header field ranges
 - ✓ Reject malformed headers
-- ✓ Handle edge cases (max values, zero values)
 
 #### Message Type Constants
 - ✓ Verify ACK type = 0
@@ -82,6 +81,25 @@ test/
 
 **Test Count**: ~25 tests
 
+### 1b. Byte-stream Protocol Codec + Output Pump Tests (Update 2025-12-29-A)
+
+These tests exist because Update 2025-12-29-A requires protocol encoding/decoding to be non-allocating and compatible with ring-buffer I/O (see [`arch/requirements.md`](requirements.md:475)).
+
+#### Protocol codec (encode-into / decode-from) ([`test/unit/protocol-codec.test.js`](../test/unit/protocol-codec.test.js))
+- ✓ Deterministic header sizing functions match the protocol formats:
+  - Channel-control/channel-data header size fixed at 18 bytes ([`arch/requirements.md`](requirements.md:383))
+  - ACK header size `toEven(13 + rangeCount)` ([`arch/requirements.md`](requirements.md:369))
+- ✓ `encode*Into` writes into a caller-provided `Uint8Array` window (no allocations)
+- ✓ `encode*Into` rejects when destination capacity is insufficient
+- ✓ `decode*From` can decode headers that span ring wrap-around / multi-range buffers
+
+#### Transport-level output pump ([`test/unit/transport-output-pump.test.js`](../test/unit/transport-output-pump.test.js))
+- ✓ ACK priority: pending ACK frames are emitted before starting any data frame ([`arch/requirements.md`](requirements.md:492))
+- ✓ ACK-only flush: ACKs are emitted even when no data is pending
+- ✓ Frame atomicity: for each data frame, bytes on the wire are `[header][payload]` with no interleaving bytes inserted
+- ✓ Payload slicing: large payloads can be emitted as multiple consecutive frames; only the final frame sets EOM ([`arch/requirements.md`](requirements.md:181))
+- ✓ Direct-to-ring outbound payload reservations (single-thread endpoints): caller writes payload bytes into ring-backed views (contiguous or split) and commit produces `[header][payload]` on the wire
+
 ### 2. Buffer Management Tests ([`test/unit/buffer-manager.test.js`](../test/unit/buffer-manager.test.js))
 
 #### VirtualBuffer Class
@@ -89,7 +107,9 @@ test/
 - ✓ Create multi-range view
 - ✓ Create cross-buffer view
 - ✓ Read bytes from virtual buffer
-- ✓ Write bytes to virtual buffer
+- ✓ VirtualBuffer read-only vs read/write modes:
+  - read-only (default) for inbound data
+  - read/write for outbound ring-backed reservations (contiguous or split across wrap)
 - ✓ Slice virtual buffer
 - ✓ Concatenate virtual buffers
 - ✓ Update when underlying buffer moves
@@ -353,7 +373,8 @@ test/
 - ✓ Transfer ArrayBuffer to worker
 - ✓ Transfer ArrayBuffer from worker
 - ✓ Verify buffer ownership transfer
-- ✓ Clone header object
+- ✓ Header is structured-cloned JS object (not binary encoded)
+- ✓ Main thread performs protocol header encode/decode; worker receives/sends `{ header: object, data: ArrayBuffer }`
 
 #### Buffer Pool Management
 - ✓ Worker starts with small pool
