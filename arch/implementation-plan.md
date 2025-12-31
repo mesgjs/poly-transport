@@ -34,9 +34,15 @@ This phase explicitly separates:
 
 **Protocol format reference**: The byte-stream formats are defined in [`arch/requirements.md`](requirements.md:320) (ACK type 0, channel-control type 2, channel-data type 3).
 
-**Codec files**:
-- Keep [`src/protocol.esm.js`](../src/protocol.esm.js:1) focused on protocol constants + validation.
-- Add (or refactor into) a codec module (e.g. `src/protocol-codec.esm.js`) that provides encode-into/decode-from primitives.
+**Codec APIs**:
+- Keep the protocol module in a single file: [`src/protocol.esm.js`](../src/protocol.esm.js:1).
+- Add encode-into/decode-from primitives in that module for the byte-stream headers:
+  - `ackHeaderSize(rangeCount)`
+  - `channelHeaderSize()`
+  - `decodeHeaderSizeFromPrefix(buffer, offset)`
+  - `encodeAckHeaderInto(target, offset, fields)`
+  - `encodeChannelHeaderInto(target, offset, type, fields)`
+  - `decodeHeaderFrom(buffer, offset)`
 
 **Deterministic sizing requirements** (so the async pump can reserve before writing):
 - Channel-control/channel-data header size is fixed (18 bytes) per [`arch/requirements.md`](requirements.md:383).
@@ -59,8 +65,19 @@ This phase explicitly separates:
 - High-level behavior:
   - Caller requests a reservation for `headerSize + payloadSize`.
   - The transport output pump waits as needed (including draining pending ACKs first) and then reserves space.
-  - Caller writes payload bytes into the reserved ring-backed view.
-  - On commit, the pump encodes the header into the reserved header window and schedules the full `[header][payload]` frame for writing.
+	- Caller writes payload bytes into the reserved ring-backed view.
+	- On commit, the pump encodes the header into the reserved header window and schedules the full `[header][payload]` frame for writing.
+
+**Reservation lifecycle requirement**:
+- Outbound reservations must be explicitly completed:
+  - `commit()` when the caller has fully populated the payload (or pre-zeroed any unused bytes per the security invariant), OR
+  - `release()` if the reservation is abandoned.
+
+**Security invariant for reservations**:
+- Any reserved ring range must be either:
+  - fully written by the caller (every byte), OR
+  - pre-zeroed by the reservation owner before exposing it.
+- This prevents leaking bytes from a previous ring iteration.
 
 **VirtualBuffer outbound mode**:
 - `VirtualRWBuffer` extension of `VirtualBuffer` supporting **read/write** mode for outbound reservations that map directly onto reserved ring ranges
@@ -74,12 +91,18 @@ This phase explicitly separates:
   - `BufferPool` class - Pooled ArrayBuffer management (1K, 4K, 16K, 64K)
   - `BufferManager` class - Reference tracking and lifecycle
 - **Key Features**:
-  - Ring buffer support for BYOB readers
-  - Automatic buffer size selection
-  - Transfer between contexts (postMessage)
+	- Ring buffer support for BYOB readers
+	- Ring buffer reclamation coordination for ring-backed `VirtualBuffer` views
+		- **Input ring only**: pinned views may outlive the immediate parse step (slow reads / delayed processing)
+		- Represent each pinned view with an explicit handle (e.g. `RingPin`) that records `{ epoch, start, length }` and provides `release()` and `migrate(bufferManager)`
+		- The ring maintains a registry of active pins and performs **targeted** reclamation callbacks to pin holders when it needs to overwrite overlapping ranges
+		- Pin holders migrate affected bytes into pool buffers, update their virtual-buffer ranges, and then release the pin so the ring can reclaim
+	- Automatic buffer size selection
+	- Transfer between contexts (postMessage)
   - Low/high water mark management
-  - VirtualBuffer read-only vs read/write modes (read for inbound, write for ring-backed outbound reservations)
-- **Tests**: Buffer allocation, pooling, virtual views, cross-buffer ranges
+	- VirtualBuffer read-only vs read/write modes (read for inbound, write for ring-backed outbound reservations)
+		- **Output ring**: outbound reservations must not escape; if a caller cannot complete promptly, it must release the reservation and enqueue payload bytes in pool-managed buffers instead (no output-side pin/migration)
+	- **Tests**: Buffer allocation, pooling, virtual views, cross-buffer ranges
 
 #### 1.3 Flow Control
 - **File**: [`src/flow-control.esm.js`](../src/flow-control.esm.js)
@@ -93,7 +116,13 @@ This phase explicitly separates:
   - Chunk acknowledgment tracking
   - Backpressure signaling
   - Protocol violation detection (duplicate ACKs)
-- **Tests**: Credit allocation, consumption, restoration, backpressure
+- Supports out-of-order chunk consumption on the receive side (ACKs use include/skip ranges)
+- Minimal API surface:
+	- `await flow.reserveSend(size, { timeout })` (waits for credits, assigns sequence, records in-flight)
+	- `flow.processAck({ baseSequence, ranges })` (restores credits; detects duplicate ACK)
+	- `flow.onReceiveChunk({ sequence, size })` / `flow.onConsumeChunk(sequence)`
+	- `flow.createAck(maxRangeCount)` (builds + commits an ACK with include/skip ranges)
+- **Tests**: [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js)
 
 #### 1.4 Channel Implementation
 - **File**: [`src/channel.esm.js`](../src/channel.esm.js)

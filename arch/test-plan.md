@@ -99,6 +99,8 @@ These tests exist because Update 2025-12-29-A requires protocol encoding/decodin
 - ✓ Frame atomicity: for each data frame, bytes on the wire are `[header][payload]` with no interleaving bytes inserted
 - ✓ Payload slicing: large payloads can be emitted as multiple consecutive frames; only the final frame sets EOM ([`arch/requirements.md`](requirements.md:181))
 - ✓ Direct-to-ring outbound payload reservations (single-thread endpoints): caller writes payload bytes into ring-backed views (contiguous or split) and commit produces `[header][payload]` on the wire
+	- Reservation views must not escape the immediate write/commit lifecycle (no output-side pinning or migration)
+	- If a caller cannot complete promptly, it must `release()` and fall back to pool-managed buffering
 
 ### 2. Buffer Management Tests ([`test/unit/buffer-manager.test.js`](../test/unit/buffer-manager.test.js))
 
@@ -141,9 +143,27 @@ These tests exist because Update 2025-12-29-A requires protocol encoding/decodin
 - ✓ Fall back to default reader
 - ✓ Ring buffer with BYOB
 
+#### Ring-backed views: pin registry + targeted reclaim migration
+
+These tests cover input-ring-only pinning and targeted migration semantics as defined in [`arch/requirements.md`](requirements.md:165).
+
+- ✓ Pin handle captures `{ epoch, start, length }` and provides explicit `release()`
+- ✓ Pin overlap detection works for:
+	- non-wrapped pins
+	- wrapped pins (treated as two windows)
+	- reclaim ranges that also wrap
+- ✓ Targeted reclaim: when reclaiming a range, only overlapping pins are migrated
+- ✓ Non-overlapping pins are not touched
+- ✓ After migration, the associated `VirtualBuffer` transparently references pool-managed buffers
+- ✓ After migration, pin is released and removed from the ring registry
+- ✓ Epoch/cycle prevents false overlap when indices repeat across wrap-around reuse
+- ✓ Failure propagation: if a pin holder cannot migrate/release and rejects, the reclaim operation fails and the owning transport/reader treats it as fatal (shutdown)
+
 **Test Count**: ~30 tests
 
 ### 3. Flow Control Tests ([`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js))
+
+**Status**: Implemented (Phase 1.3) with unit coverage for credit blocking, duplicate-ACK detection, and range-based ACK generation.
 
 #### Credit Management
 - ✓ Initialize credits from remote buffer size

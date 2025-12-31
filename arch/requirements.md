@@ -161,6 +161,79 @@ The implementation should make best-effort attempts to prevent mis-behaving or h
   - Buffer content hasn't been processed when it's time to overwrite the existing buffer content ("slow" reader/processor)
   - Content needs to be moved between contexts (i.e. buffer transfer via `postMessage`)
 - `VirtualBuffer` instances should intelligently update when their underlying data moves from one buffer to another (e.g. from a ring-buffer to a pool-buffer)
+
+### Ring-backed VirtualBuffers: pin registry + targeted migration callbacks
+
+The ring buffer is used for high-throughput streaming I/O. To minimize copies, some `VirtualBuffer` instances will be allowed to reference ring-backed byte ranges *directly*.
+
+Since ring buffers reuse storage (wrap-around), the ring must be able to reclaim space without corrupting any live `VirtualBuffer` views.
+
+#### Requirements
+
+- Ring-backed byte ranges that escape the immediate parse/write operation must be **pinned**.
+	- Pinning is explicitly reference-counted.
+	- Consumers must explicitly indicate when they are finished with pinned views (release).
+	- The implementation must not rely on GC-finalization for correctness.
+
+- **Input-ring only:** Ring-backed views are allowed to escape only on the *input* side (slow reads / delayed processing).
+	- The output path must avoid long-lived ring-backed views.
+	- If a writer cannot complete immediately, it must queue the payload in pool-managed buffers and later copy into the output ring.
+
+- When the ring needs to reclaim space that overlaps pinned data, it must notify holders via **targeted pin callbacks**.
+	- The ring maintains a registry of active pin handles, not a broadcast list of listeners.
+	- Reclamation includes the specific ring range(s) to be reclaimed.
+	- Callback dispatch must be awaitable so reclamation can be coordinated without races.
+	- Failure semantics:
+		- If any pin holder cannot migrate/release (or throws/rejects), ring reclamation fails and the error must propagate to the owning transport/reader.
+		- Default recovery behavior is transport shutdown, since safe forward progress is no longer possible if the ring cannot reclaim space.
+
+- `VirtualBuffer` (or a ring-backed wrapper around it) must listen for reclamation events and **migrate** its referenced bytes out of the ring and into pool-managed buffers when necessary.
+  - After migration, the virtual buffer must transparently refer to the new storage.
+  - After migration, the ring-backed pin must be released so the ring can reclaim.
+
+#### Proposed model
+
+```mermaid
+flowchart TD
+	Ring[RingBuffer] -->|creates pinned view| Pin[RingPin]
+	Pin -->|views| VB[VirtualBuffer or wrapper]
+	Ring -->|targeted reclaim callback| VB
+	VB -->|migrate bytes| Pool[BufferPool and BufferManager]
+	VB -->|release pin| Ring
+```
+
+- **RingBuffer**
+	- Maintains an internal record of pinned ranges.
+	- Maintains a registry of active pin handles.
+	- When reclaiming, it identifies pins overlapping the reclaim ranges and invokes each pin holder directly (awaited), e.g. `await pinHolder.onRingReclaim({ ranges, epoch })`.
+	- The reclaim payload includes:
+		- `ranges`: one or more `{ start, length }` ring windows that will be overwritten
+		- `epoch` (or `cycle`) identifier to disambiguate wrap-around reuse
+
+- **Ring pin handle** (name TBD, e.g. `RingPin`)
+	- Returned by the ring when a caller needs a view into ring-backed bytes that must not be overwritten yet.
+	- Captures sufficient metadata to test for overlap with reclaim ranges, e.g.:
+		- `ring`: owning ring instance
+		- `epoch`: wrap-around epoch when the pin was created
+		- `start`, `length`: ring index window
+	- Provides:
+		- `release()` (required)
+		- `views` (one or more `Uint8Array` windows; may be split at wrap)
+		- `migrate(bufferManager)` to copy bytes into pool storage and release the pin
+
+- **Ring-backed views**
+	- A ring-backed `VirtualBuffer` (or a wrapper type that owns it) must register itself as the owner/holder of its `RingPin` handles.
+	- When invoked, the holder checks overlap between the reclaim `ranges` and any `RingPin` windows it holds.
+	- For each overlapping pin, it calls `pin.migrate(bufferManager)` and replaces the affected virtual-buffer ranges to reference the migrated pool buffer windows.
+	- Overlap is computed in ring-index space, with wrap-around handled by treating each pin as one or two windows (split at the ring boundary).
+	- `epoch` is used to avoid false overlap when indices repeat across wrap-around reuse.
+
+#### Security invariant (reservations)
+
+- Any ring-backed reservation that is exposed for writing must be either:
+  - fully written by the caller (every byte), or
+  - pre-zeroed by the reservation owner before exposure,
+  to prevent leaking bytes from previous ring iterations.
 - Web workers should start with a small initial buffer pool
   - They must be able to request additional buffers from the main thread, up to their configured limits
   - They must be able to send excess buffers back to the main thread
@@ -374,6 +447,8 @@ The implementation should make best-effort attempts to prevent mis-behaving or h
   - None defined at this time
 - 4B: transport **local** channel number
 - 4B: base **remote** sequence number
+  - The base sequence is the starting point for interpreting the include/skip ranges.
+  - It is **not required** to be the lowest unacknowledged sequence number; receivers may choose a base that minimizes skip ranges.
 - 1B: range count (0-255)
   - Alternating (up to range-count, e.g. 3 -> include - skip - include):
   - 1B (even offsets): Include quantity (0-255)
