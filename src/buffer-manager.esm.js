@@ -155,6 +155,54 @@ export class VirtualBuffer {
 	}
 
 	/**
+	 * Create a new VirtualBuffer containing a slice of this buffer
+	 * @param {number} start - Starting offset (inclusive)
+	 * @param {number} end - Ending offset (exclusive)
+	 * @returns {VirtualBuffer} New VirtualBuffer containing the slice
+	 */
+	slice (start = 0, end = this.totalLength) {
+		if (start < 0 || start > this.totalLength) {
+			throw new RangeError('Start offset out of bounds');
+		}
+		if (end < start || end > this.totalLength) {
+			throw new RangeError('End offset out of bounds');
+		}
+
+		const result = new VirtualBuffer();
+		const length = end - start;
+		if (length === 0) {
+			return result;
+		}
+
+		let currentOffset = 0;
+		for (const range of getRanges(this)) {
+			// Skip ranges before start
+			if (start >= currentOffset + range.length) {
+				currentOffset += range.length;
+				continue;
+			}
+
+			// Calculate overlap with [start, end)
+			const rangeStart = Math.max(0, start - currentOffset);
+			const rangeEnd = Math.min(range.length, end - currentOffset);
+			const sliceLength = rangeEnd - rangeStart;
+
+			if (sliceLength > 0) {
+				result.append(range.buffer, range.offset + rangeStart, sliceLength);
+			}
+
+			// Stop if we've reached the end
+			if (end <= currentOffset + range.length) {
+				break;
+			}
+
+			currentOffset += range.length;
+		}
+
+		return result;
+	}
+
+	/**
 	 * Remove the first n bytes from the virtual buffer
 	 * @param {number} count - Number of bytes to consume
 	 */

@@ -1,10 +1,26 @@
 # PolyTransport Implementation Plan
 
-Copyright 2025 Kappa Computer Solutions, LLC and Brian Katzung
+Copyright 2025-2026 Kappa Computer Solutions, LLC and Brian Katzung
 
 ## Overview
 
 This document outlines the phased implementation approach for the PolyTransport library based on [`requirements.md`](requirements.md). The plan prioritizes core functionality first, then adds transport types and advanced features incrementally.
+
+**Last Updated**: 2026-01-03 - Updated to reflect requirements changes from 2026-01-02-A (see [`arch/20260103-requirements-update-analysis.md`](20260103-requirements-update-analysis.md))
+
+## Recent Requirements Updates (2026-01-02-A)
+
+The following changes from [`requirements.md`](requirements.md:587) lines 587-600 impact this implementation plan:
+
+1. **API Simplification**: `read()` and `readSync()` replace `readChunk()` and `readMessage()` methods
+2. **Automatic Chunking**: `write()` must automatically chunk writes exceeding chunk limits
+3. **Informational `maxMessageSize`**: No longer enforced, advisory only
+4. **Independent Filtered Reads**: Filtered reads with `{ only }` must not interfere with each other
+5. **Out-of-Order Consumption**: Chunks may be consumed out-of-order (already supported by flow control)
+6. **Chunk Atomicity**: Individual chunks are atomic, but large writes may interleave at chunk boundaries
+7. **Two-Level Budgets**: Transport and channel budgets; channel limits must not exceed transport limits
+
+See the analysis document for detailed conformance notes and migration guidance.
 
 ## Implementation Phases
 
@@ -123,6 +139,9 @@ This phase explicitly separates:
 	- `flow.onReceiveChunk({ sequence, size })` / `flow.onConsumeChunk(sequence)`
 	- `flow.createAck(maxRangeCount)` (builds + commits an ACK with include/skip ranges)
 - **Tests**: [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js)
+- **Conformance Notes**:
+  - ✓ Already supports out-of-order chunk consumption (per 2026-01-02-A requirement)
+  - ⚠️ Needs extension for two-level budget system (transport + channel budgets)
 
 #### 1.4 Channel Implementation
 - **File**: [`src/channel.esm.js`](../src/channel.esm.js)
@@ -135,11 +154,17 @@ This phase explicitly separates:
   - Bidirectional and unidirectional support
   - Message type filtering
   - Event dispatching (newChunk, beforeClosing, closed)
-  - Read methods: `readChunk()`, `readChunkSync()`, `readMessage()`, `readMessageSync()`
-  - Write method: `write(type, data, { eom })`
+  - Read methods: `read()`, `readSync()` (simplified API per 2026-01-02-A)
+  - Write method: `write(type, data, { eom })` with automatic chunking
   - `clear()` method for queue management
   - `close()` method with direction support
-- **Tests**: Channel lifecycle, read/write operations, filtering, state transitions
+  - Filtered reads must not interfere with each other (concurrent type-based reads)
+  - Out-of-order chunk consumption supported (via flow control ACK ranges)
+- **Tests**: Channel lifecycle, read/write operations, filtering, state transitions, automatic chunking, concurrent filtered reads
+- **Conformance Notes** (per [`arch/20260103-requirements-update-analysis.md`](20260103-requirements-update-analysis.md)):
+  - ⚠️ Current implementation uses old API names (`readChunk`, `readMessage`)
+  - ⚠️ `write()` currently throws on oversized data instead of auto-chunking
+  - ⚠️ Contains `_assertReadMessageSupported()` and `_readMessageSyncInternal()` which should be removed
 
 ### Phase 2: Transport Base & Virtual Transport
 
@@ -152,6 +177,10 @@ This phase explicitly separates:
   - Event handling (addEventListener/removeEventListener)
   - Channel management (request/accept)
   - Configuration handling
+  - **Two-level budget system** (per 2026-01-02-A):
+    - Transport-level max chunk and max buffer limits
+    - Channel-level limits must not exceed transport limits
+    - Writes must satisfy both transport and channel budgets
 - **Key Methods**:
   - `async start ()` - Begin transport operations
   - `async requestChannel (idOrName, { timeout })` - Request new channel
@@ -164,7 +193,10 @@ This phase explicitly separates:
   - `beforeClosing` - Pre-closure notification
   - `closed` - Post-closure notification
   - `protocolViolation` - Protocol error detected
-- **Tests**: Event handling, channel lifecycle, configuration
+- **Tests**: Event handling, channel lifecycle, configuration, two-level budget enforcement
+- **Conformance Notes**:
+  - ⚠️ Needs implementation of transport-level budget tracking
+  - ⚠️ Needs validation that channel limits don't exceed transport limits
 
 #### 2.2 Virtual Transport (for testing)
 - **File**: [`src/transport/virtual.esm.js`](../src/transport/virtual.esm.js)

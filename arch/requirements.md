@@ -583,3 +583,18 @@ It is expected that header information will be encoded and decoded in the main t
 - Pre-allocates minimum buffers and adds additional as required/based on demand
 - Releases excess buffers over time
 - Transfers (filled and empty) buffers to/from workers via `postMessage`
+
+## Updates & Clarifications 2026-01-02-A
+
+- Change `readChunk` and `readChunkSync` to be simply `read` and `readSync`
+- There will be no `readMessage`, `readMessageSync`, or `writeMessage`, at least for now
+- `write` must automatically chunk writes that exceed the chunk limit
+- For now, `maxMessageSize` is strictly informational, and not used to enforce anything
+- A filtered (`{ only }`) read must not impact (i.e. cancel/reject) any other filtered reads
+- Typed messages are like "light-weight channels" within channels
+  - Due to type-based filtering, chunks may be read/released/ACK'd out of sequence
+- Individual chunks must be written atomically (with their headers), but "large writes" need not be
+  - E.g. two types A and B writing 128K might write A(64K#1), B(64K#1), A(64K#2), B(64K#2) or any other order
+- Transports and channels have corresponding max chunk and max buffer limits
+  - Channel limits may not exceed transport limits
+  - Writes must fit within both the transport sending budget and the channel sending budget

@@ -1,10 +1,25 @@
 # PolyTransport Test Plan
 
-Copyright 2025 Kappa Computer Solutions, LLC and Brian Katzung
+Copyright 2025-2026 Kappa Computer Solutions, LLC and Brian Katzung
 
 ## Overview
 
 This document defines the comprehensive testing strategy for the PolyTransport library. Tests are organized by component, with clear success criteria and coverage goals.
+
+**Last Updated**: 2026-01-03 - Updated to reflect requirements changes from 2026-01-02-A (see [`arch/20260103-requirements-update-analysis.md`](20260103-requirements-update-analysis.md))
+
+## Recent Requirements Updates (2026-01-02-A)
+
+The following test plan updates reflect changes from [`requirements.md`](requirements.md:587) lines 587-600:
+
+1. **API Changes**: All `readChunk`/`readMessage` tests renamed to `read` (no message-level tests)
+2. **Automatic Chunking Tests**: New tests for `write()` auto-chunking behavior
+3. **Concurrent Filtered Reads**: New tests verifying filtered reads don't interfere
+4. **Write Interleaving**: New tests for chunk-level atomicity with write interleaving
+5. **Two-Level Budget Tests**: New tests for transport + channel budget enforcement
+6. **Remove `maxMessageSize` Enforcement Tests**: It's informational only now
+
+See the analysis document for detailed test migration guidance.
 
 ## Testing Framework
 
@@ -165,6 +180,8 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 
 **Status**: Implemented (Phase 1.3) with unit coverage for credit blocking, duplicate-ACK detection, and range-based ACK generation.
 
+**⚠️ CONFORMANCE NOTE**: Needs extension for two-level budget system (transport + channel budgets) per 2026-01-02-A.
+
 #### Credit Management
 - ✓ Initialize credits from remote buffer size
 - ✓ Consume credits on send
@@ -172,6 +189,10 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ Block when credits exhausted
 - ✓ Unblock when credits available
 - ✓ Calculate local budget correctly
+- **NEW**: ✓ Two-level budget: transport budget
+- **NEW**: ✓ Two-level budget: channel budget
+- **NEW**: ✓ Two-level budget: writes must satisfy both
+- **NEW**: ✓ Two-level budget: channel limits validated against transport limits
 
 #### Chunk Tracking
 - ✓ Assign sequence numbers (starting at 1)
@@ -179,6 +200,7 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ Remove acknowledged chunks
 - ✓ Handle out-of-order ACKs
 - ✓ Handle range-based ACKs
+- **NEW**: ✓ Out-of-order chunk consumption (per 2026-01-02-A requirement)
 
 #### ACK Generation
 - ✓ Generate ACK for single chunk
@@ -186,6 +208,7 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ Generate ACK with skip ranges
 - ✓ Batch ACKs when possible
 - ✓ Send ACK at low-water mark
+- **NEW**: ✓ ACK generation with out-of-order consumption
 
 #### Protocol Violations
 - ✓ Detect duplicate ACK
@@ -200,9 +223,11 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ Handle multiple waiting writes
 - ✓ Prioritize writes fairly
 
-**Test Count**: ~25 tests
+**Test Count**: ~30 tests (increased from 25 due to two-level budget tests)
 
 ### 4. Channel Tests ([`test/unit/channel.test.js`](../test/unit/channel.test.js))
+
+**⚠️ CONFORMANCE NOTE**: Current implementation uses old API (`readChunk`, `readMessage`). Tests must be updated per 2026-01-02-A.
 
 #### Channel Lifecycle
 - ✓ Create channel in closed state
@@ -227,40 +252,44 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ Handle bidirectional registration
 
 #### Write Operations
-- ✓ Write single chunk
-- ✓ Write multi-chunk message
+- ✓ Write single chunk (fits in one chunk)
 - ✓ Write with EOM flag
 - ✓ Write with custom message type
 - ✓ Wait for flow control credits
 - ✓ Reject write on closed channel
+- **NEW**: ✓ Automatic chunking when data exceeds `remoteMaxChunkSize`
+- **NEW**: ✓ Multi-chunk write sets `eom=false` on all but final chunk
+- **NEW**: ✓ Multi-chunk write sets `eom=true` only on final chunk
+- **NEW**: ✓ Multi-chunk write maintains message type consistency
+- **NEW**: ✓ Concurrent writes may interleave at chunk boundaries
+- **NEW**: ✓ Each chunk is written atomically (header + payload)
 
-#### Read Operations
-- ✓ readChunk() - single chunk
-- ✓ readChunk() with timeout
-- ✓ readChunk() with message type filter
-- ✓ readChunkSync() - immediate return
-- ✓ readChunkSync() returns null when empty
-- ✓ readMessage() - complete message
-- ✓ readMessage() - multi-chunk message
-- ✓ readMessage() with timeout
-- ✓ readMessage() with message type filter
-- ✓ readMessageSync() - immediate return
-- ✓ readMessageSync() returns null when empty
-- ✓ Throw UnsupportedOperation when appropriate
+#### Read Operations (Updated API per 2026-01-02-A)
+- ✓ `read()` - single chunk
+- ✓ `read()` with timeout
+- ✓ `read()` with message type filter (`{ only }`)
+- ✓ `readSync()` - immediate return
+- ✓ `readSync()` returns null when empty
+- ✓ `readSync()` with message type filter
+- **NEW**: ✓ Concurrent filtered reads don't interfere with each other
+- **NEW**: ✓ Multiple readers with different `{ only }` filters work independently
+- **NEW**: ✓ Filtered read waiter only satisfied by matching chunk type
+- **NEW**: ✓ Out-of-order chunk consumption (type A consumed before type B)
+- **REMOVED**: ~~`readMessage()` tests~~ (no longer supported)
+- **REMOVED**: ~~`readMessageSync()` tests~~ (no longer supported)
+- **REMOVED**: ~~`UnsupportedOperation` for message reads~~ (no longer applicable)
 
 #### Queue Management
-- ✓ clear() - both directions
-- ✓ clear({ direction: 'read' })
-- ✓ clear({ direction: 'write' })
+- ✓ clear() - clears all chunks
 - ✓ clear({ chunk: N }) - specific chunk
 - ✓ clear({ only: type }) - by message type
+- **REMOVED**: ~~`clear({ direction })` tests~~ (only applies to read channels)
 
 #### Close Operations
-- ✓ close() - both directions
-- ✓ close({ direction: 'read' })
-- ✓ close({ direction: 'write' })
+- ✓ close() - closes channel
 - ✓ close({ discard: true }) - discard queued data
-- ✓ close({ timeout }) - timeout handling
+- **REMOVED**: ~~`close({ direction })` tests~~ (channels are unidirectional)
+- **REMOVED**: ~~`close({ timeout })` tests~~ (not in current API)
 
 #### Events
 - ✓ newChunk event on chunk arrival
@@ -268,7 +297,7 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ closed event on close complete
 - ✓ Event order guarantees
 
-**Test Count**: ~45 tests
+**Test Count**: ~40 tests (reduced from 45 due to API simplification, but added new tests for chunking and concurrent reads)
 
 ### 5. Transport Base Tests ([`test/unit/transport/base.test.js`](../test/unit/transport/base.test.js))
 
@@ -552,6 +581,67 @@ These tests cover input-ring-only pinning and targeted migration semantics as de
 - ✓ Graceful degradation
 
 **Test Count**: ~8 tests
+
+### 5. NEW: Automatic Chunking Tests ([`test/integration/auto-chunking.test.js`](../test/integration/auto-chunking.test.js))
+
+**Purpose**: Verify automatic chunking behavior per 2026-01-02-A requirement.
+
+- ✓ Write data exceeding `remoteMaxChunkSize` is automatically chunked
+- ✓ All chunks except final have `eom=false`
+- ✓ Final chunk has `eom=true` (when included in `write` call)
+- ✓ Message type is consistent across all chunks
+- ✓ Flow control credits are consumed for each chunk
+- ✓ Receiver can reassemble message from chunks
+- ✓ Very large writes (multiple chunks) work correctly
+- ✓ Edge case: data exactly equals `remoteMaxChunkSize`
+- ✓ Edge case: data is 1 byte over `remoteMaxChunkSize`
+
+**Test Count**: ~10 tests
+
+### 6. NEW: Concurrent Filtered Reads Tests ([`test/integration/concurrent-filtered-reads.test.js`](../test/integration/concurrent-filtered-reads.test.js))
+
+**Purpose**: Verify filtered reads don't interfere with each other per 2026-01-02-A requirement.
+
+- ✓ Two readers with different `{ only }` filters work independently
+- ✓ Reader A waiting for type A is not satisfied by type B chunk
+- ✓ Reader B waiting for type B is not satisfied by type A chunk
+- ✓ Both readers eventually receive their respective chunks
+- ✓ Three or more concurrent filtered readers
+- ✓ Filtered reader + unfiltered reader (no `{ only }`)
+  - Actually, this is non-deterministic and unsupported! (Must be all filtered, or single unfiltered)
+- ✓ Timeout on filtered read doesn't affect other filtered reads
+- ✓ Out-of-order chunk arrival with filtered reads
+
+**Test Count**: ~10 tests
+
+### 7. NEW: Write Interleaving Tests ([`test/integration/write-interleaving.test.js`](../test/integration/write-interleaving.test.js))
+
+**Purpose**: Verify chunk atomicity and write interleaving per 2026-01-02-A requirement.
+
+- ✓ Two concurrent writes may interleave at chunk boundaries
+- ✓ Each chunk is atomic (header + payload together)
+- ✓ Chunk sequence numbers are correct despite interleaving
+- ✓ Receivers can correctly filter and reassemble messages
+- ✓ Flow control works correctly with interleaved writes
+- ✓ ACKs are generated correctly for interleaved chunks
+- ✓ Large write A + large write B interleave as expected
+
+**Test Count**: ~8 tests
+
+### 8. NEW: Two-Level Budget Tests ([`test/integration/two-level-budget.test.js`](../test/integration/two-level-budget.test.js))
+
+**Purpose**: Verify transport and channel budget enforcement per 2026-01-02-A requirement.
+
+- ✓ Transport-level budget limits all channels
+- ✓ Channel-level budget limits individual channel
+- ✓ Write blocked when transport budget exhausted
+- ✓ Write blocked when channel budget exhausted
+- ✓ Write succeeds when both budgets available
+- ✓ Channel creation rejected if limits exceed transport limits
+- ✓ Multiple channels share transport budget fairly
+- ✓ ACKs restore both transport and channel budgets
+
+**Test Count**: ~10 tests
 
 ## Performance Tests
 
