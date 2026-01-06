@@ -417,8 +417,8 @@ flowchart TD
 (After switching to binary stream)
 
 - 0: ACK message
-- 2: Channel control message
-- 3: Channel data message
+- 1: Channel control message \[earlier version incorrectly said type 2\]
+- 2: Channel data message \[earlier version incorrectly said type 3\]
 
 ### General Notes
 
@@ -601,7 +601,7 @@ It is expected that header information will be encoded and decoded in the main t
 
 ## Updates & Clarifications 2026-01-03-A
 
-- It's the user's responsibility to make sure there aren't conflicting readers. Specifically, behavior is undefined if:
+- ~~It's the user's responsibility to make sure there aren't conflicting readers.~~ Specifically, behavior is undefined if:
   - Readers exist concurrently with overlapping "only" sets
   - Filtered readers and unfiltered readers are present at the same time
 

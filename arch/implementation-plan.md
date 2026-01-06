@@ -1,8 +1,8 @@
 # PolyTransport Implementation Plan
 
-**Status**: Active  
-**Created**: 2026-01-03  
-**Last Updated**: 2026-01-03
+**Status**: Active
+**Created**: 2026-01-03
+**Last Updated**: 2026-01-06
 
 ## Overview
 
@@ -103,7 +103,7 @@ class VirtualRWBuffer extends VirtualBuffer {
 - Uses `TextEncoder.encodeInto()` for efficient encoding
 - Returns `{ read, written }` to track UTF-16 code units consumed and bytes written
 - Enables multi-chunk encoding of large strings
-- Over-allocates reservation (worst-case: min(remaining_string.length * 3, maxChunkSize))
+- Over-allocates reservation (worst-case: min(remaining_string.length * 3, maxChunkBytes))
 - Shrinks reservation to actual encoded size after encoding
 - Avoids intermediate buffer allocation
 
@@ -113,7 +113,7 @@ let offset = 0;
 while (offset < str.length) {
   // Reserve space for this chunk (worst-case for remaining string)
   const remaining = str.length - offset;
-  const maxBytes = Math.min(remaining * 3, maxChunkSize);
+  const maxBytes = Math.min(remaining * 3, maxChunkBytes);
   const reservation = await ringBuffer.reserve(maxBytes);
   
   // Encode as much as fits
@@ -222,8 +222,15 @@ class RingBuffer {
 
 **Message Types** (lines 415-421):
 - 0: ACK message
-- 2: Channel control message
-- 3: Channel data message
+- 1: Channel control message
+- 2: Channel data message
+
+**Constants** (requirements.md:633-638):
+- `MAX_DATA_HEADER_BYTES` = 18 (current bytestream data format)
+- `MIN_DATA_RES_BYTES` = 4 (minimum data reservation)
+- `RESERVE_ACK_BYTES` = 514 (maximum ACK message size)
+- Requirement: `maxChunkBytes >= MAX_DATA_HEADER_BYTES + MIN_DATA_RES_BYTES`
+- `maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES`
 
 **ACK Message Format** (lines 430-456):
 ```
@@ -240,16 +247,18 @@ class RingBuffer {
 
 **Channel Control/Data Header Format** (lines 458-480):
 ```
-1B: 2 (control) or 3 (data)
+1B: 1 (control) or 2 (data)
 1B: remaining header size
 4B: total data size (bytes)
 2B: flags (+1: EOM)
 4B: remote transport channel number
 4B: local channel sequence number
 2B: remote message type
-Total: 18 bytes
+Total: 18 bytes (MAX_DATA_HEADER_BYTES)
 Followed by data segment if data-segment size > 0
 ```
+
+**Note**: `maxChunkBytes` is the "over-the-wire" size limit (header + data payload). All data chunking must be based on `maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES` (requirements.md:636-640).
 
 **API**:
 ```javascript
@@ -285,6 +294,10 @@ class Protocol {
   - 0: Channel-message-type registration request
   - 1: Channel-message-type registration response
 
+**TCC Additional Message Types** (requirements.md:668):
+- `chanNoReq`: Reply to late/unsolicited `chanReqAcc` indicating no active request
+  - Triggers implied directional channel auto-close on accepting transport
+
 ### Phase 3: Flow Control
 
 #### 3.1 FlowControl Class
@@ -298,6 +311,14 @@ class Protocol {
 - In-flight chunk map
 - Budget calculation
 - Acknowledgment processing with range support (lines 444-456)
+
+**ACK Handling** (requirements.md:642-647):
+- ACKs are transport-level messages, not channel-level
+- ACKs require transport-level budget, but NOT channel-level budget
+- Ready ACKs should be batched using range + skip encoding
+- Ready ACKs MUST be sent before ready data
+- If data is ready but no ACKs ready, transport reservation should require `RESERVE_ACK_BYTES` more than data alone
+- Prevents data from blocking potentially-critical ACKs
 
 **Credit System** (lines 21-24):
 - Chunks may not be sent until sufficient credit balance available
@@ -338,6 +359,14 @@ class FlowControl {
 - Filtered reads must not impact other filtered reads
 - Chunks may be read/released/ACK'd out of sequence
 - Typed messages are "light-weight channels" within channels
+
+**Transport-Level Budget Waiting** (requirements.md:609-614):
+- Use `TaskQueue` for FIFO round-robin queueing of ready channels
+- Ensures fair transport-level budget allocation
+- Import: `import { TaskQueue } from '@task-queue';`
+- See [`resources/task-queue/src/task-queue.esm.js`](../resources/task-queue/src/task-queue.esm.js) for interface details
+- First ensure channel has sending budget (prevents deadlock)
+- Second ensure transport has sending budget in FIFO order
 
 ### Phase 4: Channel Implementation
 
@@ -398,6 +427,10 @@ class Channel extends EventTarget {
   async read({ timeout, only })            // line 380 (was readChunk)
   readSync({ only })                       // line 382 (was readChunkSync)
   
+  // Pin management helpers (requirements.md:660-662)
+  readSyncAndRelease(callback)             // Calls callback(chunk), then releases pin
+  async readAndRelease(callback)           // Awaits callback(chunk), then releases pin
+  
   // Flow control
   async clear({ chunk, direction, only })  // line 344
   
@@ -439,6 +472,21 @@ const { type, data, eom } = await channel.read();
 const chunk = await channel.read({ only: [1, 2, 3] });
 ```
 
+**Duplicate Reader Detection/Prevention** (requirements.md:677-688):
+- Detect and prevent duplicate channel readers
+- Create meta object for each reader with `stale` flag (initially false)
+- Keep scalar for unfiltered async readers
+- Keep map for filtered readers (by message type)
+- If unfiltered reader exists and any other read attempted: reject with `DuplicateReaderError`
+- For filtered readers:
+  - Attempt to register reader for each message type
+  - If non-stale reader already registered for type:
+    - Mark new reader stale (invalidates all prior registrations)
+    - Reject with `DuplicateReaderError`
+  - If no reader or existing reader is stale: register new reader
+- When reader activated by new chunk: set meta state to stale
+- Reader must initiate new read (new meta object) to read another chunk
+
 **String Encoding in channel.write** (requirements.md:621-622):
 ```javascript
 async write(type, data, { eom = true }) {
@@ -448,7 +496,7 @@ async write(type, data, { eom = true }) {
     while (offset < data.length) {
       // Reserve space for this chunk (worst-case for remaining string)
       const remaining = data.length - offset;
-      const maxBytes = Math.min(remaining * 3, this.#maxChunkSize);
+      const maxBytes = Math.min(remaining * 3, this.#maxChunkBytes);
       const reservation = await this.#reserveSpace(maxBytes);
       
       // Encode as much as fits
@@ -468,7 +516,7 @@ async write(type, data, { eom = true }) {
     }
   } else {
     // Binary data path (Uint8Array or VirtualBuffer)
-    // May also need chunking if data exceeds maxChunkSize
+    // May also need chunking if data exceeds maxChunkBytes
     await this.#sendChunk(type, data, { eom });
   }
 }
@@ -477,7 +525,7 @@ async write(type, data, { eom = true }) {
 **Important Notes**:
 - No `readMessage` or `writeMessage` methods (line 590)
 - `write` must automatically chunk writes exceeding chunk limit (line 591)
-- `maxMessageSize` is informational only (line 592)
+- `maxMessageBytes` is informational only (line 592)
 - Filtered reads don't impact other filtered reads (line 593)
 - Individual chunks written atomically, but large writes need not be (lines 596-597)
 - String data automatically encoded using `TextEncoder.encodeInto()` with multi-chunk support
@@ -533,10 +581,10 @@ class Transport extends EventTarget {
 ```
 
 **Channel Accept Options** (lines 293-299):
-- `maxBufferSize`: Max buffer size (byte count); 0 = unlimited
-- `maxChunkSize`: Max size of single chunk; 0 = none (transport limit applies)
-- `maxMessageSize`: Max size of individual message; 0 = unlimited
-- `lowBufferSize`: Buffer size low-water mark for ACKs
+- `maxBufferBytes`: Max buffer size (byte count); 0 = unlimited
+- `maxChunkBytes`: Max size of single chunk; 0 = none (transport limit applies)
+- `maxMessageBytes`: Max size of individual message; 0 = unlimited
+- `lowBufferBytes`: Buffer size low-water mark for ACKs
 
 **Event Handling** (lines 283-321):
 - `addEventListener`/`removeEventListener` model (line 285)
@@ -806,6 +854,60 @@ class Transport extends EventTarget {
 - Chunks may be read/released/ACK'd out of sequence
 - Typed messages are "light-weight channels" within channels
 - `only` parameter accepts single value, array, or Set (line 387)
+
+## Updates & Clarifications 2026-01-04-A
+
+### Terminology: "Size" → "Bytes"
+For better clarity, parameter names use "bytes" instead of "size" where applicable (requirements.md:635):
+- `maxChunkSize` → `maxChunkBytes`
+- `maxMessageSize` → `maxMessageBytes`
+- `maxBufferSize` → `maxBufferBytes`
+- `lowBufferSize` → `lowBufferBytes`
+
+### Timeout Handling (requirements.md:664-674)
+
+**`requestChannel` timeout**:
+- Rejects locally with `TimeoutError`
+- Late/unsolicited `chanReqAcc` triggers `chanNoReq` TCC reply message
+- `chanNoReq` triggers implied directional channel auto-close on accepting transport
+
+**`read` timeout**:
+- Rejects with `TimeoutError`
+- Unlike `readSync`, `null` implies EOF
+
+**`close` timeout**:
+- Force-close if orderly close times out
+
+### Channel Rejection (requirements.md:690-693)
+- Channel rejection only directly affects the requested direction
+- Rejected requestor must explicitly close any previously established reverse direction if desired
+
+### Channel And Message-Type Exhaustion/Reuse (requirements.md:695-710)
+- Channel ids: 32 bits
+- Message-type ids: 16 bits
+- Configuration parameters readable but not modifiable by user code
+- `minChannelId` and `minMessageTypeId` are minimum ids where *mapping* begins, not minimum usable
+- **Channel state** (including name-mappings) maintained for life of transport:
+  - Named channel closed and re-opened (same direction) gets same channel id
+  - Channel ids never reassigned to different name
+  - New name mappings never assigned active channel ids
+- **Named-message-type mappings** retained for life of channel direction:
+  - Mappings restart fresh for direction that closed and reopened
+  - Re-requesting existing mapping (within direction not closed) returns existing id
+- **Numeric-only message-types** don't require state storage:
+  - Not always possible to determine if particular id is "active"
+  - Applications needing > 1024 unmapped numeric ids should manage own mapping
+
+### Buffer Pool Management (requirements.md:648)
+- Operates on relative-demand basis (not fixed maximums)
+- Ring-to-pool migration failures are fatal (close entire transport)
+- Total buffer demand application-managed via configuration and avoiding unrestricted channel acceptance
+- All buffer sizes configurable unless format-specific (like header sizes)
+
+### Managing Channels And Message Types (requirements.md:654-656)
+- Trusted clients should use `newChannel` and `newMessageType` events
+- Detect malicious/errant/unexpected use
+- Shut down problematic channels or transports accordingly
 
 ## Success Criteria
 
