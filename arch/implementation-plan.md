@@ -1,479 +1,846 @@
 # PolyTransport Implementation Plan
 
-Copyright 2025-2026 Kappa Computer Solutions, LLC and Brian Katzung
+**Status**: Active  
+**Created**: 2026-01-03  
+**Last Updated**: 2026-01-03
 
 ## Overview
 
-This document outlines the phased implementation approach for the PolyTransport library based on [`requirements.md`](requirements.md). The plan prioritizes core functionality first, then adds transport types and advanced features incrementally.
+This document outlines the implementation plan for PolyTransport with the correct bidirectional channel architecture. Each channel is a container that may have one or both directions active, with independent flow control per direction.
 
-**Last Updated**: 2026-01-03 - Updated to reflect requirements changes from 2026-01-02-A (see [`arch/20260103-requirements-update-analysis.md`](20260103-requirements-update-analysis.md))
+## Core Architecture Principles
 
-## Recent Requirements Updates (2026-01-02-A)
+### Channel Directionality Model
 
-The following changes from [`requirements.md`](requirements.md:587) lines 587-600 impact this implementation plan:
+From [`arch/requirements.md`](requirements.md):
+> "Each channel may be unidirectional (user data travels only in one direction) or bidirectional (user data travels in both directions)" (line 15)
 
-1. **API Simplification**: `read()` and `readSync()` replace `readChunk()` and `readMessage()` methods
-2. **Automatic Chunking**: `write()` must automatically chunk writes exceeding chunk limits
-3. **Informational `maxMessageSize`**: No longer enforced, advisory only
-4. **Independent Filtered Reads**: Filtered reads with `{ only }` must not interfere with each other
-5. **Out-of-Order Consumption**: Chunks may be consumed out-of-order (already supported by flow control)
-6. **Chunk Atomicity**: Individual chunks are atomic, but large writes may interleave at chunk boundaries
-7. **Two-Level Budgets**: Transport and channel budgets; channel limits must not exceed transport limits
+**How directionality is determined** (lines 306-308):
+- **Unidirectional**: One transport requests, the other accepts
+  - Appears "write-only" on request side (cannot receive data)
+  - Appears "read-only" on accept side (cannot send data)
+- **Bidirectional**: Both transports request AND both accept
+  - Both sides can send and receive data
 
-See the analysis document for detailed conformance notes and migration guidance.
+**Key Insight**: A `Channel` object is a bidirectional container that may have:
+- Read direction only (unidirectional inbound)
+- Write direction only (unidirectional outbound)
+- Both read and write directions (bidirectional)
+
+Each direction has:
+- Independent flow control state
+- Independent buffer management
+- Independent lifecycle (can close one direction while keeping the other open)
 
 ## Implementation Phases
 
-### Phase 1: Core Infrastructure (Foundation)
+### Phase 1: Foundation Components
 
-**Goal**: Establish the foundational classes and protocols without transport-specific implementations.
+#### 1.1 VirtualBuffer Class
+**File**: [`src/virtual-buffer.esm.js`](../src/virtual-buffer.esm.js)
 
-#### 1.1 Byte-stream Protocol Codec + Transport Output Pump (Update 2025-12-29-A)
+**Purpose**: Zero-copy buffer management with views into underlying storage (lines 153-158)
 
-**Goal**: Make protocol encode/decode *non-allocating* and compatible with ring-buffer + pool-buffer I/O.
+**Key Features**:
+- Wraps Uint8Array or ring buffer segments
+- Supports slicing without copying
+- Pin/unpin mechanism for ring buffer integration (lines 165-193)
+- Efficient concatenation and splitting
+- Automatic migration when underlying storage moves (line 163)
 
-This phase explicitly separates:
-
-1) **Protocol codec (sync, deterministic, non-allocating)**
-   - Responsible only for:
-     - Computing exact encoded header sizes
-     - Encoding/decoding headers to/from caller-provided buffer windows
-     - Validating header fields
-   - Must **not** allocate new buffers for headers.
-   - Must **not** await / block for ring space.
-
-2) **Transport-level output pump (async, owns output ring)**
-   - The *only* component that:
-     - Waits for output ring space
-     - Schedules what gets written next
-     - Enforces ordering and priority rules
-
-**Protocol format reference**: The byte-stream formats are defined in [`arch/requirements.md`](requirements.md:320) (ACK type 0, channel-control type 2, channel-data type 3).
-
-**Codec APIs**:
-- Keep the protocol module in a single file: [`src/protocol.esm.js`](../src/protocol.esm.js:1).
-- Add encode-into/decode-from primitives in that module for the byte-stream headers:
-  - `ackHeaderSize(rangeCount)`
-  - `channelHeaderSize()`
-  - `decodeHeaderSizeFromPrefix(buffer, offset)`
-  - `encodeAckHeaderInto(target, offset, fields)`
-  - `encodeChannelHeaderInto(target, offset, type, fields)`
-  - `decodeHeaderFrom(buffer, offset)`
-
-**Deterministic sizing requirements** (so the async pump can reserve before writing):
-- Channel-control/channel-data header size is fixed (18 bytes) per [`arch/requirements.md`](requirements.md:383).
-- ACK header size is `toEven(13 + rangeCount)` per [`arch/requirements.md`](requirements.md:369).
-  - The output pump may choose `rangeCount` based on available ring space.
-
-**Transport output pump requirements** (transport-level, not per-channel):
-- Owns the output ring buffer.
-- Maintains pending work queues:
-  - Pending ACK state (per channel id) generated by receive-side processing.
-  - Pending data frames (per channel id) generated by channel writes (already flow-control approved).
-- **Priority rule**: if any ACKs are ready, the pump must send them before emitting any new data frames (per [`arch/requirements.md`](requirements.md:492)).
-- **ACK-only flush**: ACKs must be written even when no data is pending (pump must wake on new pending ACKs).
-- **Frame atomicity invariant**: once a data frame starts, its header bytes and the associated payload bytes are written back-to-back with no other bytes inserted between them.
-- **Payload slicing**: if a payload cannot fit, the pump may emit it as multiple consecutive channel-data frames; EOM is set only on the final frame (per the message/chunk semantics in [`arch/requirements.md`](requirements.md:181)).
-
-**Direct-to-ring outbound payload API (single-thread endpoints)**:
-- For non-worker endpoints (e.g. browser main thread), provide a documented API that allows callers to write outbound payload bytes **directly into the output ring** when space is available.
-- The API must support ring wrap-around by returning a payload view that may be contiguous or split.
-- High-level behavior:
-  - Caller requests a reservation for `headerSize + payloadSize`.
-  - The transport output pump waits as needed (including draining pending ACKs first) and then reserves space.
-	- Caller writes payload bytes into the reserved ring-backed view.
-	- On commit, the pump encodes the header into the reserved header window and schedules the full `[header][payload]` frame for writing.
-
-**Reservation lifecycle requirement**:
-- Outbound reservations must be explicitly completed:
-  - `commit()` when the caller has fully populated the payload (or pre-zeroed any unused bytes per the security invariant), OR
-  - `release()` if the reservation is abandoned.
-
-**Security invariant for reservations**:
-- Any reserved ring range must be either:
-  - fully written by the caller (every byte), OR
-  - pre-zeroed by the reservation owner before exposing it.
-- This prevents leaking bytes from a previous ring iteration.
-
-**VirtualBuffer outbound mode**:
-- `VirtualRWBuffer` extension of `VirtualBuffer` supporting **read/write** mode for outbound reservations that map directly onto reserved ring ranges
-- This abstraction should hide whether the reservation is contiguous or split across the ring boundary.
-
-#### 1.2 Buffer Management
-- **File**: [`src/buffer-manager.esm.js`](../src/buffer-manager.esm.js)
-- **Components**:
-  - `VirtualBuffer` class - Multi-range buffer views
-  - `VirtualRWBuffer` class - Multi-range read/write buffer views (with `set` as well as `get`)
-  - `BufferPool` class - Pooled ArrayBuffer management (1K, 4K, 16K, 64K)
-  - `BufferManager` class - Reference tracking and lifecycle
-- **Key Features**:
-	- Ring buffer support for BYOB readers
-	- Ring buffer reclamation coordination for ring-backed `VirtualBuffer` views
-		- **Input ring only**: pinned views may outlive the immediate parse step (slow reads / delayed processing)
-		- Represent each pinned view with an explicit handle (e.g. `RingPin`) that records `{ epoch, start, length }` and provides `release()` and `migrate(bufferManager)`
-		- The ring maintains a registry of active pins and performs **targeted** reclamation callbacks to pin holders when it needs to overwrite overlapping ranges
-		- Pin holders migrate affected bytes into pool buffers, update their virtual-buffer ranges, and then release the pin so the ring can reclaim
-	- Automatic buffer size selection
-	- Transfer between contexts (postMessage)
-  - Low/high water mark management
-	- VirtualBuffer read-only vs read/write modes (read for inbound, write for ring-backed outbound reservations)
-		- **Output ring**: outbound reservations must not escape; if a caller cannot complete promptly, it must release the reservation and enqueue payload bytes in pool-managed buffers instead (no output-side pin/migration)
-	- **Tests**: Buffer allocation, pooling, virtual views, cross-buffer ranges
-
-#### 1.3 Flow Control
-- **File**: [`src/flow-control.esm.js`](../src/flow-control.esm.js)
-- **Components**:
-  - `FlowController` class - Credit-based flow control
-  - Chunk sequence tracking
-  - ACK generation and processing
-  - Budget calculation (remote budget - in-flight data)
-- **Key Features**:
-  - Per-channel credit management
-  - Chunk acknowledgment tracking
-  - Backpressure signaling
-  - Protocol violation detection (duplicate ACKs)
-- Supports out-of-order chunk consumption on the receive side (ACKs use include/skip ranges)
-- Minimal API surface:
-	- `await flow.reserveSend(size, { timeout })` (waits for credits, assigns sequence, records in-flight)
-	- `flow.processAck({ baseSequence, ranges })` (restores credits; detects duplicate ACK)
-	- `flow.onReceiveChunk({ sequence, size })` / `flow.onConsumeChunk(sequence)`
-	- `flow.createAck(maxRangeCount)` (builds + commits an ACK with include/skip ranges)
-- **Tests**: [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js)
-- **Conformance Notes**:
-  - ✓ Already supports out-of-order chunk consumption (per 2026-01-02-A requirement)
-  - ⚠️ Needs extension for two-level budget system (transport + channel budgets)
-
-#### 1.4 Channel Implementation
-- **File**: [`src/channel.esm.js`](../src/channel.esm.js)
-- **Components**:
-  - `Channel` class - Logical communication stream
-  - State machine (closed → open → closing → closed)
-  - Message type registration
-  - Read/write queues
-- **Key Features**:
-  - Bidirectional and unidirectional support
-  - Message type filtering
-  - Event dispatching (newChunk, beforeClosing, closed)
-  - Read methods: `read()`, `readSync()` (simplified API per 2026-01-02-A)
-  - Write method: `write(type, data, { eom })` with automatic chunking
-  - `clear()` method for queue management
-  - `close()` method with direction support
-  - Filtered reads must not interfere with each other (concurrent type-based reads)
-  - Out-of-order chunk consumption supported (via flow control ACK ranges)
-- **Tests**: Channel lifecycle, read/write operations, filtering, state transitions, automatic chunking, concurrent filtered reads
-- **Conformance Notes** (per [`arch/20260103-requirements-update-analysis.md`](20260103-requirements-update-analysis.md)):
-  - ⚠️ Current implementation uses old API names (`readChunk`, `readMessage`)
-  - ⚠️ `write()` currently throws on oversized data instead of auto-chunking
-  - ⚠️ Contains `_assertReadMessageSupported()` and `_readMessageSyncInternal()` which should be removed
-
-### Phase 2: Transport Base & Virtual Transport
-
-**Goal**: Create the abstract transport interface and a testable virtual transport.
-
-#### 2.1 Transport Base Class
-- **File**: [`src/transport/base.esm.js`](../src/transport/base.esm.js)
-- **Components**:
-  - Abstract `Transport` class
-  - Event handling (addEventListener/removeEventListener)
-  - Channel management (request/accept)
-  - Configuration handling
-  - **Two-level budget system** (per 2026-01-02-A):
-    - Transport-level max chunk and max buffer limits
-    - Channel-level limits must not exceed transport limits
-    - Writes must satisfy both transport and channel budgets
-- **Key Methods**:
-  - `async start ()` - Begin transport operations
-  - `async requestChannel (idOrName, { timeout })` - Request new channel
-  - `setChannelDefaults (options)` - Set default channel options
-  - `async close ({ discard, timeout })` - Close transport
-  - Abstract methods for subclasses to implement
-- **Events**:
-  - `newChannel` - Incoming channel request
-  - `outofBandData` - Non-PolyTransport data detected
-  - `beforeClosing` - Pre-closure notification
-  - `closed` - Post-closure notification
-  - `protocolViolation` - Protocol error detected
-- **Tests**: Event handling, channel lifecycle, configuration, two-level budget enforcement
-- **Conformance Notes**:
-  - ⚠️ Needs implementation of transport-level budget tracking
-  - ⚠️ Needs validation that channel limits don't exceed transport limits
-
-#### 2.2 Virtual Transport (for testing)
-- **File**: [`src/transport/virtual.esm.js`](../src/transport/virtual.esm.js)
-- **Purpose**: In-memory transport for testing without I/O
-- **Components**:
-  - Paired virtual transports (A ↔ B)
-  - Synchronous message passing
-  - Configurable delays and errors
-- **Tests**: End-to-end channel operations, flow control, error scenarios
-
-### Phase 3: IPC Pipe Transport
-
-**Goal**: Implement the first real transport for process communication.
-
-#### 3.1 Pipe Transport
-- **File**: [`src/transport/pipe.esm.js`](../src/transport/pipe.esm.js)
-- **Components**:
-  - IPC pipe transport (stdin/stdout/stderr)
-  - Handshake protocol implementation
-  - BYOB reader support with fallback
-  - Out-of-band data detection
-- **Key Features**:
-  - Transport identifier exchange (`\x02PolyTransport\x03`)
-  - Configuration exchange (JSON with STX/ETX)
-  - Binary stream mode (`\x01`)
-  - Console-content channel (C2C) support
-  - Transport-control channel (TCC) support
-- **Tests**: Handshake, channel operations, C2C, error handling
-
-### Phase 4: Web Worker Transport
-
-**Goal**: Enable communication with Web Workers.
-
-#### 4.1 Worker Transport
-- **File**: [`src/transport/worker.esm.js`](../src/transport/worker.esm.js)
-- **Components**:
-  - Web Worker message passing
-  - Buffer transfer optimization
-  - Bidirectional communication
-- **Key Features**:
-  - postMessage with transferable ArrayBuffers
-  - **Header encode/decode is performed in the main thread only**
-    - Worker messaging uses `{ header: object, data: ArrayBuffer }`
-    - Headers are structured-cloned JS objects
-    - Data is transferred as ArrayBuffer (transfer ownership)
-  - Worker-side buffer pool management
-- **Tests**: Message passing, buffer transfer, worker lifecycle
-
-### Phase 5: WebSocket Transport
-
-**Goal**: Enable bidirectional web communication.
-
-#### 5.1 WebSocket Transport
-- **File**: [`src/transport/websocket.esm.js`](../src/transport/websocket.esm.js)
-- **Components**:
-  - WebSocket-based transport
-  - Binary message framing
-  - Connection lifecycle management
-- **Key Features**:
-  - Automatic reconnection (optional)
-  - Ping/pong for keepalive
-  - Graceful degradation
-- **Tests**: Connection, messaging, reconnection, errors
-
-### Phase 6: HTTP Transport
-
-**Goal**: Support simple request/response patterns.
-
-#### 6.1 HTTP Transport
-- **File**: [`src/transport/http.esm.js`](../src/transport/http.esm.js)
-- **Components**:
-  - HTTP/HTTPS request/response
-  - Streaming response support
-  - SSE (Server-Sent Events) support
-- **Key Features**:
-  - Single-channel per request
-  - Automatic channel closure on response completion
-  - Chunked transfer encoding
-- **Tests**: Request/response, streaming, errors
-
-Notes:
-
-- Client-side PolyTransport will typically only be used for bidirectional connections (for flow-control reasons).
-- PolyTransport awareness should not be a *client* requirement for standard and streaming responses (only for server-side components).
-
-### Phase 7: Nested Transport (PTOC)
-
-**Goal**: Enable PolyTransport-over-channel for complex routing.
-
-#### 7.1 Nested Transport
-- **File**: [`src/transport/nested.esm.js`](../src/transport/nested.esm.js)
-- **Components**:
-  - PTOC (PolyTransport-over-channel)
-  - Message type wrapping/unwrapping
-  - Flow control propagation
-- **Key Features**:
-  - Attach to existing bidirectional channel
-  - Transparent chunk relaying
-  - Independent flow control at each layer
-  - Critical for JSMAWS routing architecture
-- **Tests**: Nested channels, flow control, multi-hop routing
-
-### Phase 8: Main Export & Integration
-
-**Goal**: Provide unified API and integration utilities.
-
-#### 8.1 Main Export
-- **File**: [`src/poly-transport.esm.js`](../src/poly-transport.esm.js)
-- **Components**:
-  - Export all transport types
-  - Export utility classes
-  - Version information
-- **Example Usage**:
+**API**:
 ```javascript
-import { PipeTransport, Channel } from './poly-transport.esm.js';
-
-const transport = new PipeTransport({ logger: console });
-transport.addEventListener('newChannel', (event) => {
-  const channel = event.accept({ maxBufferSize: 65536 });
-  // ... handle channel
-});
-await transport.start();
+class VirtualBuffer {
+  constructor(source, offset = 0, length = source.length)
+  get length()
+  get byteLength()
+  slice(start, end)
+  toUint8Array()  // May copy if needed
+  pin()           // Prevent ring buffer reclamation
+  unpin()         // Allow ring buffer reclamation
+  concat(other)   // Create new VirtualBuffer spanning both
+  decode({ start=0, end=length, label='utf-8', fatal=false, ignoreBOM=false })  // Text decoding
+}
 ```
 
-## Testing Strategy
+**Text Decoding** (requirements.md:623-627):
+- Combines slice-like range selection with text decoding
+- **Single-segment optimization**: Zero-copy decode directly from buffer
+- **Multi-segment optimization**: Uses streaming `TextDecoder` to process segments without intermediate copy
+- Streaming decoder handles multi-byte UTF-8 sequences split across segments
+- 4-5x faster than copy-first approach for multi-segment buffers
 
-### Unit Tests
+#### 1.1b VirtualRWBuffer Class
+**File**: [`src/virtual-rw-buffer.esm.js`](../src/virtual-rw-buffer.esm.js)
 
-Each component has dedicated test files:
-- [`test/unit/protocol.test.js`](../test/unit/protocol.test.js) - Protocol constants + validation
-- [`test/unit/protocol-codec.test.js`](../test/unit/protocol-codec.test.js) - Non-allocating byte-stream codec (encode-into/decode-from)
-- [`test/unit/transport-output-pump.test.js`](../test/unit/transport-output-pump.test.js) - Transport-level output pump (ACK priority, no interleaving)
-- [`test/unit/buffer-manager.test.js`](../test/unit/buffer-manager.test.js) - Buffer management
-- [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js) - Flow control logic
-- [`test/unit/channel.test.js`](../test/unit/channel.test.js) - Channel operations
-- [`test/unit/transport/base.test.js`](../test/unit/transport/base.test.js) - Transport base
-- [`test/unit/transport/virtual.test.js`](../test/unit/transport/virtual.test.js) - Virtual transport
-- [`test/unit/transport/pipe.test.js`](../test/unit/transport/pipe.test.js) - Pipe transport
-- [`test/unit/transport/worker.test.js`](../test/unit/transport/worker.test.js) - Worker transport
-- [`test/unit/transport/websocket.test.js`](../test/unit/transport/websocket.test.js) - WebSocket transport
-- [`test/unit/transport/http.test.js`](../test/unit/transport/http.test.js) - HTTP transport
-- [`test/unit/transport/nested.test.js`](../test/unit/transport/nested.test.js) - Nested transport
+**Purpose**: Read/write subclass of VirtualBuffer for zero-copy writing to ring buffers (requirements.md:618-619)
 
-### Integration Tests
+**Key Features**:
+- Extends VirtualBuffer with write operations
+- Supports writing directly to ring buffer (potentially split around wrap-around)
+- Provides `set`, `fill`, and text encoding methods
+- Used for output ring buffer reservations
 
-- [`test/integration/jsmaws-scenarios.test.js`](../test/integration/jsmaws-scenarios.test.js)
-  - Operator ↔ Router communication
-  - Router ↔ Responder communication
-  - Responder ↔ Applet communication
-  - Client ↔ Applet WebSocket upgrade
-  - Console logging pipeline
+**API**:
+```javascript
+class VirtualRWBuffer extends VirtualBuffer {
+  // Write bytes from source
+  set(source, offset = 0)  // source: Uint8Array or VirtualBuffer
+  
+  // Fill with repeated byte value
+  fill(value, start = 0, end = this.length)
+  
+  // Encode string directly into buffer
+  // Returns { read, written } like TextEncoder.encodeInto()
+  encodeFrom(str, offset = 0, label = 'utf-8')
+  
+  // Shrink buffer to actual used size (for over-allocated reservations)
+  shrink(newLength)
+}
+```
 
-### Performance Tests
+**String Encoding** (requirements.md:621-622):
+- Uses `TextEncoder.encodeInto()` for efficient encoding
+- Returns `{ read, written }` to track UTF-16 code units consumed and bytes written
+- Enables multi-chunk encoding of large strings
+- Over-allocates reservation (worst-case: min(remaining_string.length * 3, maxChunkSize))
+- Shrinks reservation to actual encoded size after encoding
+- Avoids intermediate buffer allocation
 
-- [`test/performance/throughput.test.js`](../test/performance/throughput.test.js)
-  - Measure throughput for each transport type
-  - Compare with/without flow control
-  - Identify bottlenecks
+**Multi-Chunk String Encoding Example**:
+```javascript
+let offset = 0;
+while (offset < str.length) {
+  // Reserve space for this chunk (worst-case for remaining string)
+  const remaining = str.length - offset;
+  const maxBytes = Math.min(remaining * 3, maxChunkSize);
+  const reservation = await ringBuffer.reserve(maxBytes);
+  
+  // Encode as much as fits
+  const { read, written } = reservation.encodeFrom(str, offset);
+  
+  // Release unused space
+  reservation.shrink(written);
+  
+  // Send chunk
+  await sendChunk(reservation, { eom: offset + read >= str.length });
+  
+  // Advance offset by UTF-16 code units consumed
+  offset += read;
+}
+```
 
-- [`test/performance/latency.test.js`](../test/performance/latency.test.js)
-  - Measure round-trip latency
-  - Test under various load conditions
+#### 1.2 BufferPool Class
+**File**: [`src/buffer-pool.esm.js`](../src/buffer-pool.esm.js)
 
-### Security Tests
+**Purpose**: Reusable buffer allocation to reduce GC pressure (lines 519-528)
 
-- [`test/security/dos-prevention.test.js`](../test/security/dos-prevention.test.js)
-  - Duplicate ACK detection
-  - Buffer overflow prevention
-  - Resource exhaustion protection
-  - Malformed message handling
+**Key Features**:
+- Multiple size classes: 1KB, 4KB, 16KB, 64KB (line 521)
+- Additional 1K for overhead (headers, ACKs) (line 522)
+- Allocate below low-water mark (line 523)
+- "Eased" release above high-water mark (line 524)
+- Worker support with separate water marks (lines 525-528)
+
+**API**:
+```javascript
+class BufferPool {
+  constructor(sizeClasses = [1024, 4096, 16384, 65536])
+  allocate(minSize)  // Returns Uint8Array
+  release(buffer)    // Return to pool
+  clear()            // Empty all pools
+  
+  // Worker support
+  requestFromMain()  // Request additional buffers
+  sendToMain(buffer) // Return excess buffers
+}
+```
+
+#### 1.3 RingBuffer Class
+**File**: [`src/ring-buffer.esm.js`](../src/ring-buffer.esm.js)
+
+**Purpose**: Circular buffer for streaming I/O with pin/unpin support (lines 152, 558-577)
+
+**Key Features**:
+- Wrap-around storage for efficient streaming
+- Pin registry for preventing premature reclamation (lines 165-193)
+- Automatic migration to pool buffers when reclaiming pinned data (lines 182-192)
+- Integration with VirtualBuffer
+- Input ring: 256K default, 64K preferred read (lines 558-566)
+  - Wraps around early if reads are potentially becoming inefficient (default: < 16K left to end of buffer; line 562)
+- Output ring: 256K default, ACK and data consolidation (lines 568-574)
+
+**API**:
+```javascript
+class RingBuffer {
+  constructor(size, pool, direction = 'input')  // 'input' or 'output'
+  write(data)                    // Returns VirtualBuffer
+  read(length)                   // Returns VirtualBuffer
+  peek(length)                   // Returns VirtualBuffer without consuming
+  get available()                // Bytes available to read
+  get space()                    // Bytes available to write
+  registerPin(virtualBuffer)     // Track pinned region
+  unregisterPin(virtualBuffer)   // Release pinned region
+  async reclaimSpace(needed)     // Migrate pinned data if necessary
+}
+```
+
+**Pin/Unpin Flow** (lines 165-230):
+1. RingBuffer creates VirtualBuffer pointing to ring storage
+2. Consumer calls `virtualBuffer.pin()` if holding reference beyond immediate use
+3. RingBuffer tracks pinned regions in registry
+4. When ring needs to reclaim pinned space:
+   - Invokes callbacks for affected pins
+   - Pin holders migrate data to pool buffers
+   - Pin holders update VirtualBuffer to point to new storage
+   - Pin holders call `unpin()` to release
+5. RingBuffer can now safely reclaim space
+
+**Security Invariant** (lines 232-236):
+- Ring-backed reservations must be fully written or pre-zeroed before exposure
+- Prevents leaking bytes from previous ring iterations
+
+### Phase 2: Protocol Layer
+
+#### 2.1 Protocol Class
+**File**: [`src/protocol.esm.js`](../src/protocol.esm.js)
+
+**Purpose**: Message encoding/decoding with binary format (lines 415-517)
+
+**Transport Handshake** (lines 395-404):
+1. Transport-identifier: `\x02PolyTransport\x03` (15B)
+2. Transport-configuration: `\x02{"...}\x03` (JSON, variable length)
+3. Switch to binary stream: `\x01` (1B)
+
+**Transport Configuration** (lines 406-413):
+- `c2cEnabled`: Enable console-content channel
+- `c2cMaxBuffer`: Optional C2C buffer size limit
+- `c2cMaxCount`: Optional C2C message count limit
+- `minChannelId`: Minimum auto-assigned channel id (default 256)
+- `minMessageTypeId`: Minimum auto-assigned message-type id (default 1024)
+- `version`: Protocol version (default 1)
+
+**Message Types** (lines 415-421):
+- 0: ACK message
+- 2: Channel control message
+- 3: Channel data message
+
+**ACK Message Format** (lines 430-456):
+```
+1B: 0 (ACK type)
+1B: remaining message size
+2B: flags
+4B: transport local channel number
+4B: base remote sequence number
+1B: range count (0-255)
+  Alternating (up to range-count):
+  1B: Include quantity (0-255)
+  1B: Skip quantity (0-255)
+```
+
+**Channel Control/Data Header Format** (lines 458-480):
+```
+1B: 2 (control) or 3 (data)
+1B: remaining header size
+4B: total data size (bytes)
+2B: flags (+1: EOM)
+4B: remote transport channel number
+4B: local channel sequence number
+2B: remote message type
+Total: 18 bytes
+Followed by data segment if data-segment size > 0
+```
+
+**API**:
+```javascript
+class Protocol {
+  static encodeHandshake(config)        // Returns Uint8Array
+  static decodeHandshake(buffer)        // Returns { config, bytesConsumed }
+  static encodeAck(options)             // Returns Uint8Array
+  static decodeAck(buffer)              // Returns { ack, bytesConsumed }
+  static encodeChannelMessage(options)  // Returns Uint8Array
+  static decodeChannelMessage(buffer)   // Returns { message, bytesConsumed }
+  static parseStream(buffer)            // Returns array of parsed messages
+}
+```
+
+**Transport-Control Channel (TCC)** (lines 482-493):
+- Permanent channel 0 (opens/closes with transport)
+- Message types:
+  - 0: Transport state-changes
+  - 1: New-channel requests
+  - 2: New-channel responses (accept/reject with local channel id)
+
+**Console-Content Channel (C2C)** (lines 495-505):
+- Permanent channel 1 (if `c2cEnabled: true` in handshake)
+- Message types:
+  - 0: Uncaught-exception messages
+  - 1: `debug`-level messages
+  - 2: `info/log`-level messages
+  - 3: `warn`-level messages
+  - 4: `error`-level messages
+
+**Channel Control Messages (CCM)** (lines 507-517):
+- Message types:
+  - 0: Channel-message-type registration request
+  - 1: Channel-message-type registration response
+
+### Phase 3: Flow Control
+
+#### 3.1 FlowControl Class
+**File**: [`src/flow-control.esm.js`](../src/flow-control.esm.js)
+
+**Purpose**: Per-direction credit-based flow control (lines 21-24, 249-252)
+
+**Key Features**:
+- Bi-level credit system (transport + channel) (line 599)
+- Chunk sequence tracking (line 261)
+- In-flight chunk map
+- Budget calculation
+- Acknowledgment processing with range support (lines 444-456)
+
+**Credit System** (lines 21-24):
+- Chunks may not be sent until sufficient credit balance available
+- Credits consumed when chunks sent
+- Credits restored upon receipt of ACKs
+- ACKs indicate chunks completely processed by recipient
+
+**API**:
+```javascript
+class FlowControl {
+  constructor(localMaxBufferSize, remoteMaxBufferSize)
+  
+  // Sending side
+  canSend(dataSize)                    // Returns boolean
+  async waitForCredit(dataSize)        // Waits until credit available
+  recordSent(seq, dataSize)            // Track in-flight chunk
+  processAck(baseSeq, ranges)          // Update credits from ACK
+  
+  // Receiving side
+  recordReceived(seq, dataSize)        // Track buffer usage
+  recordConsumed(seq, dataSize)        // Track buffer freed
+  getAckInfo()                         // Returns { baseSeq, ranges }
+  
+  // State
+  get sendingBudget()                  // Available credits for sending
+  get bufferUsed()                     // Current buffer usage
+  get bufferAvailable()                // Available buffer space
+}
+```
+
+**Chunk Tracking**:
+- Each chunk has sequence number (per channel and direction) (line 477)
+- Sender maintains map: sequence → chunk size
+- Receiver acknowledges chunks with range-based ACKs (lines 444-456)
+- Sender calculates budget: remote budget - in-flight data
+
+**Type-Based Filtering** (lines 589-591):
+- Filtered reads must not impact other filtered reads
+- Chunks may be read/released/ACK'd out of sequence
+- Typed messages are "light-weight channels" within channels
+
+### Phase 4: Channel Implementation
+
+#### 4.1 Channel Class
+**File**: [`src/channel.esm.js`](../src/channel.esm.js)
+
+**Purpose**: Bidirectional container with direction management
+
+**Key Architecture**:
+```javascript
+class Channel extends EventTarget {
+  constructor(transport, channelId, name, options) {
+    this.#transport = transport;
+    this.#channelId = channelId;
+    this.#name = name;
+    
+    // Direction state
+    this.#readDirection = null;   // ChannelDirection or null
+    this.#writeDirection = null;  // ChannelDirection or null
+  }
+}
+
+class ChannelDirection {
+  constructor(channel, direction, flowControl, ringBuffer) {
+    this.#channel = channel;
+    this.#direction = direction;  // 'read' or 'write'
+    this.#flowControl = flowControl;
+    this.#ringBuffer = ringBuffer;
+    this.#state = 'closed';  // State machine per direction
+  }
+}
+```
+
+**Direction State Machine** (lines 268-281):
+- Local reader: `closed` → `open` → `closing` → {`localClosing`, `remoteClosing`} → `closed`
+- Local reader: `closed` → `rejected` (permanent final state)
+- Local writer: `closed` → `requested` → `open` → `closing` → {`localClosing`, `remoteClosing`} → `closed`
+- Local writer: `closed` → `requested` → `rejected` (permanent final state)
+- `localClosing`: Remote signaled done but local still closing
+- `remoteClosing`: Local done but remote not yet signaled done
+- Closed channels may repeat request/accept cycle unless rejected
+
+**API**:
+```javascript
+class Channel extends EventTarget {
+  // Properties
+  get id()
+  get name()
+  get hasReadDirection()
+  get hasWriteDirection()
+  get isBidirectional()
+  
+  // Writing (requires write direction)
+  async write(type, data, { eom = true })  // line 372
+  // data can be: Uint8Array, VirtualBuffer, or string (auto-encoded)
+  
+  // Reading (requires read direction)
+  async read({ timeout, only })            // line 380 (was readChunk)
+  readSync({ only })                       // line 382 (was readChunkSync)
+  
+  // Flow control
+  async clear({ chunk, direction, only })  // line 344
+  
+  // Lifecycle
+  async close({ direction, discard = false, timeout })  // line 351
+  
+  // Message type registration
+  async addMessageType(type)               // line 367
+  
+  // Events (lines 283-321)
+  // 'newMessageType' - { type, preventDefault() }
+  // 'newChunk' - { chunk, type, eom }
+  // 'beforeClosing' - { direction }
+  // 'closed' - { direction }
+  // 'error' - { error, direction }
+}
+```
+
+**Direction Parameter** (lines 344-361):
+- `undefined`: Operate on both directions (default)
+- `'read'`: Operate only on read direction
+- `'write'`: Operate only on write direction
+
+**Examples**:
+```javascript
+// Close write direction only (half-close)
+await channel.close({ direction: 'write' });
+
+// Clear read buffer
+await channel.clear({ direction: 'read' });
+
+// Write to channel (requires write direction)
+await channel.write(0, data, { eom: true });
+
+// Read from channel (requires read direction)
+const { type, data, eom } = await channel.read();
+
+// Filtered read (only specific message types)
+const chunk = await channel.read({ only: [1, 2, 3] });
+```
+
+**String Encoding in channel.write** (requirements.md:621-622):
+```javascript
+async write(type, data, { eom = true }) {
+  if (typeof data === 'string') {
+    // Multi-chunk string encoding
+    let offset = 0;
+    while (offset < data.length) {
+      // Reserve space for this chunk (worst-case for remaining string)
+      const remaining = data.length - offset;
+      const maxBytes = Math.min(remaining * 3, this.#maxChunkSize);
+      const reservation = await this.#reserveSpace(maxBytes);
+      
+      // Encode as much as fits
+      const { read, written } = reservation.encodeFrom(data, offset);
+      
+      // Release unused space
+      reservation.shrink(written);
+      
+      // Determine if this is the last chunk
+      const isLastChunk = (offset + read >= data.length);
+      
+      // Send chunk
+      await this.#sendChunk(type, reservation, { eom: eom && isLastChunk });
+      
+      // Advance offset by UTF-16 code units consumed
+      offset += read;
+    }
+  } else {
+    // Binary data path (Uint8Array or VirtualBuffer)
+    // May also need chunking if data exceeds maxChunkSize
+    await this.#sendChunk(type, data, { eom });
+  }
+}
+```
+
+**Important Notes**:
+- No `readMessage` or `writeMessage` methods (line 590)
+- `write` must automatically chunk writes exceeding chunk limit (line 591)
+- `maxMessageSize` is informational only (line 592)
+- Filtered reads don't impact other filtered reads (line 593)
+- Individual chunks written atomically, but large writes need not be (lines 596-597)
+- String data automatically encoded using `TextEncoder.encodeInto()` with multi-chunk support
+- `encodeFrom()` returns `{ read, written }` to track progress through string
+
+### Phase 5: Transport Layer
+
+#### 5.1 Transport Base Class
+**File**: [`src/transport/base.esm.js`](../src/transport/base.esm.js)
+
+**Purpose**: Abstract base for all transport types
+
+**Key Features**:
+- Channel management (lines 245-267)
+- Request/accept flow (lines 291-308, 362-366)
+- Event dispatching (lines 283-321)
+- Lifecycle management (lines 268-281)
+- Bi-level flow control (transport + channel) (line 599)
+
+**API**:
+```javascript
+class Transport extends EventTarget {
+  constructor(options)
+  
+  // Configuration
+  setChannelDefaults(options = {})         // line 337
+  
+  // Lifecycle
+  async start()                            // line 339
+  async close({ discard, timeout })        // line 341
+  
+  // Channel operations
+  async requestChannel(idOrName, { timeout })  // line 362
+  
+  // State
+  get isStarted()
+  get isClosed()
+  get channels()  // Map of active channels
+  
+  // Events (lines 283-321)
+  // 'outofBandData' - { data } (line 288)
+  // 'newChannel' - { request, accept(options), reject(reason) } (line 291)
+  // 'beforeClosing' (line 311)
+  // 'closed' (line 312)
+  // 'error' - { error }
+  
+  // Abstract methods (implemented by subclasses)
+  async _start()
+  async _close()
+  async _sendMessage(channelId, message)
+  _handleIncomingMessage(message)
+}
+```
+
+**Channel Accept Options** (lines 293-299):
+- `maxBufferSize`: Max buffer size (byte count); 0 = unlimited
+- `maxChunkSize`: Max size of single chunk; 0 = none (transport limit applies)
+- `maxMessageSize`: Max size of individual message; 0 = unlimited
+- `lowBufferSize`: Buffer size low-water mark for ACKs
+
+**Event Handling** (lines 283-321):
+- `addEventListener`/`removeEventListener` model (line 285)
+- Event dispatches must `await` handler execution (line 286)
+- Some events support `event.preventDefault()` (line 287)
+- Event order when closing (lines 313-317):
+  1. Transport `beforeClosing`
+  2. Each channel `beforeClosing`
+  3. Each channel `closed`
+  4. Transport `closed`
+
+#### 5.2 Transport Implementations
+
+**HTTP Transport** - [`src/transport/http.esm.js`](../src/transport/http.esm.js)
+- Request/response model (line 30)
+- Typically unidirectional channels
+- Polling or long-polling for bidirectional
+
+**WebSocket Transport** - [`src/transport/websocket.esm.js`](../src/transport/websocket.esm.js)
+- Full-duplex communication (line 31)
+- Natural fit for bidirectional channels
+- Binary frame support
+
+**Worker Transport** - [`src/transport/worker.esm.js`](../src/transport/worker.esm.js)
+- postMessage API (line 34)
+- Structured clone for data transfer
+- Bidirectional by nature
+
+**Pipe Transport** - [`src/transport/pipe.esm.js`](../src/transport/pipe.esm.js)
+- stdin/stdout/stderr (line 35)
+- Process communication
+- Typically bidirectional (stdin/stdout)
+
+**Nested Transport (PTOC)** - [`src/transport/nested.esm.js`](../src/transport/nested.esm.js)
+- PolyTransport over PolyTransport channel (lines 36, 323-330)
+- Each PTOC assigned unique message type (line 326)
+- Wraps outbound traffic, unwraps inbound traffic (lines 327-328)
+- Must be hosted on bidirectional channels (line 330)
+- Critical for JSMAWS routing
+
+**Virtual Transport** - [`src/transport/virtual.esm.js`](../src/transport/virtual.esm.js)
+- For testing (line 37)
+- Direct in-memory communication
+- No actual I/O
+
+### Phase 6: Testing Strategy
+
+#### 6.1 Unit Tests
+
+**VirtualBuffer Tests** - [`test/unit/virtual-buffer.test.js`](../test/unit/virtual-buffer.test.js)
+- Construction and slicing
+- Pin/unpin mechanics
+- Concatenation
+- Migration when underlying storage moves
+- Edge cases
+
+**BufferPool Tests** - [`test/unit/buffer-pool.test.js`](../test/unit/buffer-pool.test.js)
+- Allocation and release
+- Size class selection
+- Pool limits (low/high water marks)
+- Memory reuse
+- Worker support
+
+**RingBuffer Tests** - [`test/unit/ring-buffer.test.js`](../test/unit/ring-buffer.test.js)
+- Write/read operations
+- Wrap-around behavior
+- Pin registry
+- Reclamation with migration
+- Input vs output ring behavior
+- Security invariant (pre-zeroing)
+
+**Protocol Tests** - [`test/unit/protocol.test.js`](../test/unit/protocol.test.js)
+- Handshake encoding/decoding
+- ACK message format with ranges
+- Channel control/data message format
+- TCC and C2C message types
+- CCM message types
+- Edge cases and errors
+
+**FlowControl Tests** - [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js)
+- Credit calculation
+- Chunk tracking
+- Range-based acknowledgment processing
+- Budget updates
+- Blocking behavior
+- Bi-level (transport + channel) limits
+- Out-of-sequence ACKs for typed messages
+
+**Channel Tests** - [`test/unit/channel.test.js`](../test/unit/channel.test.js)
+- Unidirectional channels (read-only, write-only)
+- Bidirectional channels
+- Direction-specific operations
+- Half-close scenarios
+- State machine transitions
+- Flow control integration
+- Event dispatching
+- Type-based filtering
+- Automatic chunking of large writes
+
+**Transport Tests** - [`test/unit/transport/*.test.js`](../test/unit/transport/)
+- Base class behavior
+- Each transport implementation
+- Channel request/accept flow
+- Message routing
+- Error handling
+- Out-of-band data handling
+
+#### 6.2 Integration Tests
+
+**End-to-End Tests** - [`test/integration/e2e.test.js`](../test/integration/e2e.test.js)
+- Full communication scenarios
+- Multiple channels
+- Bidirectional streaming
+- Flow control under load
+- Error recovery
+
+**JSMAWS Scenarios** - [`test/integration/jsmaws.test.js`](../test/integration/jsmaws.test.js)
+- Operator ↔ Router (lines 68-73)
+- Router ↔ Responder (lines 76-83)
+- Responder ↔ Applet (lines 86-98)
+- Nested transport (PTOC)
+- Console logging pipeline (C2C)
+- WebSocket bidi upgrade (lines 130-141)
 
 ## Implementation Order
 
-### Week 1-2: Core Infrastructure
-1. Protocol layer (1.1)
-2. Buffer management (1.2)
-3. Flow control (1.3)
-4. Channel implementation (1.4)
+### Sprint 1: Foundation (Week 1)
+1. ✅ Create implementation plan
+2. Implement VirtualBuffer
+3. Implement BufferPool
+4. Implement RingBuffer
+5. Write tests for buffer components
 
-### Week 3: Transport Foundation
-5. Transport base class (2.1)
-6. Virtual transport (2.2)
-7. Integration tests with virtual transport
+### Sprint 2: Protocol & Flow Control (Week 1-2)
+1. Implement Protocol layer
+2. Implement FlowControl
+3. Write tests for protocol and flow control
+4. Integration testing of protocol + flow control
 
-### Week 4: First Real Transport
-8. Pipe transport (3.1)
-9. Handshake protocol
-10. C2C and TCC channels
+### Sprint 3: Channel (Week 2)
+1. Implement ChannelDirection
+2. Implement Channel with bidirectional support
+3. Write comprehensive channel tests
+4. Test unidirectional vs bidirectional scenarios
 
-### Week 5: Worker Support
-11. Worker transport (4.1)
-12. Buffer transfer optimization
-13. Worker-side buffer management
+### Sprint 4: Transport Base (Week 3)
+1. Implement Transport base class
+2. Implement channel request/accept flow
+3. Write transport base tests
+4. Test channel lifecycle
 
-### Week 6: Web Communication
-14. WebSocket transport (5.1)
-15. HTTP transport (6.1)
-16. Browser compatibility testing
+### Sprint 5: Transport Implementations (Week 3-4)
+1. Implement Virtual transport (simplest for testing)
+2. Implement WebSocket transport
+3. Implement Worker transport
+4. Implement Pipe transport
+5. Implement HTTP transport
+6. Implement Nested transport (PTOC)
 
-### Week 7: Advanced Features
-17. Nested transport (7.1)
-18. PTOC implementation
-19. Multi-hop routing tests
+### Sprint 6: Integration & Polish (Week 4)
+1. End-to-end integration tests
+2. JSMAWS scenario tests
+3. Performance testing
+4. Documentation
+5. Examples
 
-### Week 8: Polish & Documentation
-20. Main export (8.1)
-21. Performance optimization
-22. Documentation and examples
-23. Security audit
+## Key Design Decisions
 
-## Key Design Considerations
+### 1. Channel as Bidirectional Container
+**Decision**: Channel object contains both directions, not separate objects per direction
 
-### 1. Event Handling
-- All event handlers are async and awaited
-- `preventDefault()` support where applicable
-- Event order guarantees (e.g., beforeClosing → closed)
+**Rationale**:
+- Matches requirements specification (lines 15, 306-308)
+- Simplifies API (single channel object)
+- Allows direction-specific operations via parameter
+- Supports half-close scenarios naturally
 
-### 2. Error Handling
-- Clear error types (TimeoutError, ProtocolViolation, etc.)
-- Graceful degradation where possible
-- Detailed error messages for debugging
+### 2. Independent Flow Control Per Direction
+**Decision**: Each direction has its own FlowControl instance
 
-### 3. Flow Control
-- Credit-based system prevents buffer overflow
-- Per-channel and per-transport limits
-- Automatic backpressure handling
+**Rationale**:
+- Read and write have different buffer constraints
+- Prevents deadlock scenarios
+- Allows asymmetric buffer sizes
+- Bi-level control (transport + channel) (line 599)
 
-### 4. Security
-- Input validation on all messages
-- Resource limits enforced
-- DoS prevention (duplicate ACK detection)
-- Untrusted code isolation (applets)
+### 3. Ring Buffer with Pin/Unpin
+**Decision**: Use ring buffer with explicit pin/unpin for zero-copy (lines 165-193)
 
-### 5. Performance
-- Minimize system calls (buffer pooling)
-- Minimize copying (VirtualBuffer)
-- BYOB reader support where available
-- Efficient chunk relaying for PTOC
+**Rationale**:
+- Minimizes memory allocation
+- Reduces GC pressure
+- Supports high-throughput streaming
+- Pin/unpin prevents premature reclamation
+- Targeted migration callbacks avoid broadcast overhead
 
-### 6. Testability
-- Virtual transport for unit testing
-- Configurable delays and errors
-- Comprehensive test coverage
-- Integration tests for real-world scenarios
+### 4. VirtualBuffer Abstraction
+**Decision**: Separate VirtualBuffer class for buffer views (lines 153-158)
+
+**Rationale**:
+- Decouples buffer management from storage
+- Supports multiple storage types (Uint8Array, ring buffer)
+- Enables zero-copy slicing
+- Simplifies pin/unpin implementation
+- Automatic migration when storage moves (line 163)
+
+### 5. Range-Based ACKs
+**Decision**: ACK messages use base sequence + include/skip ranges (lines 444-456)
+
+**Rationale**:
+- Supports out-of-sequence ACKs for typed messages (lines 589-591)
+- Minimizes ACK message size
+- Allows efficient batch acknowledgments
+- Prevents DoS via duplicate ACKs (lines 436-439)
+
+### 6. No readMessage/writeMessage
+**Decision**: Only chunk-level read/write operations (line 590)
+
+**Rationale**:
+- Simplifies implementation
+- Automatic chunking in write handles large messages (line 591)
+- Applications can assemble messages from chunks if needed
+- Reduces memory overhead for large messages
+
+### 7. Bi-Level Flow Control
+**Decision**: Flow control at both transport and channel levels (line 599)
+
+**Rationale**:
+- Prevents single channel from consuming all transport bandwidth
+- Allows per-channel limits within transport limits
+- Channel limits may not exceed transport limits
+
+## Critical Implementation Notes
+
+### Channel Request Flow (lines 306-308, 362-366)
+1. Transport A calls `requestChannel(idOrName, { timeout })`
+2. Transport B receives `newChannel` event
+3. Transport B calls `event.accept(options)` or lets request timeout
+4. If accepted:
+   - Transport A gets write direction
+   - Transport B gets read direction
+   - Transport B assigns local channel id and sends in accept response
+5. If Transport B also calls `requestChannel` for same channel:
+   - Both transports get both directions
+   - Channel becomes bidirectional
+
+### ACK Processing (lines 430-456)
+1. Receiver processes incoming chunks
+2. Updates buffer state
+3. Sends ACK with:
+   - Local channel number
+   - Base remote sequence number
+   - Range count with include/skip quantities
+4. Sender receives ACK
+5. Removes acknowledged chunks from in-flight map
+6. Recalculates local sending budget
+7. Unblocks waiting writes if budget available
+
+### Automatic Chunking (line 591)
+- `write` must automatically split large writes into chunks
+- Each chunk written atomically with header
+- Large writes need not be atomic (lines 596-597)
+- Example: Two types A and B writing 128K might interleave chunks
+
+### Type-Based Filtering (lines 589-591)
+- Filtered reads don't impact other filtered reads
+- Chunks may be read/released/ACK'd out of sequence
+- Typed messages are "light-weight channels" within channels
+- `only` parameter accepts single value, array, or Set (line 387)
 
 ## Success Criteria
 
-### Functional Requirements
-- ✓ All transport types implemented and tested
-- ✓ Flow control prevents buffer overflow
-- ✓ Channels support bidirectional and unidirectional modes
-- ✓ Message types work with filtering
-- ✓ PTOC enables multi-hop routing
-- ✓ C2C channel handles console redirection
+1. ✅ All unit tests pass (target: 200+ tests)
+2. ✅ All integration tests pass
+3. ✅ Supports unidirectional and bidirectional channels
+4. ✅ Flow control prevents buffer overflow
+5. ✅ Zero-copy buffer management works correctly
+6. ✅ All transport types implemented
+7. ✅ Nested transport (PTOC) works
+8. ✅ JSMAWS scenarios validated
+9. ✅ Performance meets requirements
+10. ✅ Documentation complete
 
-### Performance Requirements
-- ✓ Throughput comparable to native transports
-- ✓ Latency overhead < 10% vs native
-- ✓ Memory usage bounded by configured limits
-- ✓ No memory leaks in long-running connections
+## References
 
-### Security Requirements
-- ✓ DoS attacks prevented (duplicate ACKs, buffer overflow)
-- ✓ Untrusted code cannot access other channels
-- ✓ Resource limits enforced
-- ✓ Protocol violations detected and handled
-
-### Code Quality Requirements
-- ✓ Test coverage > 90%
-- ✓ All tests pass in Deno
-- ✓ Code follows project standards
-- ✓ Documentation complete and accurate
-
-## Next Steps
-
-1. Review and approve this implementation plan
-2. Begin Phase 1 implementation (protocol layer)
-3. Set up continuous testing infrastructure
-4. Create example applications for each transport type
-5. Document API as components are completed
+All references are to [`arch/requirements.md`](requirements.md):
+- Lines 15: Channel directionality
+- Lines 21-24: Flow control system
+- Lines 153-158: VirtualBuffer class
+- Lines 165-193: Ring buffer pin/unpin
+- Lines 232-236: Security invariant
+- Lines 245-267: Channels, chunks, messages
+- Lines 268-281: Channel state transitions
+- Lines 283-321: Events
+- Lines 323-330: PTOCs
+- Lines 337-391: Interface specification
+- Lines 395-404: Transport handshake
+- Lines 406-413: Transport configuration
+- Lines 415-421: Message types
+- Lines 430-456: ACK message format
+- Lines 458-480: Channel message format
+- Lines 482-493: Transport-Control Channel (TCC)
+- Lines 495-505: Console-Content Channel (C2C)
+- Lines 507-517: Channel Control Messages (CCM)
+- Lines 519-528: Buffer pools
+- Lines 558-577: Ring buffer strategies
+- Lines 589-599: Updates & clarifications 2026-01-02-A

@@ -431,7 +431,7 @@ flowchart TD
 ### Notes
 
 - ACK messages are handled directly by the transport
-- There is no ACK / reply / backpressure / flow-control for ACK messages
+- ~~There is no ACK / reply / backpressure / flow-control for ACK messages~~
 - To prevent DoS attacks, it is a protocol violation to ACK and the same channel chunk more than once
   - It triggers transport-level, possibly followed by channel-level, `protocolViolation` events with reason `Duplicate ACK`
   - The transport is closed unless the transport-level event does `.preventDefault()`
@@ -598,3 +598,113 @@ It is expected that header information will be encoded and decoded in the main t
 - Transports and channels have corresponding max chunk and max buffer limits
   - Channel limits may not exceed transport limits
   - Writes must fit within both the transport sending budget and the channel sending budget
+
+## Updates & Clarifications 2026-01-03-A
+
+- It's the user's responsibility to make sure there aren't conflicting readers. Specifically, behavior is undefined if:
+  - Readers exist concurrently with overlapping "only" sets
+  - Filtered readers and unfiltered readers are present at the same time
+
+### Waiting For Sending Budget
+
+- First, make sure the channel has sending budget (also makes sure the channel isn't dead-locked)
+- Second, make sure the transport has sending budget in FIFO order for round-robin queueing of ready channels
+  - Can use `TaskQueue` for this
+  - `import { TaskQueue } from '@task-queue';`
+  - See `resources/task-queue/src/task-queue.esm.js` for interface details.
+
+## Updates & Clarifications 2026-01-03-B
+
+- Users need to be able to write "directly" to the ring buffer ("zero-copy"/VirtualBuffer-style, potentially split around the end of the ring)
+  - This will require a separate `VirtualRWBuffer` ("read/write") sub-class of `VirtualBuffer` that supports `set`, `fill`, and possibly other "write-related" methods
+- Sending and receiving text-based (e.g. JSON) data is likely going to be a **very common** use case
+  - `channel.write` should support string data and encode it automatically using `encoder.encodeInto`
+    - This implies that we will need to be able to over-allocate a reservation (e.g. worst-case encoded length = string length * 3) and release any unused length
+  - For decoding, include a `vb.decode({ start=0, end=length, label='utf-8', fatal=false, ignoreBOM=false })` method for minimizing copies on the read side
+    - Combines slice-like range selection with text decoding in a single operation
+    - **Single-segment optimization**: Zero-copy decode directly from buffer
+    - **Multi-segment optimization**: Uses streaming `TextDecoder` with `stream: true` option to process segments without intermediate copy
+    - Streaming decoder correctly handles multi-byte UTF-8 sequences split across segment boundaries
+    - Parameters match `TextDecoder` options for consistency
+    - Performance: 4-5x faster than copy-first approach for multi-segment buffers
+
+## Updates & Clarifications 2026-01-04-A
+
+### Sizes, Reservations, ACKs
+
+- For better clarity, "size" items should be renamed to "bytes" (where applicable), e.g. `maxChunkSize` should be renamed `maxChunkBytes`
+- Define `MAX_DATA_HEADER_BYTES` as 18 (current value based on bytestream data format)
+- Define `MIN_DATA_RES_BYTES` as 4
+- Require `maxChunkBytes >= MAX_DATA_HEADER_BYTES + MIN_DATA_RES_BYTES`
+- `maxChunkBytes` is the **"over-the-wire"** size limit (header + data payload)
+- All data chunking must be based on `maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES`
+- Define `RESERVE_ACK_BYTES` as 514 (current maximum header/ACK bytes)
+- ACKs have a channel field (required for sequence number context), but they are *transport-level* messages, not channel-level messages
+- ACK handling:
+  - As transport-level messages, ACKs require transport-level budget, but **not** channel-level budget
+  - Ready ACKs should be batched (using the range + skip encoding)
+  - Ready ACKs must be sent before ready data
+- If data is ready but no ACKs are ready, the *transport* reservation should require `RESERVE_ACK_BYTES` more byte budget than required by the data alone to prevent data from blocking potentially-critical ACKs
+- The buffer-pool manager should operate on a relative-demand basis (as opposed to fixed maximums)
+- Ring-to-pool data migration failures likely represent unrecoverable memory allocation issues
+  - This is considered a fatal condition, and results in closing the *entire transport*
+- Total buffer demand is expected to be application-managed via configuration settings (e.g. `maxBufferBytes`) and avoidance of unrestricted channel acceptance
+- Buffer sizes (including ring-buffer sizes and pool sizes), etc *should all be configurable* unless they represent format-specific details (like header sizes)
+
+### Managing (Number Of) Channels And Message Types
+
+- Trusted clients should use the `newChannel` and `newMessageType` events to detect malicious/errant/unexpected use and shut down problematic channels or transports accordingly
+
+### Buffer Pin Management
+
+- Channel reading should include two pin management options
+  - Manual release for "advanced" use (e.g. chunk aggregation, with pin release after processing the final chunk)
+  - `.readSyncAndRelease((chunk) => ...)` and `.readAndRelease(async (chunk) => ...)` helper methods that release the pin after their callbacks complete
+
+### Timeout Handling
+
+- `requestChannel`
+  - Rejects (locally) with `TimeoutError`
+  - Regardless of reason, a late (or otherwise "unsolicited") `chanReqAcc` should trigger a `chanNoReq` TCC reply message to the accepting transport to indicate there's no (longer any) active request
+  - `chanNoReq` must trigger an implied (directional) channel auto-close on the accepting transport
+- `read`
+  - Reject with `TimeoutError`
+  - Unlike `readSync`, `null` here implies EOF
+- `close`
+  - Force-close if "orderly" close times out
+
+### Duplicate Reader Detection/Prevention
+
+- (Detect and) prevent duplicate channel readers
+  - Create a meta object for each reader, to include a `stale` flag (initially false)
+  - Keep a scalar for unfiltered async readers and a map for filtered scalar readers
+  - If there is already a non-stale unfiltered reader (in the scalar) and *any* other read is attempted, reject the new reader with a `DuplicateReaderError`
+  - If the new reader is filtered, attempt to register the reader for each of its message types
+    - If there is a *non-stale* reader already registered for the type
+      - Immediately mark the new reader stale (automatically invalidating any prior type registrations without any other action)
+      - Reject the new reader with `DuplicateReaderError`
+    - If there is no registered reader or the existing reader is stale, set the new reader as the registered reader for the type
+- When a reader is activated in response to a new chunk, set the meta state to stale (invalidating all current registrations with this single action)
+  - The reader must initiate a new read (creating a new meta object) to read another chunk
+
+### Channel Rejection
+
+- Channel rejection only directly affects the requested direction
+- It is up to the rejected requestor to explicitly close any previously established reverse direction if desired
+
+### Channel And Message-Type Exhaustion/Reuse
+
+- Channel ids are 32 bits and message-type ids are 16 bits, offering a large range of ids
+- Configuration parameters should be readable (but not modifiable) by user code
+- To be clear, `minChannelId` and `minMessageTypeId` are the minimim ids where *mapping* begins, not the minimum usable
+- Channel state (including name-mappings) is maintained for the life of the transport
+  - If a named channel is closed and re-opened (in the same direction), it must be assigned the same channel id
+  - Channel ids are never reassigned to a different name
+- New name mappings must never be assigned active channel ids
+- Named-message-type mappings are retained for the life of the channel direction
+  - Mappings restart fresh ("clean slate") for a direction that has closed and reopened
+  - Re-requesting an existing mapping (within a direction that has not closed) returns the existing message-type id
+- Numeric-only message-types do not require any state storage
+  - It is therefore not always possible to determine whether a particular message-type id is "active"
+  - If an application needs to use more than the initial 1024 unmapped numeric ids on a channel, it should manage its own mapping (if desired) and not use any PolyTransport-managed mapping on the channel
+- Any other semantics / mapping / reuse strategies are by endpoint (e.g. client/application) agreement, not a function of PolyTransport
