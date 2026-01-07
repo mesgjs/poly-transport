@@ -2,7 +2,7 @@
 
 **Status**: Active
 **Created**: 2026-01-03
-**Last Updated**: 2026-01-06
+**Last Updated**: 2026-01-07
 
 ## Overview
 
@@ -141,13 +141,17 @@ while (offset < str.length) {
 - Allocate below low-water mark (line 523)
 - "Eased" release above high-water mark (line 524)
 - Worker support with separate water marks (lines 525-528)
+- **Buffers zeroed on release, not allocation** (requirements.md:845-850)
+  - Better timing: buffer ready when needed
+  - Less time pressure when releasing
+  - Potentially detect premature-release issues earlier
 
 **API**:
 ```javascript
 class BufferPool {
   constructor(sizeClasses = [1024, 4096, 16384, 65536])
-  allocate(minSize)  // Returns Uint8Array
-  release(buffer)    // Return to pool
+  allocate(minSize)  // Returns Uint8Array (already zeroed from previous release)
+  release(buffer)    // Zero buffer and return to pool
   clear()            // Empty all pools
   
   // Worker support
@@ -197,8 +201,13 @@ class RingBuffer {
 5. RingBuffer can now safely reclaim space
 
 **Security Invariant** (lines 232-236):
-- Ring-backed reservations must be fully written or pre-zeroed before exposure
+- Ring-backed reservations must be fully written or zeroed before exposure
 - Prevents leaking bytes from previous ring iterations
+- **Write ring**: Zero-after-write (requirements.md:845-850)
+  - Better timing: buffer ready when needed for next write
+  - Less time pressure during write operations
+  - Potentially detect premature-reuse issues earlier
+- **Read ring**: Data arrives from external source (no zeroing needed)
 
 ### Phase 2: Protocol Layer
 
@@ -654,7 +663,7 @@ class Transport extends EventTarget {
 - Pin registry
 - Reclamation with migration
 - Input vs output ring behavior
-- Security invariant (pre-zeroing)
+- Security invariant (zero-after-write for output ring)
 
 **Protocol Tests** - [`test/unit/protocol.test.js`](../test/unit/protocol.test.js)
 - Handshake encoding/decoding
@@ -909,6 +918,38 @@ For better clarity, parameter names use "bytes" instead of "size" where applicab
 - Detect malicious/errant/unexpected use
 - Shut down problematic channels or transports accordingly
 
+## Update 2026-01-07-A
+
+### Buffer Zeroing Strategy Change (requirements.md:845-850)
+
+**Change**: Shared buffers should be zeroed when *released* and returned to the pool, not when allocated.
+
+**Rationale**:
+- **Better timing**: Buffer is already ready when needed; potentially less time pressure when releasing
+- **Earlier issue detection**: Potentially detect premature-release issues earlier
+- **Consistency**: Aligns with zero-after-write pattern for output ring buffer
+
+**Impact on Components**:
+
+**BufferPool**:
+- `release(buffer)` must zero the buffer before returning it to the pool
+- `allocate(minSize)` returns already-zeroed buffer (from previous release)
+- New buffers allocated from system already have their contents set to zero (per ArrayBuffer constructor spec)
+
+**RingBuffer (Output)**:
+- Zero-after-write: After data is written and sent, zero the ring buffer space
+- Ensures next reservation doesn't expose previous data
+- Aligns with pool buffer zeroing strategy
+
+**RingBuffer (Input)**:
+- No zeroing needed: Data arrives from external source
+- Ring buffer filled by incoming data, not reused reservations
+
+**Security Implications**:
+- Maintains security invariant: prevents leaking bytes from previous iterations
+- Timing change doesn't affect security guarantees
+- May facilitate development by detecting premature reuse earlier
+
 ## Success Criteria
 
 1. ✅ All unit tests pass (target: 200+ tests)
@@ -946,3 +987,4 @@ All references are to [`arch/requirements.md`](requirements.md):
 - Lines 519-528: Buffer pools
 - Lines 558-577: Ring buffer strategies
 - Lines 589-599: Updates & clarifications 2026-01-02-A
+- Lines 845-850: Update 2026-01-07-A (buffer zeroing strategy)

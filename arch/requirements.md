@@ -232,7 +232,7 @@ flowchart TD
 
 - Any ring-backed reservation that is exposed for writing must be either:
   - fully written by the caller (every byte), or
-  - pre-zeroed by the reservation owner before exposure,
+  - ~~pre-~~zeroed ~~by the reservation owner before exposure~~,
   to prevent leaking bytes from previous ring iterations.
 - Web workers should start with a small initial buffer pool
   - They must be able to request additional buffers from the main thread, up to their configured limits
@@ -708,3 +708,144 @@ It is expected that header information will be encoded and decoded in the main t
   - It is therefore not always possible to determine whether a particular message-type id is "active"
   - If an application needs to use more than the initial 1024 unmapped numeric ids on a channel, it should manage its own mapping (if desired) and not use any PolyTransport-managed mapping on the channel
 - Any other semantics / mapping / reuse strategies are by endpoint (e.g. client/application) agreement, not a function of PolyTransport
+
+## Updates & Clarifications 2026-01-06-A
+
+### VirtualBuffer and VirtualRWBuffer Implementation Details
+
+**Date**: 2026-01-06
+
+#### VirtualBuffer Constructor and Append Method
+
+- `VirtualBuffer` constructor should call `this.append(source, offset, length)` for cleaner initialization
+- This allows empty construction: `new VirtualBuffer()` creates a zero-length buffer
+- Append method handles both Uint8Array and pre-segmented arrays
+
+#### Private State Management
+
+- Use file-scoped `WeakMap` for secure private state storage
+- Single WeakMap with object containing all private state: `{ segments, length, pinHandles }`
+- Prevents external access to underlying buffers (security requirement)
+- Both `VirtualBuffer` and `VirtualRWBuffer` in same file for shared access to private state
+
+#### Range Conventions
+
+- Accessible range is `[0, length)` following standard array conventions
+- Not `[0, length]` - the length index itself is out of bounds
+
+#### VirtualRWBuffer Methods
+
+- `set(source, offset = 0)` - Write bytes from Uint8Array or VirtualBuffer
+  - Returns number of bytes written
+  - Truncates if source exceeds available space
+  - Works across segments (handles ring buffer wrap-around)
+
+- `fill(value = 0, start = 0, end = length)` - Fill with repeated byte value
+  - Returns `this` for method chaining
+  - Supports negative indices
+  - Works across segments
+
+- `encodeFrom(str, offset = 0, label = 'utf-8')` - Encode string directly into buffer
+  - Returns `{ read, written }` like `TextEncoder.encodeInto()`
+  - `read`: UTF-16 code units consumed from string
+  - `written`: Bytes written to buffer
+  - Enables multi-chunk encoding of large strings
+  - Only UTF-8 supported initially
+
+- `shrink(newLength)` - Release over-allocated space
+  - Used after encoding to release unused reservation space
+  - Updates segments and length to match new size
+
+#### Performance Optimizations
+
+- Text decoding: Use `parts.join('')` instead of string concatenation for multi-segment buffers
+- Single-segment decode: Zero-copy decode directly from buffer
+- Multi-segment decode: Streaming `TextDecoder` with `stream: true` option (4-5x faster than copy-first)
+- State access: Get state once per method to avoid repeated WeakMap lookups
+
+#### Migration Support
+
+- `migrate(migrations)` method signature:
+  - `migrations`: Array of `{oldBuffer, newBuffer, oldOffset, newOffset}`
+  - Calculates relative offset: `(seg.offset - oldOffset) + newOffset`
+  - Updates segments in place to point to new storage
+
+## Updates & Clarifications 2026-01-06-B
+
+### VirtualBuffer Security Model and DataView Interface
+
+**Date**: 2026-01-06
+
+#### Security Requirements - No Privilege Escalation
+
+**Critical**: VirtualBuffer must not allow privilege escalation from read-only to read/write access.
+
+**`toUint8Array()` Security**:
+- Must **always copy** data into new Uint8Array
+- Never return a view or reference to underlying buffer
+- Useful for debugging or final data extraction
+- Not for zero-copy operations
+
+**Assembly Rules**:
+
+VirtualBuffer (read-only) can be assembled from:
+- `Uint8Array` - Creates R/O view of writable buffer
+- `VirtualBuffer` - Creates R/O view of R/O view
+- `VirtualRWBuffer` - Creates R/O view of R/W view
+
+VirtualRWBuffer (read/write) can only be assembled from:
+- `Uint8Array` - Creates R/W view of writable buffer (you already have write access)
+- `VirtualRWBuffer` - Creates R/W view of R/W view (you already have write access)
+- **NOT** `VirtualBuffer` - Would grant write access to read-only data (privilege escalation)
+
+**Constructor and Append Inheritance**:
+- Both constructors use `this.append()`, so they inherit the same security rules automatically
+- `append()` must enforce these rules by checking source type
+
+**Method Parameter Rules**:
+- `VirtualRWBuffer.set(source)` - `source` can be:
+  - `Uint8Array` - You already have write access
+  - `VirtualRWBuffer` - R/W view of R/W view (safe)
+  - **NOT** `VirtualBuffer` - Would read from R/O to write elsewhere (potential data leakage)
+
+#### DataView-Compatible Interface
+
+**Requirement**: Protocol layer needs to encode/decode headers directly in ring buffer without intermediate copies.
+
+**Use Cases**:
+- ACK messages: 1B + 1B + 2B + 4B + 4B + 1B + variable (up to 514 bytes total)
+- Channel control/data headers: 1B + 1B + 4B + 2B + 4B + 4B + 2B = 18 bytes
+
+**VirtualBuffer Read Methods** (for reading protocol headers):
+- `getUint8(offset)` - Read 1-byte unsigned integer
+- `getUint16(offset, littleEndian = false)` - Read 2-byte unsigned integer
+- `getUint32(offset, littleEndian = false)` - Read 4-byte unsigned integer
+- Additional methods as needed: `getInt8()`, `getInt16()`, `getInt32()`, `getFloat32()`, `getFloat64()`
+
+**VirtualRWBuffer Write Methods** (for encoding protocol headers):
+- `setUint8(offset, value)` - Write 1-byte unsigned integer
+- `setUint16(offset, value, littleEndian = false)` - Write 2-byte unsigned integer
+- `setUint32(offset, value, littleEndian = false)` - Write 4-byte unsigned integer
+- Additional methods as needed: `setInt8()`, `setInt16()`, `setInt32()`, `setFloat32()`, `setFloat64()`
+
+**Benefits**:
+- Zero-copy protocol header encoding directly into ring buffer reservations
+- No intermediate buffer allocation
+- Consistent with JavaScript `DataView` API
+- Works across segment boundaries (handles ring buffer wrap-around)
+
+**Implementation Notes**:
+- Methods must handle multi-byte values split across segments
+- Endianness parameter matches `DataView` API (default big-endian)
+- Offset is relative to VirtualBuffer start (not absolute buffer position)
+- Out-of-bounds access throws `RangeError`
+- Recommended: Cache the most recently accessed chunk, its starting offset, and length to avoid iterative chunk searches for most adjacent getUint8/setUint8 method calls
+  - If the other methods are built from these, they can leverage the caching indirectly and automatically
+
+## Update 2026-01-07-A
+
+- Shared buffers should be zeroed when *released* and returned to the pool, not when allocated
+  - Write-ring equivalent: zero-after-write
+  - Note: this is a *change* to the requirements, not a "clarification"
+  - Better timing (buffer is already ready when needed; potentially less time pressure when releasing)
+  - Potentially detect premature-release issues earlier
