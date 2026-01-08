@@ -988,3 +988,103 @@ class RingBufferReservationError extends Error {
 - `RingBufferReservationError` for reservation-specific errors
 - `RangeError` for invalid lengths or out-of-bounds access
 - Clear error messages for debugging
+
+## Update 2026-01-08-A
+
+### Protocol Encoding Clarifications
+
+**Date**: 2026-01-08
+
+#### Remaining Size Encoding
+
+The "remaining size" byte in message headers uses a specific encoding formula:
+
+- **Encoding**: `remainingSize = (additionalBytes - 2) >> 1`
+  - Where `additionalBytes` is the number of bytes following the first 2 bytes (type + size)
+  - Headers are padded to even length if needed
+  - Example: If 13 bytes follow, pad to 14, then `remainingSize = (14 - 2) >> 1 = 6`
+
+- **Decoding**: `additionalBytes = (remainingSize * 2) + 2`
+  - Recovers the actual number of additional bytes following the first 2 bytes
+
+This encoding allows headers up to 514 bytes (type byte + size byte + (255 * 2 + 2) additional) using a single byte for the size field.
+
+#### ACK Range Encoding
+
+ACK messages use range-based acknowledgments with specific constraints:
+
+- **Range count should be 0 or odd**
+  - Non-empty ranges always end with an "include" byte, never a "skip" byte
+  - This prevents wasting a byte on trailing skips that convey no information
+  
+- **Range count = 0**: Only the base sequence number is being ACKed
+  - No range bytes follow the range count byte
+  
+- **Range count = odd (1, 3, 5, ...)**: Alternating include/skip/include pattern
+  - Example: rangeCount=1 → 1 byte (include)
+  - Example: rangeCount=3 → 3 bytes (include, skip, include)
+  - Example: rangeCount=5 → 5 bytes (include, skip, include, skip, include)
+
+- **ACK header size**: Always even-padded using `toEven(13 + rangeCount)`
+  - Where `toEven(v) = (v & 1) ? (v + 1) : v`
+  - Example: rangeCount=0 → 13 bytes → pad to 14 bytes
+  - Example: rangeCount=1 → 14 bytes (already even)
+  - Example: rangeCount=3 → 16 bytes (already even)
+
+#### Protocol Encoding Methods
+
+Protocol encoding should write directly into output ring buffer reservations (VirtualRWBuffer) using DataView-style methods:
+
+- **`encodeAckHeaderInto(target, offset, fields)`**
+  - Writes ACK header directly into target buffer at offset
+  - Returns header size in bytes
+  - Uses `VirtualRWBuffer.setUint8/16/32()` methods for zero-copy encoding
+
+- **`encodeChannelHeaderInto(target, offset, type, fields)`**
+  - Writes channel control/data header directly into target buffer at offset
+  - Returns header size in bytes (always 18)
+  - Uses `VirtualRWBuffer.setUint8/16/32()` methods for zero-copy encoding
+
+These methods enable zero-copy protocol encoding directly into the output ring buffer, avoiding intermediate buffer allocation.
+
+## Update 2026-01-08-B
+
+### Protocol Layer Buffer Type Requirements
+
+**Date**: 2026-01-08
+
+**Decision**: Remove Uint8Array support from protocol layer. All protocol functions now require VirtualBuffer or DataView with DataView-compatible API.
+
+**Rationale**:
+- Protocol layer is designed for zero-copy operations with ring buffers
+- Uint8Array support adds complexity and fallback code paths
+- VirtualBuffer/VirtualRWBuffer provide the necessary DataView-compatible interface
+- Handshake functions rarely used (once per connection), so performance not critical
+
+**Impact**:
+
+**Encoding Functions**:
+- [`encodeAckHeaderInto()`](../src/protocol.esm.js:118) - Requires target with `setUint8/16/32()` methods
+- [`encodeChannelHeaderInto()`](../src/protocol.esm.js:177) - Requires target with `setUint8/16/32()` methods
+- [`encodeHandshakeInto()`](../src/protocol.esm.js:384) - New function, writes into VirtualRWBuffer/DataView
+
+**Decoding Functions**:
+- [`decodeHeaderSizeFromPrefix()`](../src/protocol.esm.js:238) - Requires buffer with `getUint8()` method
+- [`decodeAckHeaderFrom()`](../src/protocol.esm.js:273) - Requires buffer with `getUint8/16/32()` methods
+- [`decodeChannelHeaderFrom()`](../src/protocol.esm.js:311) - Requires buffer with `getUint8/16/32()` methods
+- [`decodeHeaderFrom()`](../src/protocol.esm.js:346) - Requires buffer with `getUint8()` method
+- [`decodeHandshakeFrom()`](../src/protocol.esm.js:428) - New function, reads from VirtualBuffer/DataView
+
+**Removed**:
+- All Uint8Array fallback code paths in decode functions
+- `encodeHandshake()` function that returned Uint8Array (replaced with `encodeHandshakeInto()`)
+- Original `decodeHandshake()` that accepted Uint8Array (replaced with `decodeHandshakeFrom()`)
+
+**Validation**:
+- All functions validate buffer has required DataView-compatible methods
+- Throw `TypeError` if buffer doesn't have required API
+- Clear error messages for debugging
+
+**Test Wrappers**:
+- [`encodeAckHeader()`](../src/protocol.esm.js:208) and [`encodeChannelHeader()`](../src/protocol.esm.js:223) remain as allocating wrappers for testing
+- These create temporary DataView and return Uint8Array for test convenience

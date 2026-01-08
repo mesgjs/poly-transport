@@ -249,6 +249,13 @@ class RingBufferReservationError extends Error {
 
 **Purpose**: Message encoding/decoding with binary format (lines 415-517)
 
+**Buffer Type Requirements** (requirements.md:1050-1088):
+- All protocol functions require VirtualBuffer or DataView with DataView-compatible API
+- No Uint8Array support (removed for simplicity and consistency)
+- Encoding functions require target with `setUint8/16/32()` methods
+- Decoding functions require buffer with `getUint8/16/32()` methods
+- All functions validate buffer has required API and throw `TypeError` if not
+
 **Transport Handshake** (lines 395-404):
 1. Transport-identifier: `\x02PolyTransport\x03` (15B)
 2. Transport-configuration: `\x02{"...}\x03` (JSON, variable length)
@@ -304,15 +311,21 @@ Followed by data segment if data-segment size > 0
 
 **API**:
 ```javascript
-class Protocol {
-  static encodeHandshake(config)        // Returns Uint8Array
-  static decodeHandshake(buffer)        // Returns { config, bytesConsumed }
-  static encodeAck(options)             // Returns Uint8Array
-  static decodeAck(buffer)              // Returns { ack, bytesConsumed }
-  static encodeChannelMessage(options)  // Returns Uint8Array
-  static decodeChannelMessage(buffer)   // Returns { message, bytesConsumed }
-  static parseStream(buffer)            // Returns array of parsed messages
-}
+// Encoding functions (write directly into VirtualRWBuffer/DataView)
+export function encodeAckHeaderInto(target, offset, fields)
+export function encodeChannelHeaderInto(target, offset, type, fields)
+export function encodeHandshakeInto(target, offset, config)
+
+// Decoding functions (read from VirtualBuffer/DataView)
+export function decodeHeaderSizeFromPrefix(buffer, offset = 0)
+export function decodeHeaderFrom(buffer, offset = 0)
+export function decodeHeader(buffer)  // offset = 0
+export function decodeHandshakeFrom(buffer, offset = 0)
+export function decodeHandshake(buffer)  // offset = 0
+
+// Test wrappers (allocate Uint8Array for convenience)
+export function encodeAckHeader(fields)  // Returns Uint8Array
+export function encodeChannelHeader(type, fields)  // Returns Uint8Array
 ```
 
 **Transport-Control Channel (TCC)** (lines 482-493):
