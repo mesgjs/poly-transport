@@ -23,7 +23,6 @@ export class VirtualBuffer {
 		this.#state = {
 			segments: [],
 			length: 0,
-			pinHandles: [],
 			// Segment cache for DataView methods (getUint8/setUint8)
 			cachedSegIndex: -1,
 			cachedSegStart: 0,
@@ -155,18 +154,29 @@ export class VirtualBuffer {
 
 	/**
 	 * Convert to a contiguous Uint8Array (always copies for security)
-	 * @returns {Uint8Array}
+	 * @param {Uint8Array} buffer - Optional destination buffer (must be at least this.length bytes)
+	 * @returns {Uint8Array} The destination buffer (or new buffer if not provided)
 	 */
-	toUint8Array () {
+	toUint8Array (buffer = null) {
 		const state = this.#state;
 		const segments = state.segments;
 
 		if (segments.length === 0) {
-			return new Uint8Array(0);
+			return buffer || new Uint8Array(0);
 		}
 
-		// Always copy to prevent exposing underlying buffers
-		const result = new Uint8Array(state.length);
+		// Validate provided buffer
+		if (buffer !== null) {
+			if (!(buffer instanceof Uint8Array)) {
+				throw new TypeError('Buffer must be a Uint8Array');
+			}
+			if (buffer.length < state.length) {
+				throw new RangeError(`Buffer too small: need ${state.length} bytes, got ${buffer.length}`);
+			}
+		}
+
+		// Use provided buffer or allocate new one
+		const result = buffer || new Uint8Array(state.length);
 		let destOffset = 0;
 
 		for (const seg of segments) {
@@ -176,43 +186,6 @@ export class VirtualBuffer {
 		}
 
 		return result;
-	}
-
-	/**
-	 * Pin this buffer to prevent ring buffer reclamation
-	 * @param {Object} pinHandle - Pin handle from ring buffer
-	 */
-	pin (pinHandle) {
-		if (pinHandle) {
-			this.#state.pinHandles.push(pinHandle);
-		}
-	}
-
-	/**
-	 * Unpin this buffer to allow ring buffer reclamation
-	 * @param {Object} pinHandle - Pin handle to release (if not provided, releases all)
-	 */
-	unpin (pinHandle = null) {
-		const state = this.#state;
-
-		if (pinHandle === null) {
-			// Release all pins
-			for (const handle of state.pinHandles) {
-				if (handle && typeof handle.release === 'function') {
-					handle.release();
-				}
-			}
-			state.pinHandles = [];
-		} else {
-			// Release specific pin
-			const index = state.pinHandles.indexOf(pinHandle);
-			if (index >= 0) {
-				state.pinHandles.splice(index, 1);
-				if (pinHandle && typeof pinHandle.release === 'function') {
-					pinHandle.release();
-				}
-			}
-		}
 	}
 
 	/**
@@ -361,39 +334,6 @@ export class VirtualBuffer {
 		const byte2 = this.getUint8(offset + 2);
 		const byte3 = this.getUint8(offset + 3);
 		return ((byte0 << 24) | (byte1 << 16) | (byte2 << 8) | byte3) >>> 0;
-	}
-
-	/**
-	 * Migrate segments to new storage (called by ring buffer during reclamation)
-	 * @param {Array<{oldBuffer: Uint8Array, newBuffer: Uint8Array, oldOffset: number, newOffset: number}>} migrations
-	 */
-	migrate (migrations) {
-		// Create a map for quick lookup
-		const migrationMap = new Map();
-		for (const m of migrations) {
-			migrationMap.set(m.oldBuffer, m);
-		}
-
-		// Update segments that reference migrated buffers
-		const state = this.#state;
-		const segments = state.segments;
-		for (let i = 0; i < segments.length; i++) {
-			const seg = segments[i];
-			const migration = migrationMap.get(seg.buffer);
-			
-			if (migration) {
-				// Calculate new offset: (old segment offset - old buffer offset) + new buffer offset
-				const relativeOffset = seg.offset - migration.oldOffset;
-				segments[i] = {
-					buffer: migration.newBuffer,
-					offset: migration.newOffset + relativeOffset,
-					length: seg.length
-				};
-			}
-		}
-
-		// Invalidate segment cache after migration
-		state.cachedSegIndex = -1;
 	}
 }
 
@@ -616,6 +556,11 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 		if (newLength === state.length) {
 			return;
+		}
+
+		// If this is a ring reservation, notify the ring buffer
+		if (this._ringReservation && this._ringReservation.ring) {
+			this._ringReservation.ring.shrinkReservation(this, newLength);
 		}
 
 		// Adjust segments to match new length

@@ -283,65 +283,6 @@ Deno.test('VirtualBuffer - decode with negative range', () => {
 	assertEquals(result, 'World');
 });
 
-Deno.test('VirtualBuffer - pin and unpin', () => {
-	const vb = new VirtualBuffer(new Uint8Array([1, 2, 3]));
-
-	let released = false;
-	const pinHandle = {
-		release: () => { released = true; }
-	};
-
-	vb.pin(pinHandle);
-	assertEquals(released, false);
-
-	vb.unpin(pinHandle);
-	assertEquals(released, true);
-});
-
-Deno.test('VirtualBuffer - unpin all', () => {
-	const vb = new VirtualBuffer(new Uint8Array([1, 2, 3]));
-
-	let released1 = false;
-	let released2 = false;
-	const pinHandle1 = {
-		release: () => { released1 = true; }
-	};
-	const pinHandle2 = {
-		release: () => { released2 = true; }
-	};
-
-	vb.pin(pinHandle1);
-	vb.pin(pinHandle2);
-
-	vb.unpin();
-
-	assertEquals(released1, true);
-	assertEquals(released2, true);
-});
-
-Deno.test('VirtualBuffer - migrate segments', () => {
-	const oldBuf1 = new Uint8Array([1, 2, 3, 4, 5]);
-	const oldBuf2 = new Uint8Array([6, 7, 8, 9, 10]);
-	
-	const segments = [
-		{ buffer: oldBuf1, offset: 1, length: 3 },  // [2, 3, 4]
-		{ buffer: oldBuf2, offset: 0, length: 2 }   // [6, 7]
-	];
-	const vb = new VirtualBuffer(segments);
-	
-	// Simulate migration: oldBuf1[1:4] moved to newBuf1[0:3]
-	const newBuf1 = new Uint8Array([2, 3, 4]);
-	const migrations = [
-		{ oldBuffer: oldBuf1, newBuffer: newBuf1, oldOffset: 1, newOffset: 0 }
-	];
-	
-	vb.migrate(migrations);
-	
-	// Check that data is still correct
-	const result = vb.toUint8Array();
-	assertEquals(Array.from(result), [2, 3, 4, 6, 7]);
-});
-
 Deno.test('VirtualBuffer - invalid source type', () => {
 	assertThrows(
 		() => new VirtualBuffer('invalid'),
@@ -357,5 +298,80 @@ Deno.test('VirtualBuffer - concat with non-VirtualBuffer', () => {
 		() => vb.concat(new Uint8Array([4, 5, 6])),
 		TypeError,
 		'Can only concat with another VirtualBuffer'
+	);
+});
+
+Deno.test('VirtualBuffer - toUint8Array with provided buffer', () => {
+	const data = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualBuffer(data);
+	const destBuffer = new Uint8Array(10); // Larger than needed
+	
+	const result = vb.toUint8Array(destBuffer);
+	
+	// Should return the same buffer
+	assertEquals(result, destBuffer);
+	// Should copy data into buffer
+	assertEquals(Array.from(result.slice(0, 5)), [1, 2, 3, 4, 5]);
+	// Rest should be zeros
+	assertEquals(Array.from(result.slice(5)), [0, 0, 0, 0, 0]);
+});
+
+Deno.test('VirtualBuffer - toUint8Array with exact-size buffer', () => {
+	const data = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualBuffer(data);
+	const destBuffer = new Uint8Array(5);
+	
+	const result = vb.toUint8Array(destBuffer);
+	
+	assertEquals(result, destBuffer);
+	assertEquals(Array.from(result), [1, 2, 3, 4, 5]);
+});
+
+Deno.test('VirtualBuffer - toUint8Array with multi-segment and provided buffer', () => {
+	const buf1 = new Uint8Array([1, 2, 3]);
+	const buf2 = new Uint8Array([4, 5, 6]);
+	const segments = [
+		{ buffer: buf1, offset: 0, length: 3 },
+		{ buffer: buf2, offset: 0, length: 3 }
+	];
+	const vb = new VirtualBuffer(segments);
+	const destBuffer = new Uint8Array(6);
+	
+	const result = vb.toUint8Array(destBuffer);
+	
+	assertEquals(result, destBuffer);
+	assertEquals(Array.from(result), [1, 2, 3, 4, 5, 6]);
+});
+
+Deno.test('VirtualBuffer - toUint8Array with empty buffer and provided buffer', () => {
+	const vb = new VirtualBuffer();
+	const destBuffer = new Uint8Array(10);
+	
+	const result = vb.toUint8Array(destBuffer);
+	
+	// Should return the provided buffer even for empty VirtualBuffer
+	assertEquals(result, destBuffer);
+});
+
+Deno.test('VirtualBuffer - toUint8Array with buffer too small', () => {
+	const data = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualBuffer(data);
+	const destBuffer = new Uint8Array(3); // Too small
+	
+	assertThrows(
+		() => vb.toUint8Array(destBuffer),
+		RangeError,
+		'Buffer too small: need 5 bytes, got 3'
+	);
+});
+
+Deno.test('VirtualBuffer - toUint8Array with invalid buffer type', () => {
+	const data = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualBuffer(data);
+	
+	assertThrows(
+		() => vb.toUint8Array([1, 2, 3, 4, 5]),
+		TypeError,
+		'Buffer must be a Uint8Array'
 	);
 });

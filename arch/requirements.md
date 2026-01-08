@@ -849,3 +849,142 @@ VirtualRWBuffer (read/write) can only be assembled from:
   - Note: this is a *change* to the requirements, not a "clarification"
   - Better timing (buffer is already ready when needed; potentially less time pressure when releasing)
   - Potentially detect premature-release issues earlier
+
+## Update 2026-01-07-B
+
+### Simplified Ring Buffer Architecture: Output-Only
+
+**Date**: 2026-01-07
+
+**Decision**: Remove BYOB input ring buffer support. Ring buffers will only be used for output (writing).
+
+**Rationale**:
+- BYOB input ring adds significant complexity with minimal benefit:
+  - Pin management and migration callbacks
+  - Migration failure handling
+  - Out-of-order release tracking
+  - Coalescing adjacent free space
+  - Epoch tracking across wrap-around
+- For input, transports can use reader-allocated buffers directly (no ring needed)
+- Simplifies implementation significantly while maintaining zero-copy output path
+
+**Impact**:
+
+**Input Path** (reading from external sources):
+- No input ring buffer
+- Use reader-allocated buffers directly (from BufferPool)
+- Parse headers and data directly from these buffers
+- Create VirtualBuffer views as needed
+- No pinning, no migration, no reclamation complexity
+
+**Output Path** (writing to external destinations):
+- Output ring buffer for zero-copy writing
+- Reserve space, write data, commit, send, consume (zero after write)
+- No pinning needed (output is immediate or queued in pool buffers)
+- Simpler lifecycle: reserve → commit → send → consume
+
+**VirtualBuffer Changes**:
+- `toUint8Array()` should accept optional user-supplied buffer parameter
+- `toUint8Array(buffer?)` - If buffer provided, copy into it; otherwise allocate new buffer
+- Enables efficient copying into pre-allocated buffers
+
+**Removed Complexity**:
+- No pin registry for input ring
+- No targeted migration callbacks
+- No migration failure handling
+- No out-of-order consumption tracking
+- No epoch-based overlap detection for pins
+- No coalescing of freed space
+
+**Retained Features**:
+- Output ring buffer with reserve/commit/consume cycle
+- Zero-after-write security for output ring
+- VirtualBuffer and VirtualRWBuffer for zero-copy views
+- BufferPool for managing reusable buffers
+
+## Update 2026-01-07-C
+
+### OutputRingBuffer Implementation Details
+
+**Date**: 2026-01-07
+
+**Implementation**: [`src/output-ring-buffer.esm.js`](../src/output-ring-buffer.esm.js)
+
+**API**:
+```javascript
+class OutputRingBuffer {
+  constructor(size = 256 * 1024, options = {})
+  
+  // Properties
+  get available()                 // Bytes committed but not yet consumed
+  get space()                     // Bytes available to reserve
+  get size()                      // Total ring buffer size
+  get epoch()                     // Wrap-around counter
+  
+  // Lifecycle methods
+  reserve(length)                 // Returns VirtualRWBuffer or null if insufficient space
+  commit(reservation)             // Mark reservation as ready to send
+  getBuffers(length)              // Get Uint8Array[] for writing (1 or 2 if wrapped)
+  consume(length)                 // Consume sent data and zero the space
+  shrinkReservation(reservation, newLength)  // Shrink pending reservation
+  
+  // Statistics
+  getStats()                      // Get ring buffer statistics
+}
+
+class RingBufferReservationError extends Error {
+  // Custom error for reservation-specific errors
+}
+```
+
+**Key Design Decisions**:
+
+1. **Count-Based Full/Empty Distinction**:
+   - Uses separate `#count` field to track committed bytes
+   - Eliminates ambiguity between full and empty states
+   - Allows full capacity utilization (no wasted byte)
+   - `available = count`, `space = size - count - reserved`
+
+2. **Reserved Bytes Tracking**:
+   - Separate `#reserved` field tracks reserved-but-not-committed bytes
+   - Prevents over-reservation
+   - Enables accurate space calculation
+
+3. **Single Pending Reservation**:
+   - Only one reservation allowed at a time
+   - Prevents overlap issues when shrinking reservations
+   - Simplifies implementation and reasoning
+   - Throws `RingBufferReservationError` if reservation already pending
+
+4. **Synchronous Reserve**:
+   - `reserve()` is synchronous, returns `null` if insufficient space
+   - Transport layer handles waiting and retry logic
+   - Simpler than async reservation with waiting
+
+5. **VirtualRWBuffer Integration**:
+   - Reservations return `VirtualRWBuffer` for zero-copy writing
+   - Supports DataView methods (setUint8/16/32) for protocol headers
+   - Supports string encoding via `encodeFrom()`
+   - `shrink()` calls `ring.shrinkReservation()` to update tracking
+
+6. **getBuffers() for Actual Writing**:
+   - Returns array of 1 or 2 `Uint8Array` views
+   - Single array if data doesn't wrap
+   - Two arrays if data wraps around ring boundary
+   - Provides actual buffer access for transport layer writing
+
+7. **Zero-After-Write Security**:
+   - `consume()` zeros consumed space before advancing readHead
+   - Prevents leaking bytes from previous iterations
+   - Aligns with BufferPool zero-on-release strategy
+
+**Statistics Tracking**:
+- Reservations, commits, bufferGets, consumes
+- Wrap-around counter (epoch)
+- Bytes reserved, committed, provided, consumed
+- Current state: writeHead, readHead, count, reserved
+
+**Error Handling**:
+- `RingBufferReservationError` for reservation-specific errors
+- `RangeError` for invalid lengths or out-of-bounds access
+- Clear error messages for debugging
