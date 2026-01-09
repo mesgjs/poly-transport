@@ -1088,3 +1088,118 @@ These methods enable zero-copy protocol encoding directly into the output ring b
 **Test Wrappers**:
 - [`encodeAckHeader()`](../src/protocol.esm.js:208) and [`encodeChannelHeader()`](../src/protocol.esm.js:223) remain as allocating wrappers for testing
 - These create temporary DataView and return Uint8Array for test convenience
+
+## Update 2026-01-08-C
+
+### Flow Control Architecture: Separate Send and Receive Classes
+
+**Date**: 2026-01-08
+
+**Decision**: Split flow control into two separate classes: `SendFlowControl` and `ReceiveFlowControl`.
+
+**Rationale**:
+- A single direction can send data chunks OR receive data chunks, but not both
+- If managing both sending and receiving, you're managing TWO directions
+- Creating two half-used instances of the same class for a bidirectional channel is confusing
+- Separate classes provide clearer semantics and avoid unused fields
+
+**SendFlowControl** (manages outbound data flow):
+- Tracks in-flight chunks (sent but not yet ACK'd)
+- Calculates available sending budget (remote max - in-flight)
+- Processes incoming ACKs to restore budget
+- Provides async waiting for credit availability
+- Budget includes ALL channel message headers (control and data), not just data payload
+- ACK messages are transport-level and do NOT count toward channel budget
+
+**ReceiveFlowControl** (manages inbound data flow):
+- Tracks received chunks (received but not yet consumed)
+- Calculates buffer usage and available space
+- Generates ACK information for sending to remote
+- **Validates sequence order** - out-of-order sequences are `ProtocolViolationError`
+- **Validates budget** - over-budget chunks are `ProtocolViolationError`
+- Signals violations to transport for event emission and corrective action
+- Budget includes ALL channel message headers (control and data), not just data payload
+
+**Important Protocol Rules**:
+- **Sequence numbers must be consecutive** - out-of-order is a protocol violation
+- **Budget includes all channel message headers** - control messages (type 1) and data messages (type 2) both count
+- **ACK messages (type 0) are transport-level** - they do NOT count toward channel budget (but do count toward transport budget)
+- **ReceiveFlowControl must detect violations** - out-of-order sequences and over-budget chunks
+
+**API**:
+```javascript
+class SendFlowControl {
+  constructor(remoteMaxBufferBytes)
+  
+  // Properties
+  get remoteMaxBufferBytes()
+  get sendingBudget()              // Available bytes to send (Infinity if unlimited)
+  get inFlightBytes()              // Total bytes in flight
+  
+  // Methods
+  canSend(chunkBytes)              // Check if can send (header + data)
+  async waitForCredit(chunkBytes)  // Wait for credit (header + data)
+  recordSent(chunkBytes)           // Returns sequence number
+  processAck(baseSeq, ranges)      // Returns bytes freed
+  getStats()
+}
+
+class ReceiveFlowControl {
+  constructor(localMaxBufferBytes)
+  
+  // Properties
+  get localMaxBufferBytes()
+  get bufferUsed()                 // Bytes received but not consumed
+  get bufferAvailable()            // Available buffer space
+  get nextExpectedSeq()            // Next expected sequence number
+  
+  // Methods
+  recordReceived(seq, chunkBytes)  // Track received chunk (header + data)
+                                   // Throws ProtocolViolationError if:
+                                   //   - seq !== nextExpectedSeq (out-of-order)
+                                   //   - chunkBytes > bufferAvailable (over-budget)
+  recordConsumed(seq)              // Returns bytes freed
+  getAckInfo()                     // Returns { baseSeq, ranges } or null
+  getStats()
+}
+
+class ProtocolViolationError extends Error {
+  constructor(reason, details)
+  reason                           // 'OutOfOrder' | 'OverBudget'
+  details                          // Additional context
+}
+```
+
+**Usage in Bidirectional Channel**:
+```javascript
+// Bidirectional channel has both send and receive flow control
+const sendFlow = new SendFlowControl(remoteMaxBufferBytes);
+const receiveFlow = new ReceiveFlowControl(localMaxBufferBytes);
+
+// Sending data
+await sendFlow.waitForCredit(headerBytes + dataBytes);
+const seq = sendFlow.recordSent(headerBytes + dataBytes);
+// ... send chunk ...
+
+// Receiving data
+try {
+  receiveFlow.recordReceived(seq, headerBytes + dataBytes);
+  // ... process chunk ...
+  receiveFlow.recordConsumed(seq);
+} catch (err) {
+  if (err instanceof ProtocolViolationError) {
+    // Emit protocolViolation event and take corrective action
+    transport.emit('protocolViolation', { reason: err.reason, details: err.details });
+    // May close channel or transport depending on severity
+  }
+}
+
+// Generate ACK
+const ackInfo = receiveFlow.getAckInfo();
+if (ackInfo) {
+  // ... send ACK to remote ...
+}
+
+// Process received ACK
+const bytesFreed = sendFlow.processAck(ackInfo.baseSeq, ackInfo.ranges);
+```
