@@ -769,16 +769,19 @@ class Transport extends EventTarget {
 
 ### Sprint 1: Foundation (Week 1)
 1. ✅ Create implementation plan
-2. ✅ Implement VirtualBuffer and VirtualRWBuffer
-3. ✅ Implement BufferPool
-4. ✅ Implement OutputRingBuffer
-5. ✅ Write tests for buffer components (139 tests passing)
+2. ✅ Implement VirtualBuffer and VirtualRWBuffer (88 tests passing)
+3. ✅ Implement BufferPool (24 tests passing)
+4. ✅ Implement OutputRingBuffer (24 tests passing)
+5. ✅ Implement Protocol layer (60 tests passing)
+6. ✅ Implement FlowControl (46 tests passing)
+7. ✅ **Total: 242 tests passing**
 
-### Sprint 2: Protocol & Flow Control (Week 1-2)
-1. Implement Protocol layer
-2. Implement FlowControl
-3. Write tests for protocol and flow control
-4. Integration testing of protocol + flow control
+### Sprint 2: Transport & Channel (Week 2)
+1. ✅ Implement Transport base class (21 tests passing)
+2. ✅ **Total: 254 tests passing**
+3. Implement Channel class
+4. Write tests for channel
+5. Integration testing of transport + channel + flow control
 
 ### Sprint 3: Channel (Week 2)
 1. Implement ChannelDirection
