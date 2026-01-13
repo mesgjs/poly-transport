@@ -1203,3 +1203,151 @@ if (ackInfo) {
 // Process received ACK
 const bytesFreed = sendFlow.processAck(ackInfo.baseSeq, ackInfo.ranges);
 ```
+
+## Update 2026-01-12-A
+
+The bidirectional-channel and even/odd role update, [bidi-chan-even-odd-update.md](bidi-chan-even-odd-update.md), is hereby incorporated by reference.
+
+## Updates & Clarifications 2026-01-12-B
+
+- As part of update 2026-01-12-A, there is no longer any direct numeric user access to resources (ids are a transport implementation detail; users must access resources by name (or symbol))
+- There are no longer any user-reserved ranges for channel or message-type ids either
+
+## Updates & Clarifications 2026-01-12-C
+
+### Transport Lifecycle Nomenclature
+
+**Rationale**: Transports **start** and should therefore **stop** (not "close"). Channels **open** and **close**. This provides clearer, more consistent terminology (and potentially helps differentiate between event types).
+
+**Changes**:
+- `transport.close()` → `transport.stop()`
+- Transport "closing" → Transport "stopping"
+- Transport "closed" → Transport "stopped"
+- Transport `beforeClosing` event → `beforeStopping` event
+- Transport `closed` event → `stopped` event
+
+**Note**: Channel lifecycle remains unchanged (channels still `open` and `close`).
+
+## Updates & Clarifications 2026-01-12-D
+
+### Pending Requests And Timeouts
+
+- Pending requests are used to validate against unsolicited accepts
+- A request timeout only means that the response is unexpectedly late, not that it won't arrive at all
+- Pending request records should only be removed when the associated response is received, not upon timeout
+- Transports employ reliable, ordered connections, so messages should only ever be delayed (or dead-locked), not lost, *per se*
+- It's important to realize that the promise could resolve at any time (including from a local, rather than remote, accept)
+- A request to open a channel that is in the process of closing (not completely closed) **fails** with a `ChannelStateError`
+
+## Updates & Clarifications 2026-01-13-A
+
+### Channel Closure Model
+
+**Date**: 2026-01-13
+
+**Scenario Documentation**: [`arch/scenarios/channel-closure.md`](scenarios/channel-closure.md)
+
+#### Close Parameter Semantics
+
+The `channel.close({ discard })` method accepts a single parameter:
+
+- **`discard: false`** (default) - Graceful closure:
+  - Complete both input and output normally
+  - Wait for write ring to empty and receive ACKs
+  - Wait for all reads to be consumed by application
+  - Wait for `beforeClose` event handlers to complete
+  - **Use case**: Normal closure, all data exchanged
+
+- **`discard: true`** - Discard input (unwedge channel):
+  - **Input side**: Treat read buffers as consumed (ACK immediately)
+  - **Output side**: Wait for write ring to empty (output must complete)
+    - Data leaves sender's ring → becomes receiver's input → receiver discards it (but still ACKs)
+    - **Cannot discard from ring** (impractical - can't determine what's written, can't splice channel data, can't reclaim budget)
+  - Cancel in-progress event handlers
+  - Silently discard any new incoming data
+  - **Use case**: Unwedge a stuck channel for restart
+
+#### Channel States During Closure
+
+- **open**: Normal operation, data flowing
+- **closing**: Close initiated (locally or remotely), both sides working on closure (no `chanClosed` from either yet)
+- **localClosing**: Remote sent `chanClosed`, we're still finishing our side
+- **remoteClosing**: We sent `chanClosed`, waiting for remote to finish their side
+- **closed**: Both `chanClosed` messages exchanged, channel fully closed and synchronized
+
+#### Closure Protocol
+
+- **`chanClose` (TCC data message)**: Initiate closure with `discard` flag
+- **`chanClosed` (TCC data message)**: Signal completion of local closure conditions
+- No confirmation required, symmetric protocol
+- Both sides must send `chanClosed` before channel reaches `closed` state
+
+#### State Transitions
+
+- Steps can complete in any order (receive `chanClosed` may arrive during or after sending ours)
+- **closing** → **remoteClosing** (when we send `chanClosed`)
+- **closing** → **localClosing** (when we receive remote's `chanClosed`)
+- **remoteClosing** → **closed** (when we receive remote's `chanClosed`)
+- **localClosing** → **closed** (when we send `chanClosed`)
+- Final `closed` event and message type clearing happen when both `chanClosed` exchanged
+
+#### Cross-Close Handling
+
+- Either side can initiate closure at any time
+- Both sides can close simultaneously with different `discard` values
+- If remote sends `discard: true`, local side switches to discard input mode (unwedge)
+- Remote's `discard: true` takes precedence (accelerated to discard input)
+
+#### Flow Control During Closure
+
+**Graceful closure** (`discard: false`):
+- Wait for all in-flight chunks to be ACK'd (output complete)
+- Wait for all received chunks to be consumed by application (input complete)
+- Generate and send final ACKs
+
+**Discard input closure** (`discard: true`):
+- **Input**: Generate ACKs immediately for all received data (treat as consumed)
+- **Output**: Wait for all in-flight chunks to be ACK'd (must complete)
+- Cannot discard from write ring (impractical)
+- Data must leave sender's ring → become receiver's input → receiver discards (but still ACKs)
+- **Critical**: Without ACKs, transport budget hemorrhages
+
+**Budget management**:
+- ACKs received during closure restore budget (for consistency)
+- ACKs sent during closure restore remote's budget (critical!)
+- SendFlowControl rejects new data sends during closure
+- Exception: ACK messages must still be sent (transport-level, not channel-level)
+
+#### Message Type Clearing
+
+- Message type registrations remain during `closing`/`localClosing`/`remoteClosing`
+- Message types cleared only at `closed` state
+- Graceful closure may still need to process incoming messages during closure
+- Channel can be reopened with fresh message type registrations
+
+#### Reopening Closed Channels
+
+- No generation tracking needed - synchronized `closed` state is sufficient
+- Reopening requires new channel request (standard flow)
+- Fresh message type registrations (previous cleared at `closed`)
+- Reopened channel starts fresh in `open` state
+
+#### Error Handling
+
+**ChannelStateError**:
+- Thrown when attempting operations incompatible with current channel state
+- New writes on closing channel throw `ChannelStateError`
+- New message type registrations on closing channel throw `ChannelStateError`
+- Operations on closed channel throw `ChannelStateError`
+- Duplicate close is idempotent (no error)
+- Error includes context: state information and operation attempted
+
+**Late Data Messages**:
+- During graceful closure: Incoming data processed normally
+- During discard input closure: Incoming data silently discarded (but still ACK'd)
+- After `closed` state: Receiving data is `ProtocolViolationError`
+
+**Protocol Violations**:
+- Receiving data messages on closed channel is `ProtocolViolationError`
+- Receiving duplicate `chanClosed` is `ProtocolViolationError`
+- Transport should emit `protocolViolation` event and take corrective action

@@ -1,6 +1,6 @@
-# Client/Server Update
+# Bidirectional-Channel And Even/Odd Role Update
 
-Date: 2026-01-11
+Date: 2026-01-12
 
 ## Background
 
@@ -83,8 +83,9 @@ No change, but some clarifications.
   - *Data messages* used for channel closure (in case the channel is unstable and not in-channel closable)
   - This channel "comes and goes" with the transport itself (it cannot be closed separately)
   - NOTE: Message-type mapping for *all channel **control** messages* should be based on the message-type mappings for the TCC channel
+  - This should probably have a private-access symbol like `XP_CTRL_CHANNEL` (only accessible within transport implementation modules)
 - 1: "C2C" Console-content/exception channel
-  - Will be user-accessable via (configurable) channel symbol `PolyTransport.LOGGING_CHANNEL`
+  - Will be user-accessable via (configurable, not writable) channel symbol `PolyTransport.LOG_CHANNEL`
     - (The applet bootstrap will typically prevent applet access by removing this during environment sanitization)
 
 ### Transport Shutdown
@@ -117,6 +118,16 @@ No change, but some clarifications.
   - Message type `mesgTypeResp` (response)
   - `{ response: { accept: { type: id, ...}, reject: [type, ...] } }`
 - Message-type registration continues for the open lifetime of the channel as before
+
+### Pre-Loaded TCC Message-Types
+
+These message types, pre-loaded into the TCC message-type map, are shared between *TCC data messages* and *control messages* for *all channels*.
+
+- 0: `tranStop` - transport shutdown initiation and progress
+- 1: `chanReq` - channel setup request
+- 2: `chanResp` - channel setup response (accept/reject)
+- 3: `mesgTypeReq` - message-type registration request
+- 4: `mesgTypeResp` - message-type registration response
 
 ### No Other Changes
 
