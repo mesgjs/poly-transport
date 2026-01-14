@@ -1,42 +1,42 @@
 import { assertEquals, assertThrows } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
-import { SendFlowControl, ReceiveFlowControl, ProtocolViolationError } from '../../src/flow-control.esm.js';
+import { ChannelFlowControl, ProtocolViolationError } from '../../src/channel-flow-control.esm.js';
 
 // ============================================================================
-// SendFlowControl Tests
+// ChannelFlowControl - Send Tests
 // ============================================================================
 
-Deno.test('SendFlowControl - construction with limited budget', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - construction with limited budget', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	assertEquals(fc.remoteMaxBufferBytes, 10000);
 	assertEquals(fc.sendingBudget, 10000);
 	assertEquals(fc.inFlightBytes, 0);
 });
 
-Deno.test('SendFlowControl - construction with unlimited budget', () => {
-	const fc = new SendFlowControl(0);
+Deno.test('ChannelFlowControl - construction with unlimited budget', () => {
+	const fc = new ChannelFlowControl(0, 0);
 	assertEquals(fc.remoteMaxBufferBytes, 0);
 	assertEquals(fc.sendingBudget, Infinity);
 	assertEquals(fc.inFlightBytes, 0);
 });
 
-Deno.test('SendFlowControl - canSend with sufficient budget', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - canSend with sufficient budget', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	assertEquals(fc.canSend(5000), true);
 	assertEquals(fc.canSend(10000), true);
 });
 
-Deno.test('SendFlowControl - canSend with insufficient budget', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - canSend with insufficient budget', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	assertEquals(fc.canSend(10001), false);
 });
 
-Deno.test('SendFlowControl - canSend with unlimited budget', () => {
-	const fc = new SendFlowControl(0);
+Deno.test('ChannelFlowControl - canSend with unlimited budget', () => {
+	const fc = new ChannelFlowControl(0, 0);
 	assertEquals(fc.canSend(999999999), true);
 });
 
-Deno.test('SendFlowControl - recordSent consumes budget', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - recordSent consumes budget', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	const seq1 = fc.recordSent(3000);
 	assertEquals(seq1, 1);
 	assertEquals(fc.sendingBudget, 7000);
@@ -48,16 +48,16 @@ Deno.test('SendFlowControl - recordSent consumes budget', () => {
 	assertEquals(fc.inFlightBytes, 5000);
 });
 
-Deno.test('SendFlowControl - recordSent with unlimited budget', () => {
-	const fc = new SendFlowControl(0);
+Deno.test('ChannelFlowControl - recordSent with unlimited budget', () => {
+	const fc = new ChannelFlowControl(0, 0);
 	fc.recordSent(5000);
 	fc.recordSent(10000);
 	assertEquals(fc.sendingBudget, Infinity);
 	assertEquals(fc.inFlightBytes, 15000);
 });
 
-Deno.test('SendFlowControl - processAck restores budget (single sequence)', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - processAck restores budget (single sequence)', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(3000);
 	assertEquals(fc.sendingBudget, 7000);
 
@@ -67,8 +67,8 @@ Deno.test('SendFlowControl - processAck restores budget (single sequence)', () =
 	assertEquals(fc.inFlightBytes, 0);
 });
 
-Deno.test('SendFlowControl - processAck with ranges', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - processAck with ranges', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(1000);  // seq 1
 	fc.recordSent(2000);  // seq 2
 	fc.recordSent(3000);  // seq 3
@@ -81,8 +81,8 @@ Deno.test('SendFlowControl - processAck with ranges', () => {
 	assertEquals(fc.inFlightBytes, 2000);
 });
 
-Deno.test('SendFlowControl - processAck with large ranges (>255)', () => {
-	const fc = new SendFlowControl(0);  // Unlimited
+Deno.test('ChannelFlowControl - processAck with large ranges (>255)', () => {
+	const fc = new ChannelFlowControl(0, 0);  // Unlimited
 	
 	// Send 300 chunks of 100 bytes each
 	for (let i = 0; i < 300; i++) {
@@ -96,8 +96,8 @@ Deno.test('SendFlowControl - processAck with large ranges (>255)', () => {
 	assertEquals(fc.inFlightBytes, 0);
 });
 
-Deno.test('SendFlowControl - processAck throws on duplicate ACK', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - processAck throws on duplicate ACK', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(1000);
 	fc.processAck(1, []);  // ACK sequence 1
 
@@ -108,8 +108,8 @@ Deno.test('SendFlowControl - processAck throws on duplicate ACK', () => {
 	);
 });
 
-Deno.test('SendFlowControl - processAck throws on premature ACK', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - processAck throws on premature ACK', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(1000);  // seq 1
 
 	assertThrows(
@@ -119,16 +119,16 @@ Deno.test('SendFlowControl - processAck throws on premature ACK', () => {
 	);
 });
 
-Deno.test('SendFlowControl - waitForBudget resolves immediately if sufficient', async () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - waitForBudget resolves immediately if sufficient', async () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	const start = Date.now();
 	await fc.waitForBudget(5000);
 	const elapsed = Date.now() - start;
 	assertEquals(elapsed < 100, true);  // Should be nearly instant
 });
 
-Deno.test('SendFlowControl - waitForBudget waits for ACK', async () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - waitForBudget waits for ACK', async () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(8000);  // Budget now 2000
 
 	// Start waiting for 5000 bytes (insufficient)
@@ -145,8 +145,8 @@ Deno.test('SendFlowControl - waitForBudget waits for ACK', async () => {
 	assertEquals(fc.sendingBudget, 10000);
 });
 
-Deno.test('SendFlowControl - waitForBudget FIFO ordering', async () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - waitForBudget FIFO ordering', async () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(9000);  // Budget now 1000
 
 	const order = [];
@@ -165,8 +165,8 @@ Deno.test('SendFlowControl - waitForBudget FIFO ordering', async () => {
 	assertEquals(order, [1, 2, 3]);
 });
 
-Deno.test('SendFlowControl - getStats', () => {
-	const fc = new SendFlowControl(10000);
+Deno.test('ChannelFlowControl - send getStats', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(3000);
 	fc.recordSent(2000);
 
@@ -180,27 +180,27 @@ Deno.test('SendFlowControl - getStats', () => {
 });
 
 // ============================================================================
-// ReceiveFlowControl Tests
+// ChannelFlowControl - Receive Tests
 // ============================================================================
 
-Deno.test('ReceiveFlowControl - construction with limited budget', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - receive construction with limited budget', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	assertEquals(fc.localMaxBufferBytes, 10000);
 	assertEquals(fc.bufferUsed, 0);
 	assertEquals(fc.bufferAvailable, 10000);
 	assertEquals(fc.nextExpectedSeq, 1);
 });
 
-Deno.test('ReceiveFlowControl - construction with unlimited budget', () => {
-	const fc = new ReceiveFlowControl(0);
+Deno.test('ChannelFlowControl - receive construction with unlimited budget', () => {
+	const fc = new ChannelFlowControl(0, 0);
 	assertEquals(fc.localMaxBufferBytes, 0);
 	assertEquals(fc.bufferUsed, 0);
 	assertEquals(fc.bufferAvailable, Infinity);
 	assertEquals(fc.nextExpectedSeq, 1);
 });
 
-Deno.test('ReceiveFlowControl - recordReceived consumes buffer', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - recordReceived consumes buffer', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 3000);
 	assertEquals(fc.bufferUsed, 3000);
 	assertEquals(fc.bufferAvailable, 7000);
@@ -212,16 +212,16 @@ Deno.test('ReceiveFlowControl - recordReceived consumes buffer', () => {
 	assertEquals(fc.nextExpectedSeq, 3);
 });
 
-Deno.test('ReceiveFlowControl - recordReceived with unlimited budget', () => {
-	const fc = new ReceiveFlowControl(0);
+Deno.test('ChannelFlowControl - recordReceived with unlimited budget', () => {
+	const fc = new ChannelFlowControl(0, 0);
 	fc.recordReceived(1, 5000);
 	fc.recordReceived(2, 10000);
 	assertEquals(fc.bufferUsed, 15000);
 	assertEquals(fc.bufferAvailable, Infinity);
 });
 
-Deno.test('ReceiveFlowControl - recordReceived throws on out-of-order', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - recordReceived throws on out-of-order', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 
 	assertThrows(
@@ -231,8 +231,8 @@ Deno.test('ReceiveFlowControl - recordReceived throws on out-of-order', () => {
 	);
 });
 
-Deno.test('ReceiveFlowControl - recordReceived throws on over-budget', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - recordReceived throws on over-budget', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 8000);
 
 	assertThrows(
@@ -242,8 +242,8 @@ Deno.test('ReceiveFlowControl - recordReceived throws on over-budget', () => {
 	);
 });
 
-Deno.test('ReceiveFlowControl - recordConsumed marks chunk as consumed', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - recordConsumed marks chunk as consumed', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordReceived(2, 2000);
 
@@ -254,8 +254,8 @@ Deno.test('ReceiveFlowControl - recordConsumed marks chunk as consumed', () => {
 	assertEquals(result2, false);
 });
 
-Deno.test('ReceiveFlowControl - getAckInfo returns null if nothing consumed', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - getAckInfo returns null if nothing consumed', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordReceived(2, 2000);
 
@@ -263,8 +263,8 @@ Deno.test('ReceiveFlowControl - getAckInfo returns null if nothing consumed', ()
 	assertEquals(ackInfo, null);
 });
 
-Deno.test('ReceiveFlowControl - getAckInfo single sequence', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - getAckInfo single sequence', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordConsumed(1);
 
@@ -272,8 +272,8 @@ Deno.test('ReceiveFlowControl - getAckInfo single sequence', () => {
 	assertEquals(ackInfo, { baseSeq: 1, ranges: [] });
 });
 
-Deno.test('ReceiveFlowControl - getAckInfo consecutive sequences', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - getAckInfo consecutive sequences', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordReceived(2, 2000);
 	fc.recordReceived(3, 3000);
@@ -285,8 +285,8 @@ Deno.test('ReceiveFlowControl - getAckInfo consecutive sequences', () => {
 	assertEquals(ackInfo, { baseSeq: 1, ranges: [2] });  // Base + 2 more
 });
 
-Deno.test('ReceiveFlowControl - getAckInfo with gaps', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - getAckInfo with gaps', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordReceived(2, 2000);
 	fc.recordReceived(3, 3000);
@@ -299,8 +299,8 @@ Deno.test('ReceiveFlowControl - getAckInfo with gaps', () => {
 	assertEquals(ackInfo, { baseSeq: 1, ranges: [0, 1, 2] });  // Base by itself (no additional), then skip 1, include 2
 });
 
-Deno.test('ReceiveFlowControl - getAckInfo with large ranges (>255)', () => {
-	const fc = new ReceiveFlowControl(0);  // Unlimited
+Deno.test('ChannelFlowControl - getAckInfo with large ranges (>255)', () => {
+	const fc = new ChannelFlowControl(0, 0);  // Unlimited
 	
 	// Receive and consume 300 sequences
 	for (let i = 1; i <= 300; i++) {
@@ -314,8 +314,8 @@ Deno.test('ReceiveFlowControl - getAckInfo with large ranges (>255)', () => {
 	assertEquals(ackInfo.ranges, [255, 0, 44]);
 });
 
-Deno.test('ReceiveFlowControl - getAckInfo enforces 255 range limit', () => {
-	const fc = new ReceiveFlowControl(0);  // Unlimited
+Deno.test('ChannelFlowControl - getAckInfo enforces 255 range limit', () => {
+	const fc = new ChannelFlowControl(0, 0);  // Unlimited
 	
 	// Create alternating consumed/unconsumed pattern (worst case for ranges)
 	for (let i = 1; i <= 1000; i++) {
@@ -331,8 +331,8 @@ Deno.test('ReceiveFlowControl - getAckInfo enforces 255 range limit', () => {
 	assertEquals(ackInfo.ranges.length <= 255, true);
 });
 
-Deno.test('ReceiveFlowControl - clearAcked frees buffer space', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - clearAcked frees buffer space', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordReceived(2, 2000);
 	fc.recordReceived(3, 3000);
@@ -350,8 +350,8 @@ Deno.test('ReceiveFlowControl - clearAcked frees buffer space', () => {
 	assertEquals(fc.bufferAvailable, 10000);
 });
 
-Deno.test('ReceiveFlowControl - clearAcked with gaps', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - clearAcked with gaps', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 1000);
 	fc.recordReceived(2, 2000);
 	fc.recordReceived(3, 3000);
@@ -365,8 +365,8 @@ Deno.test('ReceiveFlowControl - clearAcked with gaps', () => {
 	assertEquals(fc.bufferUsed, 2000);  // Sequence 2 still tracked
 });
 
-Deno.test('ReceiveFlowControl - getStats', () => {
-	const fc = new ReceiveFlowControl(10000);
+Deno.test('ChannelFlowControl - receive getStats', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordReceived(1, 3000);
 	fc.recordReceived(2, 2000);
 	fc.recordConsumed(1);
@@ -385,65 +385,63 @@ Deno.test('ReceiveFlowControl - getStats', () => {
 // ============================================================================
 
 Deno.test('Integration - send and receive with ACKs', () => {
-	const sendFC = new SendFlowControl(10000);
-	const receiveFC = new ReceiveFlowControl(10000);
+	const fc = new ChannelFlowControl(10000, 10000);
 
 	// Send 3 chunks
-	const seq1 = sendFC.recordSent(3000);
-	const seq2 = sendFC.recordSent(2000);
-	const seq3 = sendFC.recordSent(1000);
+	const seq1 = fc.recordSent(3000);
+	const seq2 = fc.recordSent(2000);
+	const seq3 = fc.recordSent(1000);
 
-	assertEquals(sendFC.sendingBudget, 4000);
+	assertEquals(fc.sendingBudget, 4000);
 
 	// Receive 3 chunks
-	receiveFC.recordReceived(seq1, 3000);
-	receiveFC.recordReceived(seq2, 2000);
-	receiveFC.recordReceived(seq3, 1000);
+	fc.recordReceived(seq1, 3000);
+	fc.recordReceived(seq2, 2000);
+	fc.recordReceived(seq3, 1000);
 
-	assertEquals(receiveFC.bufferUsed, 6000);
+	assertEquals(fc.bufferUsed, 6000);
 
 	// Consume all chunks
-	receiveFC.recordConsumed(seq1);
-	receiveFC.recordConsumed(seq2);
-	receiveFC.recordConsumed(seq3);
+	fc.recordConsumed(seq1);
+	fc.recordConsumed(seq2);
+	fc.recordConsumed(seq3);
 
 	// Generate ACK
-	const ackInfo = receiveFC.getAckInfo();
+	const ackInfo = fc.getAckInfo();
 	assertEquals(ackInfo.baseSeq, 1);
 	assertEquals(ackInfo.ranges, [2]); // Base + 2 consecutive
 
 	// Process ACK
-	const freed = sendFC.processAck(ackInfo.baseSeq, ackInfo.ranges);
+	const freed = fc.processAck(ackInfo.baseSeq, ackInfo.ranges);
 	assertEquals(freed, 6000);
-	assertEquals(sendFC.sendingBudget, 10000);
+	assertEquals(fc.sendingBudget, 10000);
 
 	// Clear ACK'd chunks
-	receiveFC.clearAcked(ackInfo.baseSeq, ackInfo.ranges);
-	assertEquals(receiveFC.bufferUsed, 0);
+	fc.clearAcked(ackInfo.baseSeq, ackInfo.ranges);
+	assertEquals(fc.bufferUsed, 0);
 });
 
 Deno.test('Integration - selective consumption and ACK', () => {
-	const sendFC = new SendFlowControl(10000);
-	const receiveFC = new ReceiveFlowControl(10000);
+	const fc = new ChannelFlowControl(10000, 10000);
 
 	// Send 5 chunks
 	for (let i = 1; i <= 5; i++) {
-		sendFC.recordSent(1000);
-		receiveFC.recordReceived(i, 1000);
+		fc.recordSent(1000);
+		fc.recordReceived(i, 1000);
 	}
 
 	// Consume only sequences 1, 2, and 5
-	receiveFC.recordConsumed(1);
-	receiveFC.recordConsumed(2);
-	receiveFC.recordConsumed(5);
+	fc.recordConsumed(1);
+	fc.recordConsumed(2);
+	fc.recordConsumed(5);
 
 	// Generate ACK (should include 1-2, skip 3-4, include 5)
-	const ackInfo = receiveFC.getAckInfo();
+	const ackInfo = fc.getAckInfo();
 	assertEquals(ackInfo.baseSeq, 1);
 	assertEquals(ackInfo.ranges, [1, 2, 1]);  // Base + 1 more, skip 2, include 1
 
 	// Process ACK
-	const freed = sendFC.processAck(ackInfo.baseSeq, ackInfo.ranges);
+	const freed = fc.processAck(ackInfo.baseSeq, ackInfo.ranges);
 	assertEquals(freed, 3000);  // Sequences 1, 2, 5
-	assertEquals(sendFC.inFlightBytes, 2000);  // Sequences 3, 4 still in flight
+	assertEquals(fc.inFlightBytes, 2000);  // Sequences 3, 4 still in flight
 });

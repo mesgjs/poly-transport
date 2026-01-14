@@ -1091,101 +1091,96 @@ These methods enable zero-copy protocol encoding directly into the output ring b
 
 ## Update 2026-01-08-C
 
-### Flow Control Architecture: Separate Send and Receive Classes
+### Flow Control Architecture: ChannelFlowControl Class
 
-**Date**: 2026-01-08
+**Date**: 2026-01-08 (Updated 2026-01-14)
 
-**Decision**: Split flow control into two separate classes: `SendFlowControl` and `ReceiveFlowControl`.
+**Decision**: Implement flow control as a single `ChannelFlowControl` class that manages both send and receive flow control for a channel.
 
 **Rationale**:
-- A single direction can send data chunks OR receive data chunks, but not both
-- If managing both sending and receiving, you're managing TWO directions
-- Creating two half-used instances of the same class for a bidirectional channel is confusing
-- Separate classes provide clearer semantics and avoid unused fields
+- Bidirectional channels need both send and receive flow control
+- Single class provides clearer ownership and lifecycle management
+- Simplifies channel construction (one flow control instance per channel)
+- Reduces API surface area
 
-**SendFlowControl** (manages outbound data flow):
-- Tracks in-flight chunks (sent but not yet ACK'd)
-- Calculates available sending budget (remote max - in-flight)
-- Processes incoming ACKs to restore budget
-- Provides async waiting for budget availability
+**Implementation**: [`src/channel-flow-control.esm.js`](../src/channel-flow-control.esm.js)
+
+**ChannelFlowControl** (manages bidirectional flow control):
+- **Outbound (send)**: Tracks in-flight chunks (sent but not yet ACK'd)
+- **Outbound (send)**: Calculates available sending budget (remote max - in-flight)
+- **Outbound (send)**: Processes incoming ACKs to restore budget
+- **Outbound (send)**: Provides async waiting for budget availability
+- **Inbound (receive)**: Tracks received chunks (received but not yet consumed)
+- **Inbound (receive)**: Calculates buffer usage and available space
+- **Inbound (receive)**: Generates ACK information for sending to remote
+- **Inbound (receive)**: Validates sequence order - out-of-order sequences are `ProtocolViolationError`
+- **Inbound (receive)**: Validates budget - over-budget chunks are `ProtocolViolationError`
 - Budget includes ALL channel message headers (control and data), not just data payload
 - ACK messages are transport-level and do NOT count toward channel budget
-
-**ReceiveFlowControl** (manages inbound data flow):
-- Tracks received chunks (received but not yet consumed)
-- Calculates buffer usage and available space
-- Generates ACK information for sending to remote
-- **Validates sequence order** - out-of-order sequences are `ProtocolViolationError`
-- **Validates budget** - over-budget chunks are `ProtocolViolationError`
-- Signals violations to transport for event emission and corrective action
-- Budget includes ALL channel message headers (control and data), not just data payload
 
 **Important Protocol Rules**:
 - **Sequence numbers must be consecutive** - out-of-order is a protocol violation
 - **Budget includes all channel message headers** - control messages (type 1) and data messages (type 2) both count
 - **ACK messages (type 0) are transport-level** - they do NOT count toward channel budget (but do count toward transport budget)
-- **ReceiveFlowControl must detect violations** - out-of-order sequences and over-budget chunks
+- **ChannelFlowControl must detect violations** - out-of-order sequences and over-budget chunks
 
 **API**:
 ```javascript
-class SendFlowControl {
-  constructor(remoteMaxBufferBytes)
+class ChannelFlowControl {
+  constructor(localMaxBufferBytes, remoteMaxBufferBytes)
   
-  // Properties
+  // Send Properties
   get remoteMaxBufferBytes()
   get sendingBudget()              // Available bytes to send (Infinity if unlimited)
   get inFlightBytes()              // Total bytes in flight
   
-  // Methods
+  // Send Methods
   canSend(chunkBytes)              // Check if can send (header + data)
   async waitForBudget(chunkBytes)  // Wait for budget (header + data)
   recordSent(chunkBytes)           // Returns sequence number
   processAck(baseSeq, ranges)      // Returns bytes freed
-  getStats()
-}
-
-class ReceiveFlowControl {
-  constructor(localMaxBufferBytes)
   
-  // Properties
+  // Receive Properties
   get localMaxBufferBytes()
   get bufferUsed()                 // Bytes received but not consumed
   get bufferAvailable()            // Available buffer space
   get nextExpectedSeq()            // Next expected sequence number
   
-  // Methods
+  // Receive Methods
   recordReceived(seq, chunkBytes)  // Track received chunk (header + data)
                                    // Throws ProtocolViolationError if:
                                    //   - seq !== nextExpectedSeq (out-of-order)
                                    //   - chunkBytes > bufferAvailable (over-budget)
-  recordConsumed(seq)              // Returns bytes freed
+  recordConsumed(seq)              // Mark chunk as consumed
+  clearAcked(baseSeq, ranges)      // Clear ACK'd chunks, returns bytes freed
   getAckInfo()                     // Returns { baseSeq, ranges } or null
-  getStats()
+  
+  // Statistics
+  getStats()                       // Combined send and receive statistics
 }
 
 class ProtocolViolationError extends Error {
   constructor(reason, details)
-  reason                           // 'OutOfOrder' | 'OverBudget'
+  reason                           // 'OutOfOrder' | 'OverBudget' | 'DuplicateAck' | 'PrematureAck'
   details                          // Additional context
 }
 ```
 
 **Usage in Bidirectional Channel**:
 ```javascript
-// Bidirectional channel has both send and receive flow control
-const sendFlow = new SendFlowControl(remoteMaxBufferBytes);
-const receiveFlow = new ReceiveFlowControl(localMaxBufferBytes);
+// Bidirectional channel has single flow control instance
+const flowControl = new ChannelFlowControl(localMaxBufferBytes, remoteMaxBufferBytes);
 
 // Sending data
-await sendFlow.waitForBudget(headerBytes + dataBytes);
-const seq = sendFlow.recordSent(headerBytes + dataBytes);
+await flowControl.waitForBudget(headerBytes + dataBytes);
+const seq = flowControl.recordSent(headerBytes + dataBytes);
 // ... send chunk ...
 
 // Receiving data
 try {
-  receiveFlow.recordReceived(seq, headerBytes + dataBytes);
+  flowControl.recordReceived(seq, headerBytes + dataBytes);
   // ... process chunk ...
-  receiveFlow.recordConsumed(seq);
+  flowControl.recordConsumed(seq);
 } catch (err) {
   if (err instanceof ProtocolViolationError) {
     // Emit protocolViolation event and take corrective action
@@ -1195,13 +1190,14 @@ try {
 }
 
 // Generate ACK
-const ackInfo = receiveFlow.getAckInfo();
+const ackInfo = flowControl.getAckInfo();
 if (ackInfo) {
   // ... send ACK to remote ...
+  flowControl.clearAcked(ackInfo.baseSeq, ackInfo.ranges);
 }
 
 // Process received ACK
-const bytesFreed = sendFlow.processAck(ackInfo.baseSeq, ackInfo.ranges);
+const bytesFreed = flowControl.processAck(ackInfo.baseSeq, ackInfo.ranges);
 ```
 
 ## Update 2026-01-12-A
@@ -1315,7 +1311,7 @@ The `channel.close({ discard })` method accepts a single parameter:
 **Budget management**:
 - ACKs received during closure restore budget (for consistency)
 - ACKs sent during closure restore remote's budget (critical!)
-- SendFlowControl rejects new data sends during closure
+- ChannelFlowControl rejects new data sends during closure
 - Exception: ACK messages must still be sent (transport-level, not channel-level)
 
 #### Message Type Clearing
@@ -1351,3 +1347,12 @@ The `channel.close({ discard })` method accepts a single parameter:
 - Receiving data messages on closed channel is `ProtocolViolationError`
 - Receiving duplicate `chanClosed` is `ProtocolViolationError`
 - Transport should emit `protocolViolation` event and take corrective action
+
+## Updates & Clarifications 2026-01-13-B
+
+- `StateError` is a reasonable class of errors (a request is in error due to current state context)
+  - Applies to transports, channels, and maybe more
+  - Use the more general `StateError` instead of the overly-specific `ChannelStateError`
+- `TimeoutError` is a reasonable class of errors (retain)
+- `ProtocolViolationError` is a reasonable class of errors (retain)
+- `DuplicateReaderError` is a (very) specific error, not a class of errors (just use `Error` instead)

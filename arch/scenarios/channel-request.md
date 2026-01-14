@@ -43,8 +43,7 @@ This scenario documents how a transport requests a new bidirectional channel fro
 - **Remote Transport**: Receives request, accepts or rejects
 - **Channel Class**: Created upon successful acceptance
 - **Protocol Module**: Encodes/decodes TCC messages
-- **SendFlowControl**: Manages sending budget for TCC
-- **ReceiveFlowControl**: Manages receiving budget for TCC
+- **ChannelFlowControl**: Manages sending and receiving budgets for TCC
 
 ## Step-by-Step Sequence
 
@@ -230,7 +229,7 @@ pendingRequest.promises.push(promiseRecord);
 
 ### 7. Check TCC Sending Budget and Send
 
-**Actor**: [`SendFlowControl`](../../src/flow-control.esm.js) (TCC instance) and Transport
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance) and Transport
 
 **Action**: Verify sufficient budget and send:
 
@@ -245,7 +244,7 @@ await transport._sendMessage(0, messageBuffer);
 ```
 
 **State Changes**:
-- Chunk recorded in TCC `SendFlowControl` in-flight map
+- Chunk recorded in TCC `ChannelFlowControl` in-flight map
 - TCC sending budget reduced by `chunkBytes`
 - Message sent to remote transport
 
@@ -319,8 +318,7 @@ return requestPromise;
          name,
          ids: [response.id],  // Single ID from acceptor
          state: 'open',
-         sendFlow: new SendFlowControl(response.maxBufferBytes),
-         receiveFlow: new ReceiveFlowControl(pendingRequest.localLimits.maxBufferBytes),
+         flowControl: new ChannelFlowControl(pendingRequest.localLimits.maxBufferBytes, response.maxBufferBytes),
          localLimits: pendingRequest.localLimits,
          remoteLimits: {
            maxBufferBytes: response.maxBufferBytes,

@@ -428,7 +428,7 @@ Thrown when attempting operations incompatible with current channel state:
    - Without ACKs, transport budget hemorrhages
 
 4. **No new sends**:
-   - SendFlowControl rejects new data sends during closure
+   - ChannelFlowControl rejects new data sends during closure
    - Exception: ACK messages must still be sent (transport-level, not channel-level)
 
 ## Testing Considerations

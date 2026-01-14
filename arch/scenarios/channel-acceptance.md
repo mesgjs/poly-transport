@@ -40,8 +40,7 @@ This scenario documents how a transport receives and processes a channel request
 - **Event Handlers**: User-registered handlers that decide accept/reject
 - **Channel Class**: Created upon acceptance
 - **Protocol Module**: Encodes/decodes TCC messages
-- **SendFlowControl**: Manages sending budget for TCC
-- **ReceiveFlowControl**: Manages receiving budget for TCC
+- **ChannelFlowControl**: Manages sending and receiving budgets for TCC
 
 ## Step-by-Step Sequence
 
@@ -189,8 +188,7 @@ if (existingChannel && existingChannel.ids.length > 0) {
 ```javascript
 existingChannel.state = 'open';
 // Recreate flow control with new limits
-existingChannel.sendFlow = new SendFlowControl(request.maxBufferBytes);
-existingChannel.receiveFlow = new ReceiveFlowControl(event.localLimits.maxBufferBytes);
+existingChannel.flowControl = new ChannelFlowControl(event.localLimits.maxBufferBytes, request.maxBufferBytes);
 existingChannel.remoteLimits = {
   maxBufferBytes: request.maxBufferBytes,
   maxChunkBytes: request.maxChunkBytes,
@@ -207,8 +205,7 @@ const channel = new Channel({
   name: request.name,
   ids: [channelId],  // Single ID from this acceptance
   state: 'open',
-  sendFlow: new SendFlowControl(request.maxBufferBytes),  // Remote limits
-  receiveFlow: new ReceiveFlowControl(event.localLimits.maxBufferBytes),  // Local limits
+  flowControl: new ChannelFlowControl(event.localLimits.maxBufferBytes, request.maxBufferBytes),
   localLimits: event.localLimits,
   remoteLimits: {
     maxBufferBytes: request.maxBufferBytes,
@@ -265,7 +262,7 @@ const channel = new Channel({
 
 ### 7. Check TCC Sending Budget and Send
 
-**Actor**: [`SendFlowControl`](../../src/flow-control.esm.js) (TCC instance) and Transport
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance) and Transport
 
 **Action**: Verify sufficient budget and send:
 
@@ -280,7 +277,7 @@ await transport._sendMessage(0, messageBuffer);
 ```
 
 **State Changes**:
-- Chunk recorded in TCC `SendFlowControl` in-flight map
+- Chunk recorded in TCC `ChannelFlowControl` in-flight map
 - TCC sending budget reduced by `chunkBytes`
 - Message sent to remote transport
 
@@ -326,12 +323,12 @@ await transport._sendMessage(0, messageBuffer);
 
 ### 9. Check TCC Sending Budget and Send Rejection
 
-**Actor**: [`SendFlowControl`](../../src/flow-control.esm.js) (TCC instance) and Transport
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance) and Transport
 
 **Action**: Same as step 7 (verify budget and send)
 
 **State Changes**:
-- Chunk recorded in TCC `SendFlowControl` in-flight map
+- Chunk recorded in TCC `ChannelFlowControl` in-flight map
 - TCC sending budget reduced by `chunkBytes`
 - Message sent to remote transport
 

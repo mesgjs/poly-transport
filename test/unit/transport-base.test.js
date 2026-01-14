@@ -1,6 +1,5 @@
 import { assertEquals, assertRejects, assert } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
 import { Transport, TimeoutError } from '../../src/transport/base.esm.js';
-import { DuplicateReaderError } from '../../src/channel.esm.js';
 
 // Mock transport implementation for testing
 class MockTransport extends Transport {
@@ -278,13 +277,4 @@ Deno.test('TimeoutError', () => {
 	
 	const customError = new TimeoutError('Custom timeout');
 	assertEquals(customError.message, 'Custom timeout');
-});
-
-Deno.test('DuplicateReaderError', () => {
-	const error = new DuplicateReaderError();
-	assertEquals(error.name, 'DuplicateReaderError');
-	assertEquals(error.message, 'Duplicate reader detected');
-	
-	const customError = new DuplicateReaderError('Custom duplicate');
-	assertEquals(customError.message, 'Custom duplicate');
 });

@@ -355,8 +355,8 @@ export function encodeChannelHeader(type, fields)  // Returns Uint8Array
 
 ### Phase 3: Flow Control
 
-#### 3.1 FlowControl Class
-**File**: [`src/flow-control.esm.js`](../src/flow-control.esm.js)
+#### 3.1 ChannelFlowControl Class
+**File**: [`src/channel-flow-control.esm.js`](../src/channel-flow-control.esm.js)
 
 **Purpose**: Per-direction budget-based flow control (lines 21-24, 249-252)
 
@@ -383,8 +383,8 @@ export function encodeChannelHeader(type, fields)  // Returns Uint8Array
 
 **API**:
 ```javascript
-class FlowControl {
-  constructor(localMaxBufferSize, remoteMaxBufferSize)
+class ChannelFlowControl {
+  constructor(localMaxBufferBytes, remoteMaxBufferBytes)
   
   // Sending side
   canSend(dataSize)                    // Returns boolean
@@ -720,7 +720,7 @@ class Transport extends EventTarget {
 - CCM message types
 - Edge cases and errors
 
-**FlowControl Tests** - [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js)
+**ChannelFlowControl Tests** - [`test/unit/channel-flow-control.test.js`](../test/unit/channel-flow-control.test.js)
 - Budget calculation
 - Chunk tracking
 - Range-based acknowledgment processing

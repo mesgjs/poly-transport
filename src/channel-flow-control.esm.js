@@ -1,22 +1,32 @@
 /*
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  *
- * PolyTransport Flow Control
+ * PolyTransport Channel Flow Control
  *
- * Per-direction budget-based flow control with chunk sequence tracking
+ * Inbound and outbound budget-based flow control with chunk sequence tracking
  * and range-based acknowledgment processing.
- *
- * SendFlowControl manages outbound data flow (sending data chunks).
- * ReceiveFlowControl manages inbound data flow (receiving data chunks).
  */
 
 import { ProtocolViolationError } from './protocol.esm.js';
 export { ProtocolViolationError };
 
 /**
- * SendFlowControl manages outbound data flow for a single direction.
- * It tracks in-flight chunks, calculates available sending budget,
- * and processes incoming ACKs to restore budget.
+ * ChannelFlowControl manages inbound and outbound data flow for a channel.
+ * Note: It is not transport-flow-control-aware. Channel operations are
+ * responsible for coordinating that.
+ *
+ * For inbound traffic, it tracks received chunks, validates sequence order
+ * and budget, and generates ACK information for sending to remote.
+ *
+ * Key Features:
+ * - Tracks received chunks (received but not consumed)
+ * - Validates sequence order (out-of-order is ProtocolViolationError)
+ * - Validates budget (over-budget is ProtocolViolationError)
+ * - Generates range-based ACK information
+ * - Budget includes ALL channel message headers (control and data)
+ *
+ * For outbound traffic, it tracks in-flight chunks, calculates available
+ * sending budget, and processes incoming ACKs to restore budget.
  *
  * Key Features:
  * - Budget-based flow control (budget = remote max - in-flight)
@@ -26,8 +36,14 @@ export { ProtocolViolationError };
  * - Budget includes ALL channel message headers (control and data)
  * - Validates ACKs (no duplicates, no ACKs beyond assigned)
  */
-export class SendFlowControl {
-	// Private state
+export class ChannelFlowControl {
+	// Private inbound state
+	#localMaxBufferBytes;   // Max buffer bytes we're willing to receive
+	#nextExpectedSeq;       // Next expected sequence number
+	#receivedChunks;        // Map<seq, {bytes, consumed}> from receipt to ACK queued
+	#receivedBytes;         // Total bytes received but not yet ACK'd
+
+	// Private outbound state
 	#remoteMaxBufferBytes;  // Max buffer bytes remote is willing to receive
 	#nextSendSeq;           // Next sequence number to assign
 	#inFlightChunks;        // Map<seq, bytes> of sent but not ACK'd chunks
@@ -35,11 +51,17 @@ export class SendFlowControl {
 	#waiters;               // Array of { bytes, resolve } for waiting senders
 
 	/**
-	 * Create a new SendFlowControl instance.
+	 * Create a new FlowControl instance.
 	 *
+	 * @param {number} localMaxBufferBytes - Max buffer bytes we're willing to receive (0 = unlimited)
 	 * @param {number} remoteMaxBufferBytes - Max buffer bytes remote is willing to receive (0 = unlimited)
 	 */
-	constructor (remoteMaxBufferBytes) {
+	constructor (localMaxBufferBytes, remoteMaxBufferBytes) {
+		this.#localMaxBufferBytes = localMaxBufferBytes;
+		this.#nextExpectedSeq = 1;  // Sequence numbers start at 1
+		this.#receivedChunks = new Map();
+		this.#receivedBytes = 0;
+		
 		this.#remoteMaxBufferBytes = remoteMaxBufferBytes;
 		this.#nextSendSeq = 1;  // Sequence numbers start at 1
 		this.#inFlightChunks = new Map();
@@ -180,11 +202,18 @@ export class SendFlowControl {
 	}
 
 	/**
-	 * Get statistics about send flow control state.
+	 * Get statistics about flow control state.
 	 * @returns {object} Statistics object
 	 */
 	getStats () {
 		return {
+			localMaxBufferBytes: this.#localMaxBufferBytes,
+			nextExpectedSeq: this.#nextExpectedSeq,
+			receivedChunks: this.#receivedChunks.size,
+			receivedBytes: this.#receivedBytes,
+			bufferUsed: this.bufferUsed,
+			bufferAvailable: this.bufferAvailable,
+
 			remoteMaxBufferBytes: this.#remoteMaxBufferBytes,
 			nextSendSeq: this.#nextSendSeq,
 			inFlightChunks: this.#inFlightChunks.size,
@@ -222,38 +251,6 @@ export class SendFlowControl {
 				break;
 			}
 		}
-	}
-}
-
-/**
- * ReceiveFlowControl manages inbound data flow for a single direction.
- * It tracks received chunks, validates sequence order and budget,
- * and generates ACK information for sending to remote.
- *
- * Key Features:
- * - Tracks received chunks (received but not consumed)
- * - Validates sequence order (out-of-order is ProtocolViolationError)
- * - Validates budget (over-budget is ProtocolViolationError)
- * - Generates range-based ACK information
- * - Budget includes ALL channel message headers (control and data)
- */
-export class ReceiveFlowControl {
-	// Private state
-	#localMaxBufferBytes;   // Max buffer bytes we're willing to receive
-	#nextExpectedSeq;       // Next expected sequence number
-	#receivedChunks;        // Map<seq, {bytes, consumed}> from receipt to ACK queued
-	#receivedBytes;         // Total bytes received but not yet ACK'd
-
-	/**
-	 * Create a new ReceiveFlowControl instance.
-	 *
-	 * @param {number} localMaxBufferBytes - Max buffer bytes we're willing to receive (0 = unlimited)
-	 */
-	constructor (localMaxBufferBytes) {
-		this.#localMaxBufferBytes = localMaxBufferBytes;
-		this.#nextExpectedSeq = 1;  // Sequence numbers start at 1
-		this.#receivedChunks = new Map();
-		this.#receivedBytes = 0;
 	}
 
 	/**
@@ -460,20 +457,5 @@ export class ReceiveFlowControl {
 		}
 
 		return { baseSeq, ranges };
-	}
-
-	/**
-	 * Get statistics about receive flow control state.
-	 * @returns {object} Statistics object
-	 */
-	getStats () {
-		return {
-			localMaxBufferBytes: this.#localMaxBufferBytes,
-			nextExpectedSeq: this.#nextExpectedSeq,
-			receivedChunks: this.#receivedChunks.size,
-			receivedBytes: this.#receivedBytes,
-			bufferUsed: this.bufferUsed,
-			bufferAvailable: this.bufferAvailable,
-		};
 	}
 }

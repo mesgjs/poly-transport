@@ -22,29 +22,27 @@ Both levels use budget-based flow control with sequence tracking and range-based
 
 ## Key Architectural Principles
 
-### 1. SendFlowControl and ReceiveFlowControl Are For Channels
+### 1. ChannelFlowControl Is For Channels
 
-**Current Implementation**: [`src/flow-control.esm.js`](../src/flow-control.esm.js)
+**Current Implementation**: [`src/channel-flow-control.esm.js`](../src/channel-flow-control.esm.js)
 
-- **`SendFlowControl`** - Manages outbound data flow for a single channel direction
-  - Tracks in-flight chunks (sent but not yet ACK'd)
-  - Calculates available sending budget (remote max - in-flight)
-  - Processes incoming ACKs to restore budget
-  - Provides async waiting for budget availability
+- **`ChannelFlowControl`** - Manages bidirectional flow control for a single channel
+  - **Outbound (send)**: Tracks in-flight chunks (sent but not yet ACK'd)
+  - **Outbound (send)**: Calculates available sending budget (remote max - in-flight)
+  - **Outbound (send)**: Processes incoming ACKs to restore budget
+  - **Outbound (send)**: Provides async waiting for budget availability
+  - **Inbound (receive)**: Tracks received chunks (received but not yet consumed)
+  - **Inbound (receive)**: Calculates buffer usage and available space
+  - **Inbound (receive)**: Generates ACK information for sending to remote
+  - **Inbound (receive)**: Validates sequence order and budget
 
-- **`ReceiveFlowControl`** - Manages inbound data flow for a single channel direction
-  - Tracks received chunks (received but not yet consumed)
-  - Calculates buffer usage and available space
-  - Generates ACK information for sending to remote
-  - Validates sequence order and budget
-
-**Usage**: Each bidirectional channel contains an instance of SendFlowControl and an instance of ReceiveFlowControl.
+**Usage**: Each bidirectional channel contains an instance of ChannelFlowControl.
 
 ### 2. Transport Budget Management
 
-**Current Status**: Not yet implemented (SendFlowControl/ReceiveFlowControl are channel-level only)
+**Current Status**: Not yet implemented (ChannelFlowControl is channel-level only)
 
-**Planned Implementation**: Transport class will manage its own budget using similar flow control classes.
+**Planned Implementation**: Transport class will manage its own budget using a similar flow control class.
 
 ## Budget Hierarchy
 
@@ -208,66 +206,19 @@ async _generateAndSendAck() {
 
 ## Transport Budget Implementation Strategy
 
-### Option 1: Separate Transport Flow Control Classes
-
-Create transport-level equivalents of SendFlowControl/ReceiveFlowControl:
-
-```javascript
-class TransportSendFlowControl {
-  constructor(remoteMaxBufferBytes)
-  
-  // Similar to SendFlowControl but:
-  // - Tracks bytes across ALL channels
-  // - No sequence numbers (channels handle that)
-  // - FIFO round-robin for channel fairness
-  
-  async waitForBudget(bytes)  // FIFO queue for channels
-  recordSent(bytes)            // No sequence, just byte count
-  processAck(bytes)            // Restore budget
-}
-
-class TransportReceiveFlowControl {
-  constructor(localMaxBufferBytes)
-  
-  // Similar to ReceiveFlowControl but:
-  // - Tracks bytes across ALL channels
-  // - No sequence validation (channels handle that)
-  // - Generates transport-level ACKs (if needed)
-  
-  recordReceived(bytes)        // May throw ProtocolViolationError
-  recordConsumed(bytes)        // Mark bytes consumed
-}
-```
-
-### Option 2: Reuse Existing Classes with Adaptation
-
-Reuse SendFlowControl/ReceiveFlowControl at transport level:
-
-```javascript
-// In Transport class
-this.#transportSendFlow = new SendFlowControl(remoteMaxBufferBytes);
-this.#transportReceiveFlow = new ReceiveFlowControl(localMaxBufferBytes);
-
-// Adapt usage:
-// - Ignore sequence numbers (use dummy sequences)
-// - Track bytes only
-// - Add FIFO queue for channel fairness
-```
-
-**Pros**: Less code duplication  
-**Cons**: Awkward API (sequence numbers not meaningful at transport level)
-
-### Option 3: Simplified Transport Budget Tracking (Bidirectional)
-
 Transport budget is simpler than channel budget (no sequences, no ACK generation):
 
 ```javascript
-class TransportSendBudget {
+class TransportFlowControl {
+  #localMaxBytes;
+  #receivedBytes = 0;  // Bytes received but not yet consumed
+  
   #remoteMaxBytes;
   #inFlightBytes = 0;
   #waiters = [];  // FIFO queue for channels
   
-  constructor(remoteMaxBytes) {
+  constructor(localMaxBytes, remoteMaxBytes) {
+    this.#localMaxBytes = localMaxBytes;
     this.#remoteMaxBytes = remoteMaxBytes;
   }
   
@@ -291,7 +242,7 @@ class TransportSendBudget {
   }
   
   #processWaiters() {
-    // FIFO processing (same as SendFlowControl)
+    // FIFO processing (same as ChannelFlowControl)
     while (this.#waiters.length > 0) {
       const waiter = this.#waiters[0];
       if (this.available >= waiter.bytes) {
@@ -301,15 +252,6 @@ class TransportSendBudget {
         break;
       }
     }
-  }
-}
-
-class TransportReceiveBudget {
-  #localMaxBytes;
-  #receivedBytes = 0;  // Bytes received but not yet consumed
-  
-  constructor(localMaxBytes) {
-    this.#localMaxBytes = localMaxBytes;
   }
   
   get available() {
@@ -347,11 +289,7 @@ class TransportReceiveBudget {
 - Detects input buffer overrun (ProtocolViolationError)
 
 **Cons**:
-- Some code duplication with SendFlowControl/ReceiveFlowControl
-
-## Recommended Approach
-
-**Option 3: Simplified Transport Budget Tracking**
+- Some code duplication with ChannelFlowControl
 
 **Rationale**:
 - Transport budget is fundamentally simpler (no sequences, no ACK generation)
@@ -477,6 +415,6 @@ class TransportReceiveBudget {
 ## References
 
 - [`arch/requirements.md`](../arch/requirements.md) - Lines 599-601, 610-612, 643-648, 1111-1127
-- [`src/flow-control.esm.js`](../src/flow-control.esm.js) - Current channel-level implementation
+- [`src/channel-flow-control.esm.js`](../src/channel-flow-control.esm.js) - Current channel-level implementation
 - [`src/transport/base.esm.js`](../src/transport/base.esm.js) - Transport base class
 - [`arch/sanity-check-20260103.md`](../arch/sanity-check-20260103.md) - Lines 145-148 (ACK budget requirements)

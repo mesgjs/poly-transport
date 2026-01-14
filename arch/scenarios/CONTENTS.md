@@ -50,7 +50,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Timeout handling
 - Discard vs graceful shutdown
 - Transport shutdown messages on TCC (`tranStop`)
-- Module responsibilities: Transport base, Channel, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Transport base, Channel, ChannelFlowControl
 
 ### 2. Channel Lifecycle
 
@@ -88,7 +88,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Close message on TCC (`chanClose`)
 - Single `beforeClosing` and `closed` events
 - Cleanup and resource release
-- Module responsibilities: Channel, Transport, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Channel, Transport, ChannelFlowControl
 
 ### 3. Message-Type Registration
 
@@ -135,21 +135,21 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 ### 5. Flow Control and Budgets
 
-**Note**: SendFlowControl and ReceiveFlowControl classes remain unchanged despite bidirectional channel model. Each bidirectional channel uses one instance of each class.
+**Note**: ChannelFlowControl class manages both send and receive flow control for bidirectional channels. Each bidirectional channel uses one instance of ChannelFlowControl.
 
 **[`transport-budget.md`](transport-budget.md)** 📋
 - Transport-level budget management
 - ACK messages and transport budget (ACKs are transport-level, not channel-level)
 - Distinction from channel budget
 - Transport-level flow control
-- Module responsibilities: Transport, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Transport, ChannelFlowControl
 
 **[`channel-budget.md`](channel-budget.md)** 📋
 - Channel-level budget management
 - Control messages and channel budget (type 1 headers)
 - Data messages and channel budget (type 2 headers)
 - Per-channel budget tracking (bidirectional channels have both send and receive budgets)
-- Module responsibilities: Channel, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Channel, ChannelFlowControl
 
 **[`send-flow-control.md`](send-flow-control.md)** 📋
 - Checking available sending budget (transport and channel)
@@ -157,7 +157,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Recording sent chunks
 - In-flight tracking
 - Budget calculation
-- Module responsibilities: SendFlowControl, Channel
+- Module responsibilities: ChannelFlowControl, Channel
 
 **[`receive-flow-control.md`](receive-flow-control.md)** 📋
 - Recording received chunks
@@ -165,7 +165,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Budget validation (over-budget detection)
 - Buffer usage tracking
 - Consumption tracking
-- Module responsibilities: ReceiveFlowControl, Channel
+- Module responsibilities: ChannelFlowControl, Channel
 
 **[`ack-generation-processing.md`](ack-generation-processing.md)** 📋
 - Generating ACK information
@@ -174,7 +174,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Processing received ACKs
 - Budget restoration
 - Unblocking waiting writes
-- Module responsibilities: ReceiveFlowControl, SendFlowControl, Protocol
+- Module responsibilities: ChannelFlowControl, Protocol
 
 **[`protocol-violation.md`](protocol-violation.md)** 📋
 - Out-of-order sequence detection
@@ -182,7 +182,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - ProtocolViolationError handling
 - Transport event emission
 - Connection termination
-- Module responsibilities: ReceiveFlowControl, Transport, Channel
+- Module responsibilities: ChannelFlowControl, Transport, Channel
 
 ### 6. Message Protocol
 
@@ -248,7 +248,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Fair scheduling across channels
 - Transport budget vs channel budget
 - Preventing channel starvation
-- Module responsibilities: Transport, Channel, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Transport, Channel, ChannelFlowControl
 
 ### 9. Console and Exception Handling
 
@@ -304,7 +304,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Simultaneous read/write on bidirectional channels
 - Send and receive flow control coordination
 - Deadlock prevention
-- Module responsibilities: Channel, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Channel, ChannelFlowControl
 
 **[`error-recovery.md`](error-recovery.md)** *(Future)* 📋
 - Connection loss detection
@@ -316,7 +316,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Flow control across nested transports
 - End-to-end backpressure (transport budget and channel budget at each layer)
 - Buffer management under pressure
-- Module responsibilities: Transport, Channel, SendFlowControl, ReceiveFlowControl
+- Module responsibilities: Transport, Channel, ChannelFlowControl
 
 ## Scenario Document Format
 

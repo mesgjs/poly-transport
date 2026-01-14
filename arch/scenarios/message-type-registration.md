@@ -43,8 +43,7 @@ This scenario documents how channels register named message types for bidirectio
 - **Requesting Channel**: Initiates message-type registration
 - **Accepting Channel**: Receives request, assigns message-type ID
 - **Protocol Module**: Encodes/decodes control messages
-- **SendFlowControl**: Manages channel sending budget
-- **ReceiveFlowControl**: Manages channel receiving budget
+- **ChannelFlowControl**: Manages channel sending and receiving budgets
 
 ## Step-by-Step Sequence
 
@@ -178,7 +177,7 @@ for (const name of newTypes) {
 
 ### 6. Check Channel Sending Budget and Send
 
-**Actor**: [`SendFlowControl`](../../src/flow-control.esm.js) (channel instance) and Channel
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (channel instance) and Channel
 
 **Action**: Verify sufficient budget and send:
 
@@ -193,7 +192,7 @@ await transport._sendMessage(channelId, messageBuffer);
 ```
 
 **State Changes**:
-- Chunk recorded in channel `SendFlowControl` in-flight map
+- Chunk recorded in channel `ChannelFlowControl` in-flight map
 - Channel sending budget reduced by `chunkBytes`
 - Message sent to remote transport
 
@@ -298,12 +297,12 @@ for (const name of request.types) {
 
 ### 10. Check Channel Sending Budget and Send Response (Remote Side)
 
-**Actor**: [`SendFlowControl`](../../src/flow-control.esm.js) (channel instance, remote) and Channel
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (channel instance, remote) and Channel
 
 **Action**: Same as step 6 (verify budget and send)
 
 **State Changes**:
-- Chunk recorded in channel `SendFlowControl` in-flight map
+- Chunk recorded in channel `ChannelFlowControl` in-flight map
 - Channel sending budget reduced by `chunkBytes`
 - Message sent to requesting transport
 

@@ -444,7 +444,7 @@ this.outputRing.consume(1);
 - Read from input stream into buffer pool buffers
 - Parse message headers using Protocol layer
 - Route messages to appropriate handlers:
-  - **Type 0 (ACK)**: Process via SendFlowControl
+  - **Type 0 (ACK)**: Process via ChannelFlowControl
   - **Type 1 (Control)**: Handle channel control messages
   - **Type 2 (Data)**: Route to channel's receive buffer
 - Handle out-of-band data (IPC only) via `outofBandData` event
@@ -453,9 +453,9 @@ this.outputRing.consume(1);
 ```
 Input Stream → Buffer Pool → Protocol.decodeHeaderFrom() → Message Router
   ↓
-  ├─ ACK → SendFlowControl.processAck()
+  ├─ ACK → ChannelFlowControl.processAck()
   ├─ Control → Channel control handler
-  └─ Data → Channel receive buffer → ReceiveFlowControl.recordReceived()
+  └─ Data → Channel receive buffer → ChannelFlowControl.recordReceived()
 ```
 
 ## Postconditions

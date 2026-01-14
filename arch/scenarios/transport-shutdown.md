@@ -22,8 +22,7 @@ This scenario describes the complete process of gracefully stopping a PolyTransp
 - **Transport Base Class** ([`src/transport/base.esm.js`](../../src/transport/base.esm.js)): Orchestrates shutdown sequence
 - **Transport Implementation**: Specific transport subclass (HTTP, WebSocket, Worker, Pipe, Nested)
 - **Channel**: Individual channel instances (not yet implemented)
-- **SendFlowControl** ([`src/flow-control.esm.js`](../../src/flow-control.esm.js)): Manages outbound flow control
-- **ReceiveFlowControl** ([`src/flow-control.esm.js`](../../src/flow-control.esm.js)): Manages inbound flow control
+- **ChannelFlowControl** ([`src/channel-flow-control.esm.js`](../../src/channel-flow-control.esm.js)): Manages bidirectional flow control
 - **OutputRingBuffer** ([`src/output-ring-buffer.esm.js`](../../src/output-ring-buffer.esm.js)): Output buffer cleanup
 - **BufferPool** ([`src/buffer-pool.esm.js`](../../src/buffer-pool.esm.js)): Buffer release
 - **Eventable**: Event handling infrastructure
@@ -176,8 +175,7 @@ for (const channel of this.#channels.values()) {
 
 **Action**: Clean up channel-specific resources  
 **Resources**:
-- SendFlowControl: Clear in-flight chunk tracking
-- ReceiveFlowControl: Clear received chunk tracking
+- ChannelFlowControl: Clear in-flight and received chunk tracking
 - Pending read/write promises: Reject with closure error
 - Event listeners: Remove all handlers
 

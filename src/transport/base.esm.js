@@ -11,6 +11,10 @@ import { Eventable } from '@eventable';
  */
 
 export class Transport extends Eventable {
+	get EVEN_ROLE () { return 0; }
+	get ODD_ROLE () { return 1; }
+
+	#id = crypto.randomUUID();
 	#channels = new Map();
 	#channelDefaults = {
 		maxBufferBytes: 0,      // 0 = unlimited
@@ -102,14 +106,18 @@ export class Transport extends Eventable {
 	 */
 	async start () {
 		if (this.#stopped) {
-			throw new Error('Transport is stopped');
+			throw new StateError('Transport is stopped');
 		}
 		if (this.#started) {
-			throw new Error('Transport already started');
+			throw new StateError('Transport already started');
 		}
 
 		this.#started = true;
 		await this._start();
+
+		// TO DO:
+		// * Handshake
+		// * Role determination
 	}
 
 	/**
@@ -145,7 +153,7 @@ export class Transport extends Eventable {
 			await Promise.race([
 				Promise.all(channelClosePromises),
 				new Promise((_, reject) =>
-					timer = setTimeout(() => reject(new Error('Close timeout')), timeout)
+					timer = setTimeout(() => reject(new TimeoutError('Transport shutdown timeout')), timeout)
 				)
 			]);
 			clearTimeout(timer);
@@ -158,7 +166,7 @@ export class Transport extends Eventable {
 
 		this.#stopped = true;
 
-		// Emit closed event
+		// Emit stopped event
 		await this._dispatchEvent('stopped', {});
 	}
 
@@ -171,10 +179,10 @@ export class Transport extends Eventable {
 	 */
 	async requestChannel (idOrName, options = {}) {
 		if (!this.#started) {
-			throw new Error('Transport not started');
+			throw new StateError('Transport not started');
 		}
 		if (this.#stopped) {
-			throw new Error('Transport is stopped');
+			throw new StateError('Transport is stopped');
 		}
 		throw new Error(`Transport.requestChannel is not yet implemented`);
 	}
@@ -195,6 +203,11 @@ export class Transport extends Eventable {
 	get channels () {
 		return new Map(this.#channels);
 	}
+
+	/**
+	 * Return the transport ID (UUID)
+	 */
+	get id () { return this.#id; }
 
 	/**
 	 * Check if transport is started
@@ -242,13 +255,17 @@ export class Transport extends Eventable {
 	/**
 	 * Dispatch an event and await all handlers
 	 * @protected
-	 * @param {string} type - Event type
-	 * @param {Object} detail - Event detail
 	 * @returns {Promise<void>}
 	 */
-	async _dispatchEvent (type, detail) {
-		// Eventable expects an event object with type property
-		await this.dispatchEvent({ type, detail });
+	async _dispatchEvent (...spec) {
+		if (typeof spec[0] === 'string') {
+			// Eventable expects an event object with type property
+			const [type, detail] = spec;
+			await this.dispatchEvent({ type, detail });
+		} else if (typeof spec[0] === 'object') {
+			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclass of AppAsyncEvent)
+			await this.dispatchEvent(spec[0]);
+		}
 	}
 
 	// Abstract methods to be implemented by subclasses
@@ -295,6 +312,18 @@ export class Transport extends Eventable {
 		throw new Error('_handleIncomingMessage() must be implemented by subclass');
 	}
 }
+
+/**
+ * State error
+ */
+export class StateError extends Error {
+	constructor (message = 'Wrong state for request', details) {
+		super(message);
+		this.name = this.constructor.name;
+		this.details = details;
+	}
+}
+
 
 /**
  * Timeout error

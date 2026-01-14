@@ -135,9 +135,9 @@ All other requirements and behavior should remain as-is to the extent that they 
 
 - Channels that only need to send (user) data in one direction are still free to do so
 - If the application design calls for strict enforcement of (user) data being sent in only one direction, the existing `newChunk` event can be used to implement this
-- SendFlowControl and ReceiveFlowControl are still logically different functions
-  - These classes should continue to operate as is
-  - A channel will use an instance of each
+- Send and receive flow control are still logically different functions
+  - These are integrated into a single `ChannelFlowControl` class
+  - A channel will use one instance of `ChannelFlowControl`
 - JSMAWS currently has no reliable transport system and is blocked waiting on PolyTransport
   - It will require a complete overhaul regardless of the PT implementation
   - Simplifying the user interface will likely reduce the integration effort
