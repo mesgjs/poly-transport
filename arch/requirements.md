@@ -18,10 +18,10 @@ The implementation should make best-effort attempts to prevent mis-behaving or h
 - Each message may be split into one or more chunks, the last of which includes an EOM (end-of-message) marker
 - Each message has an associated, application-defined message type which is included with each of the message's chunks
 - Chunk and message readers may filter by one or more message types
-- A backpressure / flow-control system is implemented based on byte-count "credits" at the transport and channel levels
-  - Chunks may not be sent until a sufficient credit balance is (or becomes) available
-  - Credits are consumed when chunks are sent
-  - Credits are restored upon receipt of chunk acknowledgement messages (ACKs) indicating that the chunks have been completely processed by the recipient
+- A backpressure / flow-control system is implemented based on byte-count "budget" at the transport and channel levels
+  - Chunks may not be sent until a sufficient budget is (or becomes) available
+  - Budget is consumed when chunks are sent
+  - Budget is restored upon receipt of chunk acknowledgement messages (ACKs) indicating that the chunks have been completely processed by the recipient
 
 ## JSMAWS Use Cases
 
@@ -237,19 +237,19 @@ flowchart TD
 - Web workers should start with a small initial buffer pool
   - They must be able to request additional buffers from the main thread, up to their configured limits
   - They must be able to send excess buffers back to the main thread
-- Senders use up byte count credits when sending
-- Senders regain byte count credits when chunks are ACK'd
-- Senders and receivers must maintain a running total of available byte credits at the transport and channel levels
+- Senders use up byte count budget when sending
+- Senders regain byte count budget when chunks are ACK'd
+- Senders and receivers must maintain a running total of available byte budgets at the transport and channel levels
 
 ## Channels, Chunks, And Messages (Definitions)
 
 - A channel is a data-sub-stream for transmitting message chunks between transports
 - Every channel has a unique numeric identifier *for each established direction* across the transport
 - Channels may also have string-based names, which are then mapped to their numeric identifiers
-- Each transport may set a maximum chunk size (`maxChunkSize` bytes), maximum message size (`maxMessageSize` bytes), and maximum buffer-size credits (`maxBufferSize` bytes) when it agrees to receive channel data (independently for each accepted direction)
-  - If the maximum buffer-size credits is non-zero, the sender may send up to that many (over-the-wire) bytes
-  - Byte credits are restored as chunks are ACK'd
-  - Sending chunks in excess of current buffer-size credits is considered a protocol violation and may result in termination of the channel or connection
+- Each transport may set a maximum chunk size (`maxChunkSize` bytes), maximum message size (`maxMessageSize` bytes), and maximum buffer-size budget (`maxBufferSize` bytes) when it agrees to receive channel data (independently for each accepted direction)
+  - If the maximum buffer-size budget is non-zero, the sender may send up to that many (over-the-wire) bytes
+  - Byte budgets are restored as chunks are ACK'd
+  - Sending chunks in excess of current buffer-size budget is considered a protocol violation and may result in termination of the channel or connection
   - If the maximum message size is unlimited (0), then either the maximum buffer size must also be unlimited, or the reader must process messages only in streamed chunks and not as entire/complete messages
 - A "message" is simply a sequence of one or more "chunks", terminating with a chunk with its "EOM" (end-of-message) marker set
 - Each message has an associated, application-defined "message type"
@@ -370,7 +370,7 @@ flowchart TD
   - Both sides must perform this action for string types that will be sent in both directions
   - Just as for numeric channel ids, it is perfectly normal for the assigned numeric code to be different in each direction
 - `async channel.write (type, data, { eom=true })`
-  - If the channel is open, waits for sufficient buffer-size credits as required and then queues the data
+  - If the channel is open, waits for sufficient buffer-size budget as required and then queues the data
   - Resolves upon completion of queueing or rejects upon error
   - `type`: app-defined message type (numeric or pre-registered string)
   - `data`: a data chunk to send
@@ -386,7 +386,7 @@ flowchart TD
   - `readMessageSync ({ only })` works like `readMessage` except that it returns `null` if a matching message isn't immediately available
   - If `only` is included, only chunks/messages of the specified message types are returned
     - It may be a single string or number, an array, or a Set
-- `readMessage` and `readMessageSync` must throw an `UnsupportedOperation` exception when called (user must read chunks instead) if:
+- ~~`readMessage` and `readMessageSync` must throw an `UnsupportedOperation` exception~~ when called (user must read chunks instead) if:
   - `maxBufferSize` is non-zero (limited) AND:
     - `maxMessageSize` is zero (unlimited) or `maxBufferSize` is less than twice `maxMessageSize`
 
@@ -1107,7 +1107,7 @@ These methods enable zero-copy protocol encoding directly into the output ring b
 - Tracks in-flight chunks (sent but not yet ACK'd)
 - Calculates available sending budget (remote max - in-flight)
 - Processes incoming ACKs to restore budget
-- Provides async waiting for credit availability
+- Provides async waiting for budget availability
 - Budget includes ALL channel message headers (control and data), not just data payload
 - ACK messages are transport-level and do NOT count toward channel budget
 
@@ -1138,7 +1138,7 @@ class SendFlowControl {
   
   // Methods
   canSend(chunkBytes)              // Check if can send (header + data)
-  async waitForCredit(chunkBytes)  // Wait for credit (header + data)
+  async waitForBudget(chunkBytes)  // Wait for budget (header + data)
   recordSent(chunkBytes)           // Returns sequence number
   processAck(baseSeq, ranges)      // Returns bytes freed
   getStats()
@@ -1177,7 +1177,7 @@ const sendFlow = new SendFlowControl(remoteMaxBufferBytes);
 const receiveFlow = new ReceiveFlowControl(localMaxBufferBytes);
 
 // Sending data
-await sendFlow.waitForCredit(headerBytes + dataBytes);
+await sendFlow.waitForBudget(headerBytes + dataBytes);
 const seq = sendFlow.recordSent(headerBytes + dataBytes);
 // ... send chunk ...
 

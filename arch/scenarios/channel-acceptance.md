@@ -200,8 +200,6 @@ existingChannel.remoteLimits = {
 existingChannel.localLimits = event.localLimits;
 ```
 
-Feedback: This is considered a new "channel life-time" from the perspective of registered message types (we need to go back and clear them at *close* - no need to preserve them until any reopen)
-
 **Case C: Channel doesn't exist** (new channel):
 ```javascript
 const channel = new Channel({
@@ -252,10 +250,10 @@ const channel = new Channel({
 ```
 
 **Header Encoding**:
-- Message type: 2 (channel data)
+- Header type: 2 (channel data)
 - Channel ID: 0 (TCC)
 - Sequence number: Next TCC send sequence
-- Message-type ID: 2 (`chanResp` from TCC pre-loaded types)
+- Message type: 2 (`chanResp` from TCC pre-loaded types)
 - EOM flag: true (single-chunk message)
 - Data: JSON-encoded response body
 
@@ -274,7 +272,7 @@ const channel = new Channel({
 ```javascript
 const chunkBytes = headerBytes + dataBytes;
 if (!tccSendFlow.canSend(chunkBytes)) {
-  await tccSendFlow.waitForCredit(chunkBytes);
+  await tccSendFlow.waitForBudget(chunkBytes);
 }
 
 const seq = tccSendFlow.recordSent(chunkBytes);

@@ -358,10 +358,10 @@ export function encodeChannelHeader(type, fields)  // Returns Uint8Array
 #### 3.1 FlowControl Class
 **File**: [`src/flow-control.esm.js`](../src/flow-control.esm.js)
 
-**Purpose**: Per-direction credit-based flow control (lines 21-24, 249-252)
+**Purpose**: Per-direction budget-based flow control (lines 21-24, 249-252)
 
 **Key Features**:
-- Bi-level credit system (transport + channel) (line 599)
+- Bi-level budget system (transport + channel) (line 599)
 - Chunk sequence tracking (line 261)
 - In-flight chunk map
 - Budget calculation
@@ -375,10 +375,10 @@ export function encodeChannelHeader(type, fields)  // Returns Uint8Array
 - If data is ready but no ACKs ready, transport reservation should require `RESERVE_ACK_BYTES` more than data alone
 - Prevents data from blocking potentially-critical ACKs
 
-**Credit System** (lines 21-24):
-- Chunks may not be sent until sufficient credit balance available
-- Credits consumed when chunks sent
-- Credits restored upon receipt of ACKs
+**Budget System** (lines 21-24):
+- Chunks may not be sent until sufficient budget available
+- Budget consumed when chunks sent
+- Budget restored upon receipt of ACKs
 - ACKs indicate chunks completely processed by recipient
 
 **API**:
@@ -388,9 +388,9 @@ class FlowControl {
   
   // Sending side
   canSend(dataSize)                    // Returns boolean
-  async waitForCredit(dataSize)        // Waits until credit available
+  async waitForBudget(dataSize)        // Waits until budget available
   recordSent(seq, dataSize)            // Track in-flight chunk
-  processAck(baseSeq, ranges)          // Update credits from ACK
+  processAck(baseSeq, ranges)          // Update budget from ACK
   
   // Receiving side
   recordReceived(seq, dataSize)        // Track buffer usage
@@ -398,7 +398,7 @@ class FlowControl {
   getAckInfo()                         // Returns { baseSeq, ranges }
   
   // State
-  get sendingBudget()                  // Available credits for sending
+  get sendingBudget()                  // Available budget for sending
   get bufferUsed()                     // Current buffer usage
   get bufferAvailable()                // Available buffer space
 }
@@ -721,7 +721,7 @@ class Transport extends EventTarget {
 - Edge cases and errors
 
 **FlowControl Tests** - [`test/unit/flow-control.test.js`](../test/unit/flow-control.test.js)
-- Credit calculation
+- Budget calculation
 - Chunk tracking
 - Range-based acknowledgment processing
 - Budget updates

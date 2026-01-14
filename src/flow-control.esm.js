@@ -3,29 +3,15 @@
  *
  * PolyTransport Flow Control
  *
- * Per-direction credit-based flow control with chunk sequence tracking
+ * Per-direction budget-based flow control with chunk sequence tracking
  * and range-based acknowledgment processing.
  *
  * SendFlowControl manages outbound data flow (sending data chunks).
  * ReceiveFlowControl manages inbound data flow (receiving data chunks).
  */
 
-/**
- * Protocol violation error for flow control issues.
- */
-export class ProtocolViolationError extends Error {
-	/**
-	 * Create a new ProtocolViolationError.
-	 * @param {string} reason - Violation reason ('OutOfOrder' | 'OverBudget' | 'DuplicateAck')
-	 * @param {object} details - Additional context
-	 */
-	constructor (reason, details) {
-		super(`Protocol violation: ${reason}`);
-		this.name = 'ProtocolViolationError';
-		this.reason = reason;
-		this.details = details;
-	}
-}
+import { ProtocolViolationError } from './protocol.esm.js';
+export { ProtocolViolationError };
 
 /**
  * SendFlowControl manages outbound data flow for a single direction.
@@ -33,10 +19,10 @@ export class ProtocolViolationError extends Error {
  * and processes incoming ACKs to restore budget.
  *
  * Key Features:
- * - Credit-based flow control (budget = remote max - in-flight)
+ * - Budget-based flow control (budget = remote max - in-flight)
  * - Chunk sequence tracking (per channel and direction)
  * - Range-based acknowledgment processing
- * - Async waiting for credit availability
+ * - Async waiting for budget availability
  * - Budget includes ALL channel message headers (control and data)
  * - Validates ACKs (no duplicates, no ACKs beyond assigned)
  */
@@ -100,18 +86,18 @@ export class SendFlowControl {
 	}
 
 	/**
-	 * Wait for sufficient credit to send the specified number of bytes.
-	 * Resolves immediately if sufficient credit is available.
+	 * Wait for sufficient budget to send the specified number of bytes.
+	 * Resolves immediately if sufficient budget is available.
 	 * @param {number} chunkBytes - Number of bytes to send (header + data)
-	 * @returns {Promise<void>} Resolves when credit is available
+	 * @returns {Promise<void>} Resolves when budget is available
 	 */
-	async waitForCredit (chunkBytes) {
+	async waitForBudget (chunkBytes) {
 		// If we can send now, resolve immediately
 		if (this.canSend(chunkBytes)) {
 			return;
 		}
 
-		// Otherwise, wait for credit to become available
+		// Otherwise, wait for budget to become available
 		return new Promise((resolve) => {
 			this.#waiters.push({ bytes: chunkBytes, resolve });
 		});
@@ -187,7 +173,7 @@ export class SendFlowControl {
 			currentSeq += skip;
 		}
 
-		// Wake up any waiters that now have sufficient credit
+		// Wake up any waiters that now have sufficient budget
 		this.#processWaiters();
 
 		return bytesFreed;
@@ -209,7 +195,7 @@ export class SendFlowControl {
 	}
 
 	/**
-	 * Process waiters and wake up those that now have sufficient credit.
+	 * Process waiters and wake up those that now have sufficient budget.
 	 * Uses FIFO ordering to ensure fairness and prevent starvation.
 	 * @private
 	 */

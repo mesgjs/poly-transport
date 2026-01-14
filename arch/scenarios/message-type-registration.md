@@ -8,8 +8,9 @@ This scenario documents how channels register named message types for bidirectio
 
 **Key Points**:
 - Message types are registered per channel (not transport-wide)
-- Registration is directional (sender registers with receiver)
+- Registration uses request/response protocol (like channel requests)
 - Accepting side assigns message-type ID (even or odd based on role)
+- Results apply to bidirectional channel (both sides can use registered types)
 - Batch registration supported (multiple types in one request)
 - Simultaneous registration from both sides creates ID jitter (automatically settles)
 - Message types cleared when channel reaches `closed` state
@@ -19,14 +20,15 @@ This scenario documents how channels register named message types for bidirectio
 
 **Key Design Points** (from [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md)):
 - All channels are bidirectional
-- Message-type registration uses TCC message-type mappings
+- Message-type registration uses in-channel control messages (not TCC)
 - Control messages sent as channel data messages (type 2 headers)
 - Message-type IDs assigned by accepting side (even or odd based on role)
 - EVEN_ROLE assigns even message-type IDs
 - ODD_ROLE assigns odd message-type IDs
 - Message-type IDs stored in two-element array: `[]` → `[id]` → `[id1, id2]`
-- First (lowest) ID used for sending
-- Pre-loaded TCC message types: `chanReq` (1), `chanResp` (2), `chanClose` (3), `chanClosed` (4)
+- First (lowest) ID used for sending (like channels)
+- Message types stored in channel's Map indexed by name and ID
+- Pre-loaded TCC message types: `chanReq` (1), `chanResp` (2), `chanClose` (3), `chanClosed` (4), `mesgTypeReq` (5), `mesgTypeResp` (6)
 
 ## Preconditions
 
@@ -34,7 +36,7 @@ This scenario documents how channels register named message types for bidirectio
 - Transport role determined (EVEN_ROLE or ODD_ROLE)
 - Channel is open ([`channel-request.md`](channel-request.md), [`channel-acceptance.md`](channel-acceptance.md))
 - Channel not in closing state
-- TCC message-type mappings loaded (`mesgTypeReq` = 5, `mesgTypeResp` = 6)
+- TCC has pre-loaded message types: `mesgTypeReq` (5), `mesgTypeResp` (6)
 
 ## Actors
 
@@ -121,30 +123,29 @@ if (newTypes.length === 0) {
 
 ---
 
-### 4. Create Pending Registration Record
+### 4. Create Pending Registration Records
 
 **Actor**: [`Channel`](../../src/channel.esm.js)
 
-**Action**: Track pending registration:
+**Action**: Track pending registration for each new type:
 
 ```javascript
-const pendingReg = {
-  names: newTypes,
-  promises: [{ resolve, reject }],  // Array to support multiple concurrent requests
-  timeout: setTimeout(() => {
-    // Timeout doesn't remove pending record (response may still arrive)
-    reject(new TimeoutError('Message-type registration timed out'));
-  }, timeout)
-};
-
-#pendingMessageTypeRegs.set(requestKey, pendingReg);
+// Create individual pending records for each type
+for (const name of newTypes) {
+  const pendingReg = {
+    name,
+    promises: [{ resolve, reject, timeout }],  // Array to support multiple concurrent requests
+  };
+  
+  #pendingMessageTypeRegs.set(name, pendingReg);
+}
 ```
 
-**Note**: Like channel requests, timeout rejects the promise but doesn't remove the pending record. The response will still be processed when it arrives.
+**Note**: Individual pending records per type allow overlapping requests to be handled cleanly. Like channel requests, timeout rejects the promise but doesn't remove the pending record. The response will still be processed when it arrives.
 
 **State Changes**:
-- Pending registration tracked
-- Timeout timer started
+- Pending registration tracked for each type
+- Timeout timers started
 
 ---
 
@@ -162,10 +163,10 @@ const pendingReg = {
 ```
 
 **Header Encoding**:
-- Message type: 2 (channel data)
-- Channel ID: Channel's ID (for sending)
+- Header type: 1 (channel control)
+- Channel ID: Channel's ID (for sending, using `ids[0]`)
 - Sequence number: Next channel send sequence
-- Message-type ID: 5 (`mesgTypeReq` from TCC pre-loaded types)
+- Message type: 5 (`mesgTypeReq` from TCC's pre-loaded types)
 - EOM flag: true (single-chunk message)
 - Data: JSON-encoded request body
 
@@ -184,9 +185,9 @@ const pendingReg = {
 ```javascript
 const chunkBytes = headerBytes + dataBytes;
 if (!channelSendFlow.canSend(chunkBytes)) {
-  await channelSendFlow.waitForCredit(chunkBytes);
+  await channelSendFlow.waitForBudget(chunkBytes);
 }
-
+// Need to get buffer reservation and encode into it
 const seq = channelSendFlow.recordSent(chunkBytes);
 await transport._sendMessage(channelId, messageBuffer);
 ```
@@ -242,10 +243,10 @@ for (const name of request.types) {
     } else {
       #messageTypes.set(name, {
         name,
-        ids: [typeId],
-        direction: 'receive'  // We're receiving messages with this type
+        ids: [typeId]
       });
     }
+    // Create reverse mapping (ID → same record object)
     #messageTypes.set(typeId, #messageTypes.get(name));
   }
   
@@ -255,7 +256,8 @@ for (const name of request.types) {
 
 **State Changes**:
 - Message-type IDs assigned (new or reused)
-- Message-type records created/updated
+- Message-type records created/updated in channel's Map
+- Reverse mapping (ID → record) created
 - Next ID counter incremented (if new IDs assigned)
 
 ---
@@ -269,19 +271,22 @@ for (const name of request.types) {
 **Response Format** (JSON body):
 ```json
 {
-  "assignments": [
+  "accept": [
     { "name": "userMessage", "id": 1024 },
     { "name": "systemAlert", "id": 1026 },
     { "name": "statusUpdate", "id": 1028 }
+  ],
+  "reject": [
+    { "name": "prohibited", "reason": "not allowed" }
   ]
 }
 ```
 
 **Header Encoding**:
-- Message type: 2 (channel data)
-- Channel ID: Channel's ID (for sending)
+- Header type: 1 (channel control)
+- Channel ID: Channel's ID (for sending, using `ids[0]`)
 - Sequence number: Next channel send sequence
-- Message-type ID: 6 (`mesgTypeResp` from TCC pre-loaded types)
+- Message type: 6 (`mesgTypeResp` from TCC's pre-loaded types)
 - EOM flag: true (single-chunk message)
 - Data: JSON-encoded response body
 
@@ -308,10 +313,10 @@ for (const name of request.types) {
 
 **Actor**: [`Channel`](../../src/channel.esm.js) (requesting)
 
-**Trigger**: Channel control message received with message-type `mesgTypeResp` (6)
+**Trigger**: Channel control message chunk(s) received with message-type `mesgTypeResp` (6)
 
 **Action**:
-1. Decode message header and body
+1. Assemble and decode message header and body
 2. Extract message-type assignments
 3. Match to pending registration
 
@@ -328,62 +333,60 @@ for (const name of request.types) {
 **Action**: Store assigned message-type IDs:
 
 ```javascript
-const typeIds = [];
-
 for (const assignment of response.assignments) {
   const existing = #messageTypes.get(assignment.name);
   
   if (existing) {
     // Add ID to existing record (may create jitter)
-    if (!existing.ids.includes(assignment.id)) {
-      existing.ids.push(assignment.id);
-      existing.ids.sort((a, b) => a - b);  // Keep sorted (lowest first)
+    if (!Transport.addRoleId(assignment.id, existing.ids)) {
+      throw new ProtocolViolationError(...);
     }
   } else {
     // Create new record
     #messageTypes.set(assignment.name, {
       name: assignment.name,
-      ids: [assignment.id],
-      direction: 'send'  // We're sending messages with this type
+      ids: [assignment.id]
     });
   }
   
+  // Create reverse mapping (ID → same record object)
   #messageTypes.set(assignment.id, #messageTypes.get(assignment.name));
-  typeIds.push(assignment.id);
 }
 ```
 
 **State Changes**:
-- Message-type records created/updated
+- Message-type records created/updated in channel's Map
 - IDs stored in sorted array (lowest first)
 - Reverse mapping (ID → record) created
 
 ---
 
-### 13. Resolve Pending Registration (Requesting Side)
+### 13. Resolve Pending Registrations (Requesting Side)
 
 **Actor**: [`Channel`](../../src/channel.esm.js) (requesting)
 
-**Action**: Complete registration:
+**Action**: Complete registration for each type:
 
 ```javascript
-const pendingReg = #pendingMessageTypeRegs.get(requestKey);
-if (pendingReg) {
-  clearTimeout(pendingReg.timeout);
-  
-  // Resolve all promises waiting for this registration
-  for (const { resolve } of pendingReg.promises) {
-    resolve(typeIds);
+for (const assignment of response.assignments) {
+  const pendingReg = #pendingMessageTypeRegs.get(assignment.name);
+  if (pendingReg) {
+    clearTimeout(pendingReg.timeout);
+    
+    // Resolve all promises waiting for this type
+    for (const { resolve } of pendingReg.promises) {
+      resolve(assignment.id);
+    }
+    
+    #pendingMessageTypeRegs.delete(assignment.name);
   }
-  
-  #pendingMessageTypeRegs.delete(requestKey);
 }
 ```
 
 **State Changes**:
-- Timeout timer cleared
-- All waiting promises resolved
-- Pending registration removed
+- Timeout timers cleared for each type
+- All waiting promises resolved with assigned IDs
+- Pending registrations removed
 
 ---
 
@@ -489,39 +492,36 @@ if (pendingReg) {
 **Response Format**:
 ```json
 {
-  "assignments": [
+  "accept": [
     { "name": "type1", "id": 1024 },
     { "name": "type2", "id": 1026 },
     { "name": "type3", "id": 1028 }
+  ],
+  "reject": [
+    { "name": "type4", "reason": "unacceptable" }
   ]
 }
 ```
 
-### Simultaneous Registration (ID Jitter)
+### Simultaneous Registration (With ID Jitter)
 
 **Scenario**: Both sides register same message type simultaneously
+Side A: Even role\
+Side B: Odd role
 
-**Requesting Side A**:
-1. Sends `mesgTypeReq` for "userMessage"
-2. Receives `mesgTypeResp` with ID 1024 (even)
-3. Stores ID 1024 in `ids` array: `[1024]`
+1. Side A sends `mesgTypeReq` for "userMessage"
+2. Side B sends `mesgTypeReq` for "userMessage"
+3. Side B receives A's request
+4. Side B has no IDs and assigns ID 725 (odd), which it saves (`[725]`) and sends in a `mesgTypeResp`-with-accept reply to A
+5. Side B wakes any waiters, which can now send with ID 725, as the accept is ahead of any data depending upon it in the output ring and guaranteed to arrive first
+6. Side A receives B's request
+7. Side A has not received B's accept yet (so no A-side IDs yet), and assigns ID 1024 (even), which it saves (`[1024]`) and sends in a `mesgTypeResp`-with-accept reply to B
+8. Side A wakes any waiters, which can now send with ID 1024, as the accept is guaranteed to arrive first
+9. Side A receives B's accept and adds odd ID 725 (inserting, because it's smaller): `[725, 1024]`
+10. Side B receives A's accept and adds even ID 1024 (appending, because it's larger): `[725, 1024]`
 
-**Requesting Side B** (simultaneously):
-1. Sends `mesgTypeReq` for "userMessage"
-2. Receives `mesgTypeResp` with ID 1025 (odd)
-3. Stores ID 1025 in `ids` array: `[1025]`
 
-**Accepting Side A** (receives B's request):
-1. Assigns ID 1024 (even, because A is EVEN_ROLE)
-2. Sends `mesgTypeResp` with ID 1024
-3. B receives response, adds 1024 to array: `[1025, 1024]` → sorted: `[1024, 1025]`
-
-**Accepting Side B** (receives A's request):
-1. Assigns ID 1025 (odd, because B is ODD_ROLE)
-2. Sends `mesgTypeResp` with ID 1025
-3. A receives response, adds 1025 to array: `[1024, 1025]`
-
-**Result**: Both sides have `[1024, 1025]`, use 1024 (lowest) for sending. Automatic settlement.
+**Result**: By the time both request round-trips have completed, both sides have `[725, 1024]`. Both will settle (automatically) on 725 (lowest) for sending, but will also recognize and accept 1024.
 
 See [`id-jitter-settlement.md`](id-jitter-settlement.md) for detailed analysis (same pattern as channels).
 
@@ -533,9 +533,10 @@ See [`id-jitter-settlement.md`](id-jitter-settlement.md) for detailed analysis (
 - Idempotent (can re-register existing types)
 
 **Usage**:
-- Sender uses first (lowest) ID from array
+- Sender uses first (lowest) ID from array (like channels)
 - Receiver matches incoming ID to message-type record
 - Filtering by message type in `read({ only })` operations
+- Both sides of bidirectional channel can use registered types
 
 **Clearing**:
 - Message types cleared when channel reaches `closed` state
@@ -543,45 +544,72 @@ See [`id-jitter-settlement.md`](id-jitter-settlement.md) for detailed analysis (
 - Fresh registrations when channel reopens
 
 **Persistence**:
+- Message types stored in channel's message-type Map (indexed by name and ID)
 - Message types are per-channel (not transport-wide)
 - Different channels can have different message-type mappings
-- Same name can have different IDs on different channels
+- Same name can have different IDs (for channel data messages) on different channels
+- Channel control messages share TCC's (data) message-type mapping and are therefore the same across all channels
 
-### Pre-Loaded TCC Message Types
+### Pre-Loaded Channel Message Types
 
-**TCC Channel** (channel 0):
-- Pre-loaded with standard message types
-- No registration needed for these types
-- Both sides agree on IDs during handshake
+**Standard TCC / XP_CTRL_CHANNEL / Channel 0 Message Types**:
 
-**Standard TCC Types**:
-- `chanReq` (1) - Channel request
-- `chanResp` (2) - Channel response
-- `chanClose` (3) - Channel close initiation
-- `chanClosed` (4) - Channel close completion
-- `mesgTypeReq` (5) - Message-type registration request
-- `mesgTypeResp` (6) - Message-type registration response
+The TCC message-type mapping is used (shared) by all channels for control messages, in addition to control and data messages on the TCC itself.
+
+These types are pre-loaded only on the TCC. They are not user-visible (channel control messages are handled by the transport, not the user).
+
+(Note: These vary from the original requirements)
+
+- `tranStop` (0) - Transport shutdown (TCC data type)
+- `chanReq` (1) - Channel request (TCC data type)
+- `chanResp` (2) - Channel response (TCC data type)
+- `chanClose` (3) - Channel close initiation (control type)
+- `chanClosed` (4) - Channel close completion (control type)
+- `mesgTypeReq` (5) - Message-type registration request (control type)
+- `mesgTypeResp` (6) - Message-type registration response (control type)
+
+Additional, foundational (i.e. non-negotiated, required-in-advance) types may be added as required. The TCC's next-message-type id-counter should begin at 1024. Non-foundational types can be added via normal registration (by the transport, since there's no user access).
 
 **Usage**:
 ```javascript
-// TCC types pre-loaded, no registration needed
-#messageTypes.set('chanReq', { name: 'chanReq', ids: [1], direction: 'both' });
-#messageTypes.set(1, #messageTypes.get('chanReq'));
-// ... etc for other TCC types
+// TCC types pre-loaded (no registration needed)
+#messageTypes.set('mesgTypeReq', { name: 'mesgTypeReq', ids: [5] });
+#messageTypes.set(5, #messageTypes.get('mesgTypeReq'));
+#messageTypes.set('mesgTypeResp', { name: 'mesgTypeResp', ids: [6] });
+#messageTypes.set(6, #messageTypes.get('mesgTypeResp'));
+// ... etc for other control types
 ```
+
+***Standard C2C / LOG_CHANNEL / Channel 1 Message Types**
+
+These types are pre-registered (on both side) for the C2C.
+
+(Note: These may vary from the original requirements)
+
+- `except` (0) - uncaught exceptions
+- `trace` (1) - detailed execution tracing information
+- `debug` (2) - debugging information
+- `info` (3) - general/miscellaneous information and logging
+- `warn` (4) - warnings/non-fatal errors
+- `error` (5) - errors (i.e. fatal)
+
+Additional, foundational (i.e. non-negotiated, required-in-advance) types may be added as required. The C2C's next-message-type id-counter should begin at 1024. Non-foundational types can be added via normal registration.
+
+Note: The JSMAWS Responder will expect to use the `newMessageType` event's `event.preventDefault()` to reject custom registrations on applets' C2C.
 
 ### Pending Registration Management
 
-**Multiple Concurrent Requests**:
-- Multiple calls to `addMessageType()` for same type
-- All join same pending registration
-- Single request sent to remote
-- All promises resolved when response received
+**Individual Pending Records**:
+- Each message type has its own pending record
+- Allows overlapping requests to be handled cleanly
+- Multiple calls to `addMessageType()` for same type join same pending record
+- All promises for that type resolved when response received
 
 **Timeout Handling**:
-- Timeout rejects individual promise
+- Timeout rejects individual promise for that type
 - Pending registration remains (response may still arrive)
 - Late response still processed (resolves any remaining promises)
+- Other types in batch request unaffected by one type's timeout
 
 **Example**:
 ```javascript
@@ -589,8 +617,16 @@ See [`id-jitter-settlement.md`](id-jitter-settlement.md) for detailed analysis (
 const promise1 = channel.addMessageType('userMessage');
 const promise2 = channel.addMessageType('userMessage');
 
-// Only one request sent to remote
+// Both join same pending record
 // Both promises resolve when response received
+
+// Overlapping batch requests
+const batch1 = channel.addMessageTypes(['type1', 'type2', 'type3']);
+const batch2 = channel.addMessageTypes(['type2', 'type3', 'type4']);
+
+// type2 and type3 join existing pending records
+// type1 and type4 create new pending records
+// All promises resolve when responses received
 ```
 
 ### Security Considerations

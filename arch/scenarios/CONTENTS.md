@@ -92,7 +92,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 ### 3. Message-Type Registration
 
-**[`message-type-registration.md`](message-type-registration.md)** 📋
+**[`message-type-registration.md`](message-type-registration.md)** ✅
 - Registering named message types on a channel
 - Batch registration protocol
 - Channel control messages (`mesgTypeReq`, `mesgTypeResp`)
@@ -153,7 +153,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 **[`send-flow-control.md`](send-flow-control.md)** 📋
 - Checking available sending budget (transport and channel)
-- Waiting for credit (async)
+- Waiting for budget (async)
 - Recording sent chunks
 - In-flight tracking
 - Budget calculation
@@ -172,7 +172,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Range-based acknowledgments
 - ACK message format (transport-level, type 0 headers)
 - Processing received ACKs
-- Credit restoration
+- Budget restoration
 - Unblocking waiting writes
 - Module responsibilities: ReceiveFlowControl, SendFlowControl, Protocol
 
@@ -342,10 +342,15 @@ Each scenario document should include:
 - 📋 **Planned**: Scenario identified but not yet started
 - *(Future)*: Scenario for future implementation phases
 
-## Current Status Summary (2026-01-12)
+## Current Status Summary (2026-01-13)
 
-- **1 scenario complete** (✅): [`transport-initialization.md`](transport-initialization.md) - needs updates for transport ID and role determination
-- **3 new scenarios needed** (📋): role-determination.md, id-jitter-settlement.md, message-type-registration.md
+- **5 scenarios complete** (✅):
+  - [`transport-initialization.md`](transport-initialization.md) - needs updates for transport ID and role determination
+  - [`channel-request.md`](channel-request.md)
+  - [`channel-acceptance.md`](channel-acceptance.md)
+  - [`channel-closure.md`](channel-closure.md)
+  - [`message-type-registration.md`](message-type-registration.md)
+- **2 new scenarios needed** (📋): role-determination.md, id-jitter-settlement.md
 - **All other scenarios planned** (📋): Not yet written, will incorporate bidirectional channel model from the start
 
 ## Contributing

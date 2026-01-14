@@ -119,20 +119,20 @@ Deno.test('SendFlowControl - processAck throws on premature ACK', () => {
 	);
 });
 
-Deno.test('SendFlowControl - waitForCredit resolves immediately if sufficient', async () => {
+Deno.test('SendFlowControl - waitForBudget resolves immediately if sufficient', async () => {
 	const fc = new SendFlowControl(10000);
 	const start = Date.now();
-	await fc.waitForCredit(5000);
+	await fc.waitForBudget(5000);
 	const elapsed = Date.now() - start;
 	assertEquals(elapsed < 100, true);  // Should be nearly instant
 });
 
-Deno.test('SendFlowControl - waitForCredit waits for ACK', async () => {
+Deno.test('SendFlowControl - waitForBudget waits for ACK', async () => {
 	const fc = new SendFlowControl(10000);
 	fc.recordSent(8000);  // Budget now 2000
 
 	// Start waiting for 5000 bytes (insufficient)
-	const waitPromise = fc.waitForCredit(5000);
+	const waitPromise = fc.waitForBudget(5000);
 	
 	// Wait a bit to ensure it's actually waiting
 	await new Promise(resolve => setTimeout(resolve, 10));
@@ -145,16 +145,16 @@ Deno.test('SendFlowControl - waitForCredit waits for ACK', async () => {
 	assertEquals(fc.sendingBudget, 10000);
 });
 
-Deno.test('SendFlowControl - waitForCredit FIFO ordering', async () => {
+Deno.test('SendFlowControl - waitForBudget FIFO ordering', async () => {
 	const fc = new SendFlowControl(10000);
 	fc.recordSent(9000);  // Budget now 1000
 
 	const order = [];
 
 	// Queue three waiters
-	const wait1 = fc.waitForCredit(2000).then(() => order.push(1));
-	const wait2 = fc.waitForCredit(3000).then(() => order.push(2));
-	const wait3 = fc.waitForCredit(1500).then(() => order.push(3));
+	const wait1 = fc.waitForBudget(2000).then(() => order.push(1));
+	const wait2 = fc.waitForBudget(3000).then(() => order.push(2));
+	const wait3 = fc.waitForBudget(1500).then(() => order.push(3));
 
 	// ACK to restore budget
 	fc.processAck(1, []);  // Budget now 10000

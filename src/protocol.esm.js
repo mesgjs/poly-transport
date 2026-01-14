@@ -506,3 +506,21 @@ export function decodeHandshakeFrom (buffer, offset = 0) {
 export function decodeHandshake (buffer) {
 	return decodeHandshakeFrom(buffer, 0);
 }
+
+/**
+ * Protocol violation error for flow control issues.
+ */
+export class ProtocolViolationError extends Error {
+	/**
+	 * Create a new ProtocolViolationError.
+	 * @param {string} description - Description ('Out of order', 'Over budget', 'Duplicate ACK', etc)
+	 * @param {object} details - Additional context
+	 */
+	constructor (description, details) {
+		super(`Protocol violation: ${description}`);
+		this.name = this.constructor.name;
+		this.description = this.reason = description;
+		this.details = details;
+	}
+}
+

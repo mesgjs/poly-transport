@@ -215,10 +215,10 @@ pendingRequest.promises.push(promiseRecord);
 **Note**: No channel ID in request - only the acceptor assigns IDs.
 
 **Header Encoding**:
-- Message type: 2 (channel data)
+- Header type: 2 (channel data)
 - Channel ID: 0 (TCC)
 - Sequence number: Next TCC send sequence
-- Message-type ID: 1 (`chanReq` from TCC pre-loaded types)
+- Message type: 1 (`chanReq` from TCC pre-loaded types)
 - EOM flag: true (single-chunk message)
 - Data: JSON-encoded request body
 
@@ -237,7 +237,7 @@ pendingRequest.promises.push(promiseRecord);
 ```javascript
 const chunkBytes = headerBytes + dataBytes;
 if (!tccSendFlow.canSend(chunkBytes)) {
-  await tccSendFlow.waitForCredit(chunkBytes);
+  await tccSendFlow.waitForBudget(chunkBytes);
 }
 
 const seq = tccSendFlow.recordSent(chunkBytes);
@@ -300,6 +300,7 @@ return requestPromise;
      - Add new ID to channel's ID array
      - Sort IDs ascending: `[existingId, newId]` → sorted
      - Verify no duplicate even/odd IDs (protocol violation if duplicate)
+     - See `Transport.addRoleId(id, ids)`
      - Update remote limits if needed
      - Update `#channels` map with new ID as key
    - **Case B: Channel exists but is closing**:

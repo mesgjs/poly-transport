@@ -33,6 +33,39 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Helper to add an even or odd role id (stored in ascending order, allowing one of each)
+	 * @param {number} id Id candidate to be added
+	 * @param {Array<number>} ids 0/1/2-element set of ids
+	 * @returns {boolean} Success (true) or error (false)
+	 */
+	static addRoleId (id, ids) {
+		if (!Array.isArray(ids) || typeof id !== 'number') {
+			throw new TypeError('Invalid addRoleId parameter')
+		}
+		if (ids.length === 0) {
+			ids[0] = id; // First id
+			return true;
+		}
+		// There are 1 or 2 already
+		if (id === ids[0] || id === ids[1]) {
+			return true; // Existing id
+		}
+		if (ids.length > 1) {
+			return false; // Too many!
+		}
+		// There's only 1 right now
+		if (id % 2 === ids[0] % 2) {
+			return false; // Only one id allowed per even/odd parity
+		}
+		if (id < ids[0]) {
+			ids.unshift(id); // New id is smaller: insert
+		} else {
+			ids[1] = id; // New id is larger: append
+		}
+		return true;
+	}
+
+	/**
 	 * Set default options for new channel requests
 	 * @param {Object} options - Default channel options
 	 * @param {number} options.maxBufferBytes - Max buffer size (0 = unlimited)
@@ -143,9 +176,7 @@ export class Transport extends Eventable {
 		if (this.#closed) {
 			throw new Error('Transport is closed');
 		}
-
-		// Subclass implements the actual request logic
-		return await this._requestChannel(idOrName, options);
+		throw new Error(`Transport.requestChannel is not yet implemented`);
 	}
 
 	/**
@@ -229,7 +260,7 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>}
 	 */
 	async _start () {
-		throw new Error('_start() must be implemented by subclass');
+		throw new Error('Transport._start() must be implemented by subclass');
 	}
 
 	/**
@@ -239,19 +270,7 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>}
 	 */
 	async _close () {
-		throw new Error('_close() must be implemented by subclass');
-	}
-
-	/**
-	 * Request a channel (subclass implementation)
-	 * @protected
-	 * @abstract
-	 * @param {string|number} idOrName - Channel identifier or name
-	 * @param {Object} options - Request options
-	 * @returns {Promise<Channel>}
-	 */
-	async _requestChannel (idOrName, options) {
-		throw new Error('_requestChannel() must be implemented by subclass');
+		throw new Error('Transport._close() must be implemented by subclass');
 	}
 
 	/**
@@ -278,31 +297,12 @@ export class Transport extends Eventable {
 }
 
 /**
- * Custom error for timeout scenarios
+ * Timeout error
  */
 export class TimeoutError extends Error {
-	constructor (message = 'Operation timed out') {
+	constructor (message = 'Operation timed out', details) {
 		super(message);
-		this.name = 'TimeoutError';
-	}
-}
-
-/**
- * Custom error for duplicate reader scenarios
- */
-export class DuplicateReaderError extends Error {
-	constructor (message = 'Duplicate reader detected') {
-		super(message);
-		this.name = 'DuplicateReaderError';
-	}
-}
-
-/**
- * Custom error for unsupported operations
- */
-export class UnsupportedOperationError extends Error {
-	constructor (message = 'Unsupported operation') {
-		super(message);
-		this.name = 'UnsupportedOperationError';
+		this.name = this.constructor.name;
+		this.details = details;
 	}
 }
