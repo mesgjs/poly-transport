@@ -5,7 +5,7 @@ import { DuplicateReaderError } from '../../src/channel.esm.js';
 // Mock transport implementation for testing
 class MockTransport extends Transport {
 	#startCalled = false;
-	#closeCalled = false;
+	#stopCalled = false;
 	#requestedChannels = [];
 	#sentMessages = [];
 
@@ -13,8 +13,8 @@ class MockTransport extends Transport {
 		this.#startCalled = true;
 	}
 
-	async _close () {
-		this.#closeCalled = true;
+	async _stop () {
+		this.#stopCalled = true;
 	}
 
 	async requestChannel (idOrName, options) {
@@ -33,7 +33,7 @@ class MockTransport extends Transport {
 
 	// Test helpers
 	get startCalled () { return this.#startCalled; }
-	get closeCalled () { return this.#closeCalled; }
+	get stopCalled () { return this.#stopCalled; }
 	get requestedChannels () { return this.#requestedChannels; }
 	get sentMessages () { return this.#sentMessages; }
 }
@@ -42,7 +42,7 @@ Deno.test('Transport - constructor with default logger', () => {
 	const transport = new MockTransport();
 	assert(transport.logger !== null);
 	assertEquals(transport.isStarted, false);
-	assertEquals(transport.isClosed, false);
+	assertEquals(transport.isStopped, false);
 });
 
 Deno.test('Transport - constructor with custom logger', () => {
@@ -102,56 +102,56 @@ Deno.test('Transport - start throws if already started', async () => {
 	);
 });
 
-Deno.test('Transport - start throws if closed', async () => {
+Deno.test('Transport - start throws if stopped', async () => {
 	const transport = new MockTransport();
 	
 	await transport.start();
-	await transport.close();
+	await transport.stop();
 	
 	await assertRejects(
 		() => transport.start(),
 		Error,
-		'Transport is closed'
+		'Transport is stopped'
 	);
 });
 
-Deno.test('Transport - close', async () => {
+Deno.test('Transport - stop', async () => {
 	const transport = new MockTransport();
 	
 	await transport.start();
-	assertEquals(transport.isClosed, false);
+	assertEquals(transport.isStopped, false);
 	
-	await transport.close();
-	assertEquals(transport.isClosed, true);
-	assertEquals(transport.closeCalled, true);
+	await transport.stop();
+	assertEquals(transport.isStopped, true);
+	assertEquals(transport.stopCalled, true);
 });
 
-Deno.test('Transport - close is idempotent', async () => {
+Deno.test('Transport - stop is idempotent', async () => {
 	const transport = new MockTransport();
 	
 	await transport.start();
-	await transport.close();
-	await transport.close(); // Should not throw
+	await transport.stop();
+	await transport.stop(); // Should not throw
 	
-	assertEquals(transport.isClosed, true);
+	assertEquals(transport.isStopped, true);
 });
 
-Deno.test('Transport - close emits beforeClosing and closed events', async () => {
+Deno.test('Transport - stop emits beforeStopping and stopped events', async () => {
 	const transport = new MockTransport();
 	const events = [];
 	
-	transport.addEventListener('beforeClosing', (event) => {
-		events.push('beforeClosing');
+	transport.addEventListener('beforeStopping', (event) => {
+		events.push('beforeStopping');
 	});
 	
-	transport.addEventListener('closed', (event) => {
-		events.push('closed');
+	transport.addEventListener('stopped', (event) => {
+		events.push('stopped');
 	});
 	
 	await transport.start();
-	await transport.close();
+	await transport.stop();
 	
-	assertEquals(events, ['beforeClosing', 'closed']);
+	assertEquals(events, ['beforeStopping', 'stopped']);
 });
 
 Deno.test('Transport - requestChannel', async () => {
@@ -178,16 +178,16 @@ Deno.test('Transport - requestChannel throws if not started', async () => {
 	);
 });
 
-Deno.test('Transport - requestChannel throws if closed', async () => {
+Deno.test('Transport - requestChannel throws if stopped', async () => {
 	const transport = new MockTransport();
 	
 	await transport.start();
-	await transport.close();
+	await transport.stop();
 	
 	await assertRejects(
 		() => transport.requestChannel('test-channel'),
 		Error,
-		'Transport is closed'
+		'Transport is stopped'
 	);
 });
  */
@@ -242,9 +242,9 @@ Deno.test('Transport - abstract methods throw if not implemented', async () => {
 	);
 	
 	await assertRejects(
-		() => transport._close(),
+		() => transport._stop(),
 		Error,
-		'_close() must be implemented by subclass'
+		'_stop() must be implemented by subclass'
 	);
 	
 	/*

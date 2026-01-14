@@ -19,7 +19,7 @@ export class Transport extends Eventable {
 		lowBufferBytes: 0,      // 0 = no low-water mark
 	};
 	#started = false;
-	#closed = false;
+	#stopped = false;
 	#logger = null;
 
 	/**
@@ -101,8 +101,8 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>}
 	 */
 	async start () {
-		if (this.#closed) {
-			throw new Error('Transport is closed');
+		if (this.#stopped) {
+			throw new Error('Transport is stopped');
 		}
 		if (this.#started) {
 			throw new Error('Transport already started');
@@ -113,27 +113,27 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Close the transport and all channels
+	 * Stop the transport and close all channels
 	 * @param {Object} options - Close options
 	 * @param {boolean} options.discard - Discard pending data (default: false)
 	 * @param {number} options.timeout - Timeout in milliseconds
 	 * @returns {Promise<void>}
 	 */
-	async close (options = {}) {
-		if (this.#closed) {
+	async stop (options = {}) {
+		if (this.#stopped) {
 			return;
 		}
 
 		const { discard = false, timeout } = options;
 
-		// Emit beforeClosing event
-		await this._dispatchEvent('beforeClosing', {});
+		// Emit beforeStopping event
+		await this._dispatchEvent('beforeStopping', {});
 
 		// Close all channels
 		const channelClosePromises = [];
 		for (const channel of this.#channels.values()) {
 			channelClosePromises.push(
-				channel.close({ discard, timeout }).catch(err => {
+				channel.close({ discard }).catch(err => {
 					this.#logger.error('Error closing channel:', err);
 				})
 			);
@@ -154,12 +154,12 @@ export class Transport extends Eventable {
 		}
 
 		// Close the transport
-		await this._close();
+		await this._stop();
 
-		this.#closed = true;
+		this.#stopped = true;
 
 		// Emit closed event
-		await this._dispatchEvent('closed', {});
+		await this._dispatchEvent('stopped', {});
 	}
 
 	/**
@@ -173,8 +173,8 @@ export class Transport extends Eventable {
 		if (!this.#started) {
 			throw new Error('Transport not started');
 		}
-		if (this.#closed) {
-			throw new Error('Transport is closed');
+		if (this.#stopped) {
+			throw new Error('Transport is stopped');
 		}
 		throw new Error(`Transport.requestChannel is not yet implemented`);
 	}
@@ -205,11 +205,11 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Check if transport is closed
+	 * Check if transport is stopped
 	 * @returns {boolean}
 	 */
-	get isClosed () {
-		return this.#closed;
+	get isStopped () {
+		return this.#stopped;
 	}
 
 	/**
@@ -264,13 +264,13 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Close the transport (subclass implementation)
+	 * Stop the transport (subclass implementation)
 	 * @protected
 	 * @abstract
 	 * @returns {Promise<void>}
 	 */
-	async _close () {
-		throw new Error('Transport._close() must be implemented by subclass');
+	async _stop () {
+		throw new Error('Transport._stop() must be implemented by subclass');
 	}
 
 	/**
