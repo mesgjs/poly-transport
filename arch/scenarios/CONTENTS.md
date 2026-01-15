@@ -104,34 +104,56 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 ### 4. Data Transfer
 
-**[`simple-write.md`](simple-write.md)** 📋
-- Writing data to a channel
-- Data type handling (text including JSON, binary)
-- Single-chunk message
-- End-of-message (eom) flag
-- Module responsibilities: Channel, OutputRingBuffer, VirtualRWBuffer, Protocol
+**[`simple-write.md`](simple-write.md)** ✅
+- Writing single-chunk data to a channel
+- User calls [`channel.write()`](../../src/channel.esm.js) with data and options
+- Channel handles ALL complexity: budget waiting, encoding, queueing
+- Data type handling (string with UTF-8 encoding, binary Uint8Array)
+- Zero-copy encoding directly into output ring buffer
+- Write promise resolves after data encoded/queued (not after sent)
+- Background transport operations (send, consume, zero-after-write)
+- Module responsibilities: Channel, ChannelFlowControl, OutputRingBuffer, VirtualRWBuffer, Protocol, Transport
 
-**[`multi-chunk-write.md`](multi-chunk-write.md)** 📋
-- Writing large data that exceeds maxChunkBytes
-- Chunk splitting logic
-- Sequence number assignment
-- eom flag on final chunk
-- String encoding across chunks
-- Module responsibilities: Channel, OutputRingBuffer, VirtualRWBuffer, Protocol
+**[`multi-chunk-write.md`](multi-chunk-write.md)** ✅
+- Writing large data that exceeds maxChunkBytes (automatic)
+- User calls [`channel.write()`](../../src/channel.esm.js) with large data
+- Channel handles ALL complexity: automatic chunking, budget waiting per chunk, encoding
+- Chunk splitting logic (binary vs string data)
+- Sequence number assignment (one per chunk)
+- EOM flag only on final chunk (intermediate chunks have no EOM)
+- String encoding across chunks (variable-length UTF-8 handling)
+- Zero-copy encoding directly into output ring buffer (per chunk)
+- Write promise resolves after ALL chunks encoded/queued (not after sent)
+- Background transport operations (send chunks, consume, zero-after-write)
+- Module responsibilities: Channel, ChannelFlowControl, OutputRingBuffer, VirtualRWBuffer, Protocol, Transport
 
-**[`simple-read.md`](simple-read.md)** 📋
-- Reading data from a channel
-- Synchronous vs asynchronous read
-- Message type filtering (`only` parameter)
-- Timeout handling
-- Module responsibilities: Channel, VirtualBuffer, Protocol
+**[`simple-read.md`](simple-read.md)** ✅
+- Reading single-chunk data from a channel
+- User calls [`channel.read()`](../../src/channel.esm.js) or [`channel.readSync()`](../../src/channel.esm.js)
+- Channel handles ALL complexity: buffer management, sequence validation, ACK generation
+- Synchronous vs asynchronous read (blocking vs non-blocking)
+- Message type filtering (`only` parameter) for multiplexing
+- Timeout handling (async only)
+- Chunk object with `process()` and `done()` methods for consumption tracking
+- Duplicate reader prevention (unfiltered and filtered)
+- Protocol violation detection (out-of-order, over-budget)
+- ACK generation when buffer usage drops below low-water mark
+- Zero-copy data access via VirtualBuffer
+- Module responsibilities: Channel, ChannelFlowControl, VirtualBuffer, Protocol, Transport
 
-**[`streaming-read.md`](streaming-read.md)** 📋
-- Reading multi-chunk messages
-- Chunk assembly
-- Detecting end-of-message
-- Partial message handling
-- Module responsibilities: Channel, VirtualBuffer, Protocol
+**[`streaming-read.md`](streaming-read.md)** ✅
+- Reading multi-chunk messages from a channel
+- User calls [`channel.read()`](../../src/channel.esm.js) repeatedly until EOM
+- Channel handles ALL complexity: buffer management, sequence validation, ACK generation
+- EOM flag detection (detect end-of-message)
+- Streaming vs buffering strategies (process immediately vs assemble complete message)
+- Chunk assembly for complete messages (concatenate or VirtualBuffer spanning)
+- Message type filtering (same type for all chunks)
+- Timeout handling for each chunk
+- Incomplete message handling (connection lost before EOM)
+- Periodic ACK generation (not for every chunk)
+- Zero-copy reading (streaming) or one copy (buffering)
+- Module responsibilities: Channel, ChannelFlowControl, VirtualBuffer, Protocol, Transport
 
 ### 5. Flow Control and Budgets
 
@@ -255,7 +277,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 **[`console-intercept.md`](console-intercept.md)** 📋
 - Console method interception
 - Routing console output to C2C channel (bidirectional channel 1)
-- Log level handling (message types 0-4)
+- Log level handling (message types 0-5: exceptions, trace, debug, info/log, warn, error)
 - Applet → Responder → Operator → Logger pipeline
 - Module responsibilities: Transport, Channel (or dedicated console handler)
 
@@ -342,14 +364,19 @@ Each scenario document should include:
 - 📋 **Planned**: Scenario identified but not yet started
 - *(Future)*: Scenario for future implementation phases
 
-## Current Status Summary (2026-01-13)
+## Current Status Summary (2026-01-15)
 
-- **5 scenarios complete** (✅):
-  - [`transport-initialization.md`](transport-initialization.md) - needs updates for transport ID and role determination
-  - [`channel-request.md`](channel-request.md)
-  - [`channel-acceptance.md`](channel-acceptance.md)
+- **9 scenarios complete** (✅):
+  - [`transport-initialization.md`](transport-initialization.md) - Updated with TCC/C2C message types, transport budget, writer serialization
+  - [`transport-shutdown.md`](transport-shutdown.md) - Updated with TCC message types, writer serialization
+  - [`channel-request.md`](channel-request.md) - Updated with TCC message types, writer serialization, TaskQueue
+  - [`channel-acceptance.md`](channel-acceptance.md) - Updated with TCC message types, writer serialization, TaskQueue
   - [`channel-closure.md`](channel-closure.md)
   - [`message-type-registration.md`](message-type-registration.md)
+  - [`simple-write.md`](simple-write.md) - Single-chunk write scenario
+  - [`multi-chunk-write.md`](multi-chunk-write.md) - Multi-chunk write scenario for large messages
+  - [`simple-read.md`](simple-read.md) - Single-chunk read scenario
+  - [`streaming-read.md`](streaming-read.md) - Multi-chunk read scenario (streaming vs buffering)
 - **2 new scenarios needed** (📋): role-determination.md, id-jitter-settlement.md
 - **All other scenarios planned** (📋): Not yet written, will incorporate bidirectional channel model from the start
 

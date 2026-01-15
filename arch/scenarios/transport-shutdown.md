@@ -143,20 +143,32 @@ for (const channel of this.#channels.values()) {
 #### 4d. Send Channel Close Message
 
 **Action**: Send close message to remote via TCC
-**Message Type**: TCC data message (type 2) with message-type `chanClose`
+**Message Type**: TCC data message (type 2) with message-type `chanClose` (5)
 **Purpose**: Notify remote that channel is closing
 
-**Close Message Format** (per [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md)):
+**Close Message Format** (per [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md) and [`channel-closure.md`](channel-closure.md)):
 ```javascript
 {
   // Sent as TCC data message (type 2)
-  // Message-type: 'chanClose' (TCC message-type mapping)
+  // Message-type: 'chanClose' (5) (TCC message-type mapping)
   "channelId": [4, 5],  // ID array for the closing channel
+  "discard": false,     // Discard flag (false=graceful, true=discard input)
   "reason": "graceful shutdown"  // Optional reason
 }
 ```
 
+**TCC Pre-defined Message Types** (0-6):
+- 0: `tranStop` - Transport shutdown
+- 1: `chanReq` - Channel request
+- 2: `chanResp` - Channel response
+- 3: `mesgTypeReq` - Message-type request
+- 4: `mesgTypeResp` - Message-type response
+- 5: `chanClose` - Channel closure initiation
+- 6: `chanClosed` - Channel closure acknowledgment
+
 **Note**: Channel close uses TCC data messages (not channel control messages) to ensure closure can proceed even if the channel itself is wedged or has no remaining budget.
+
+**Writer Serialization**: Close message is sent through channel's write queue (TaskQueue) with chunk-level serialization, reserving channel budget, transport budget, and ring buffer space atomically.
 
 #### 4e. Wait for Remote Close Acknowledgment
 
@@ -364,19 +376,28 @@ await this._dispatchEvent('stopped', {});
 - Transport-specific `_stop()` implementations
 - Output ring buffer cleanup in `_stop()`
 - Buffer pool cleanup in `_stop()`
-- Channel close messages in protocol (TCC `chanClose`)
+- Channel close messages in protocol (TCC `chanClose` and `chanClosed`)
+- Transport budget management (TransportFlowControl + TaskQueue)
+- Channel initialization with ChannelFlowControl and write queue (TaskQueue)
+- Writer serialization architecture (chunk-level serialization)
 
 ### Discrepancies Between Requirements and Implementation
 
 1. **Channel Closure**: Requirements specify detailed channel closure sequence, but no Channel class exists yet.
 
-2. **Close Messages**: Channel close uses TCC data messages with message-type `chanClose` (per [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md:108-109)), but protocol implementation doesn't include this yet.
+2. **Close Messages**: Channel close uses TCC data messages with message-types `chanClose` (5) and `chanClosed` (6) (per [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md:108-109) and [`channel-closure.md`](channel-closure.md)), but protocol implementation doesn't include these yet.
 
 3. **Resource Cleanup**: Requirements specify buffer and ring buffer cleanup, but `_stop()` implementations don't exist yet.
 
 4. **Force-Close on Timeout**: Current implementation rejects on timeout but doesn't force-close remaining channels.
 
 5. **Channel State Management**: Channels remain registered after closure (per requirements.md:700-702), but Channel class doesn't exist yet to manage state transitions.
+
+6. **Transport Budget Management**: Writer serialization architecture (writer-serialization.md) requires TransportFlowControl and budget TaskQueue, but base class doesn't implement these yet.
+
+7. **Channel Initialization**: TCC and C2C channels need ChannelFlowControl and write queue (TaskQueue) per writer serialization architecture, but initialization sequence not yet implemented.
+
+8. **TCC Message Types**: TCC now has 7 pre-defined message types (0-6) including `chanClose` (5) and `chanClosed` (6), but scenario previously listed only 5 (0-4).
 
 ### Key Design Decisions
 

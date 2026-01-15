@@ -205,7 +205,11 @@ const channel = new Channel({
   name: request.name,
   ids: [channelId],  // Single ID from this acceptance
   state: 'open',
-  flowControl: new ChannelFlowControl(event.localLimits.maxBufferBytes, request.maxBufferBytes),
+  flowControl: new ChannelFlowControl(
+    event.localLimits.maxBufferBytes,
+    request.maxBufferBytes
+  ),
+  writeQueue: new TaskQueue(),  // Chunk-level serialization
   localLimits: event.localLimits,
   remoteLimits: {
     maxBufferBytes: request.maxBufferBytes,
@@ -250,36 +254,66 @@ const channel = new Channel({
 - Header type: 2 (channel data)
 - Channel ID: 0 (TCC)
 - Sequence number: Next TCC send sequence
-- Message type: 2 (`chanResp` from TCC pre-loaded types)
+- Message type: 2 (`chanResp` from TCC pre-loaded types 0-6)
 - EOM flag: true (single-chunk message)
 - Data: JSON-encoded response body
 
+**TCC Pre-defined Message Types** (0-6):
+- 0: `tranStop` - Transport shutdown
+- 1: `chanReq` - Channel request
+- 2: `chanResp` - Channel response
+- 3: `mesgTypeReq` - Message-type request
+- 4: `mesgTypeResp` - Message-type response
+- 5: `chanClose` - Channel closure initiation
+- 6: `chanClosed` - Channel closure acknowledgment
+
 **State Changes**:
 - TCC send sequence incremented
-- Message encoded into output ring buffer
+- Message encoded into output ring buffer via writer serialization
 
 ---
 
-### 7. Check TCC Sending Budget and Send
+### 7. Reserve Budgets and Send (Writer Serialization)
 
-**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance) and Transport
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance), Transport, and OutputRingBuffer
 
-**Action**: Verify sufficient budget and send:
+**Action**: Serialize chunk write through TaskQueue with atomic budget reservation:
 
 ```javascript
-const chunkBytes = headerBytes + dataBytes;
-if (!tccSendFlow.canSend(chunkBytes)) {
-  await tccSendFlow.waitForBudget(chunkBytes);
-}
-
-const seq = tccSendFlow.recordSent(chunkBytes);
-await transport._sendMessage(0, messageBuffer);
+// Enter TCC write queue (chunk-level serialization)
+await tccChannel.#writeQueue.task(async () => {
+  const chunkBytes = headerBytes + dataBytes;
+  
+  // Reserve channel budget (atomic, provisional)
+  await tccFlowControl.reserveBudget(chunkBytes);
+  
+  // Reserve transport budget (atomic, provisional, FIFO round-robin)
+  await transport._reserveBudget(chunkBytes);
+  
+  // Reserve ring buffer space (atomic, single waiter)
+  const reservation = await outputRing.reserveAsync(chunkBytes);
+  
+  // Assign sequence number
+  const seq = tccFlowControl.assignSequence(chunkBytes);
+  
+  // Encode header and data into reservation
+  protocol.encodeChannelHeaderInto(reservation, 0, 2, { seq, type: 2, eom: true, ... });
+  reservation.set(jsonData, 18);
+  
+  // Commit to ring buffer
+  outputRing.commit(reservation);
+});
 ```
 
 **State Changes**:
+- Chunk serialized through TCC write queue (TaskQueue)
+- Channel budget reserved atomically
+- Transport budget reserved atomically (FIFO round-robin across all channels)
+- Ring buffer space reserved atomically
+- Sequence number assigned
 - Chunk recorded in TCC `ChannelFlowControl` in-flight map
-- TCC sending budget reduced by `chunkBytes`
-- Message sent to remote transport
+- Message encoded and committed to output ring buffer
+- Background transport sends message asynchronously
 
 ---
 
@@ -311,26 +345,31 @@ await transport._sendMessage(0, messageBuffer);
 - Header type: 2 (channel data)
 - Channel ID: 0 (TCC)
 - Sequence number: Next TCC send sequence
-- Message-type ID: 2 (`chanResp` from TCC pre-loaded types)
+- Message-type ID: 2 (`chanResp` from TCC pre-loaded types 0-6)
 - EOM flag: true (single-chunk message)
 - Data: JSON-encoded response body
 
 **State Changes**:
 - TCC send sequence incremented
-- Message encoded into output ring buffer
+- Message encoded into output ring buffer via writer serialization
 
 ---
 
-### 9. Check TCC Sending Budget and Send Rejection
+### 9. Reserve Budgets and Send Rejection (Writer Serialization)
 
-**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance) and Transport
+**Actor**: [`ChannelFlowControl`](../../src/channel-flow-control.esm.js) (TCC instance), Transport, and OutputRingBuffer
 
-**Action**: Same as step 7 (verify budget and send)
+**Action**: Same as step 7 (serialize chunk write through TaskQueue with atomic budget reservation)
 
 **State Changes**:
+- Chunk serialized through TCC write queue (TaskQueue)
+- Channel budget reserved atomically
+- Transport budget reserved atomically (FIFO round-robin across all channels)
+- Ring buffer space reserved atomically
+- Sequence number assigned
 - Chunk recorded in TCC `ChannelFlowControl` in-flight map
-- TCC sending budget reduced by `chunkBytes`
-- Message sent to remote transport
+- Message encoded and committed to output ring buffer
+- Background transport sends message asynchronously
 
 ---
 

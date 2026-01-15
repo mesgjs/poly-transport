@@ -387,6 +387,8 @@ this.outputRing.consume(1);
 - **2**: `chanResp` - Channel setup response (accept/reject)
 - **3**: `mesgTypeReq` - Message-type registration request (shared with all channel control messages)
 - **4**: `mesgTypeResp` - Message-type registration response (shared with all channel control messages)
+- **5**: `chanClose` - Channel closure initiation (added per channel-closure.md)
+- **6**: `chanClosed` - Channel closure acknowledgment (added per channel-closure.md)
 
 **Important Notes**:
 - TCC uses **data messages** (type 2) for channel setup/teardown (not control messages)
@@ -397,7 +399,9 @@ this.outputRing.consume(1);
 
 **State Changes**:
 - Register channel 0 in `#channels` map
-- Pre-load message-type mappings (0-4) into TCC channel
+- Pre-load message-type mappings (0-6) into TCC channel
+- Initialize ChannelFlowControl for TCC (bidirectional flow control)
+- Initialize write queue (TaskQueue) for chunk-level serialization
 - Channel is bidirectional and ready for transport control operations
 
 ### 9. Initialize Console-Content Channel (C2C) - Optional
@@ -422,14 +426,17 @@ this.outputRing.consume(1);
 
 **Pre-defined Message Types**:
 - **0**: Uncaught exception messages
-- **1**: `debug`-level messages
-- **2**: `info/log`-level messages
-- **3**: `warn`-level messages
-- **4**: `error`-level messages
+- **1**: `trace`-level messages
+- **2**: `debug`-level messages
+- **3**: `info/log`-level messages
+- **4**: `warn`-level messages
+- **5**: `error`-level messages
 
 **State Changes**:
 - Register channel 1 in `#channels` map (if enabled)
 - Expose channel via `PolyTransport.LOG_CHANNEL` symbol
+- Initialize ChannelFlowControl for C2C (bidirectional flow control)
+- Initialize write queue (TaskQueue) for chunk-level serialization
 - Application's console interception can now check if C2C is active
 - If active, route console/exception output to C2C channel
 
@@ -463,9 +470,17 @@ Input Stream → Buffer Pool → Protocol.decodeHeaderFrom() → Message Router
 - Transport is in `started` state (`#started === true`)
 - Transport UUID generated and transport role determined (EVEN_ROLE or ODD_ROLE)
 - Buffer pool and output ring buffer are initialized and ready
+- Transport budget management initialized (TransportFlowControl + TaskQueue)
 - Transport is ready to accept channel requests
-- TCC (channel 0) is active and ready with pre-loaded message types (0-4)
-- C2C (channel 1) is active if enabled by both sides, accessible via `PolyTransport.LOG_CHANNEL`, with pre-loaded message types (0-4)
+- TCC (channel 0) is active and ready:
+  - Pre-loaded message types (0-6) including `chanClose` and `chanClosed`
+  - ChannelFlowControl initialized for bidirectional flow control
+  - Write queue (TaskQueue) initialized for chunk-level serialization
+- C2C (channel 1) is active if enabled by both sides:
+  - Accessible via `PolyTransport.LOG_CHANNEL` symbol
+  - Pre-loaded message types (0-5)
+  - ChannelFlowControl initialized for bidirectional flow control
+  - Write queue (TaskQueue) initialized for chunk-level serialization
 - Event handlers are registered and ready
 - Message processing loop is running
 - Handshake is complete (byte-stream transports)
@@ -531,6 +546,12 @@ Input Stream → Buffer Pool → Protocol.decodeHeaderFrom() → Message Router
 4. **Configuration Storage**: Requirements specify configuration parameters should be readable (requirements.md:697), but base class doesn't expose `minChannelId`, `minMessageTypeId`, or other handshake config.
 
 5. **C2C Status API**: Requirements indicate console interception checks if C2C is active, but no API exists to query C2C status.
+
+6. **Transport Budget Management**: Writer serialization architecture (writer-serialization.md) requires TransportFlowControl and budget TaskQueue, but base class doesn't implement these yet.
+
+7. **Channel Initialization**: TCC and C2C channels need ChannelFlowControl and write queue (TaskQueue) per writer serialization architecture, but initialization sequence not yet implemented.
+
+8. **Message Type Count**: TCC now has 7 pre-defined message types (0-6) including `chanClose` and `chanClosed` per channel-closure.md, but scenario previously listed only 5 (0-4).
 
 ### Key Design Decisions
 

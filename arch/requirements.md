@@ -408,8 +408,8 @@ flowchart TD
 - `c2cEnabled=false`: controls whether C2C (console-content channel) is enabled
 - `c2cMaxBuffer`: optional maximum C2C buffer size
 - `c2cMaxCount`: optional maximum C2C message count
-- `minChannelId=256`: the minimum auto-assigned channel id
-- `minMessageTypeId=1024`: the minimum auto-assigned message-type id
+- `minChannelId=2`: the minimum auto-assigned channel id
+- `minMessageTypeId=256`: the minimum auto-assigned message-type id
 - `version=1`: the transport protocol version (for future extensions)
 
 ## Byte-Stream Message Types (First Byte)
@@ -1356,3 +1356,65 @@ The `channel.close({ discard })` method accepts a single parameter:
 - `TimeoutError` is a reasonable class of errors (retain)
 - `ProtocolViolationError` is a reasonable class of errors (retain)
 - `DuplicateReaderError` is a (very) specific error, not a class of errors (just use `Error` instead)
+
+## Update 2026-01-14-A
+
+### Writer Serialization Architecture
+
+**Date**: 2026-01-14
+
+**Architectural Document**: [`arch/writer-serialization.md`](writer-serialization.md)
+
+**Problem**: Multi-writer scenarios with shrinkable reservations create race conditions and potential deadlocks:
+- Budget theft: Writer waits for budget, budget becomes available, another writer steals it
+- Shrinkable reservations: Writer reserves worst-case (e.g., 3000 bytes for string), encodes only 1500 bytes, shrinks - next writer must see freed budget
+- Three-level resource coordination: Channel budget, transport budget, ring buffer space must all be reserved atomically
+
+**Solution**: **Chunk-level serialization** using TaskQueue to serialize entire chunk write operations.
+
+**Key Principles**:
+1. **Serialize at chunk level** (not write-operation level) for fairness
+2. **Dynamic string chunking** (cannot pre-plan due to variable-length UTF-8)
+3. **Provisional reservations** until chunk completes
+4. **Atomic reservation** when waiter is awakened
+5. **Release unused budget** after shrinking
+6. **FIFO ordering** at each level
+7. **Single waiter** for ring buffer space (TaskQueue ensures serialization)
+8. **Fixed resource acquisition order** (channel → transport → ring)
+
+**Architecture**:
+- **Channel**: Per-channel TaskQueue serializes chunks within channel
+- **Transport**: Shared TaskQueue serializes budget reservations across all channels (FIFO round-robin)
+- **Ring Buffer**: Per-ring TaskQueue serializes space reservations, single waiter model
+
+**API Changes**:
+
+**ChannelFlowControl**:
+- `async reserveBudget(chunkBytes)` - Reserve budget atomically (was `waitForBudget()`)
+- `releaseBudget(bytes)` - Release unused budget after shrinking (new)
+- `assignSequence(chunkBytes)` - Assign sequence number (was part of `recordSent()`)
+- `#processWaiters()` - Now reserves atomically before resolving
+
+**Transport**:
+- `async _reserveBudget(bytes)` - Reserve transport budget (channels call this)
+- `_releaseBudget(bytes)` - Release unused transport budget
+- `#budgetQueue` - TaskQueue for serializing budget reservations across channels
+- `#transportBudget` - TransportFlowControl instance
+
+**OutputRingBuffer**:
+- `async reserveAsync(length)` - Async reserve with waiting (serialized via TaskQueue)
+- `#reserveQueue` - TaskQueue for serializing reservations
+- `#spaceWaiter` - Single waiter object (not array)
+- `consume()` - Wakes single waiter if space requirement met
+
+**Rationale for Chunk-Level**:
+- **Fairness**: Large multi-chunk messages don't block small single-chunk messages
+- **Interleaving**: Chunks from different messages can interleave naturally
+- **Dynamic chunking**: String encoding requires dynamic chunking (cannot pre-plan)
+- **Acceptable overhead**: TaskQueue overhead is minimal (single microtask per chunk)
+
+**Example**: Channel with 3 pending writes (Message A: 50 chunks, Message B: 1 chunk, Message C: 1 chunk):
+- **Write-operation-level** (unfair): `A1 A2 ... A50 B1 C1` (B and C wait for entire A)
+- **Chunk-level** (fair): `A1 B1 A2 C1 A3 A4 ... A50` (B and C interleave with A)
+
+**Implementation**: See [`arch/writer-serialization.md`](writer-serialization.md) for complete details.
