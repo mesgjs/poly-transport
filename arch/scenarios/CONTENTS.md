@@ -166,21 +166,24 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Per-channel budget tracking (bidirectional channels have both send and receive budgets)
 - Module responsibilities: Channel, ChannelFlowControl
 
-**[`send-flow-control.md`](send-flow-control.md)** 📋
-- Checking available sending budget (transport and channel)
-- Waiting for budget (async)
-- Recording sent chunks
-- In-flight tracking
-- Budget calculation
-- Module responsibilities: ChannelFlowControl, Channel
+**[`send-flow-control.md`](send-flow-control.md)** ✅
+- Three-resource coordination (channel budget, transport budget, ring buffer space)
+- Atomic budget reservation (prevents budget theft)
+- Provisional reservations with shrinking (string encoding)
+- Sequence number assignment and in-flight tracking
+- ACK processing and budget restoration (channel and transport levels)
+- FIFO ordering at all levels (fairness)
+- Protocol violation detection (duplicate ACK, premature ACK, unknown channel)
+- Module responsibilities: ChannelFlowControl, Transport, OutputRingBuffer, Protocol
 
-**[`receive-flow-control.md`](receive-flow-control.md)** 📋
-- Recording received chunks
-- Sequence validation
-- Budget validation (over-budget detection)
-- Buffer usage tracking
-- Consumption tracking
-- Module responsibilities: ChannelFlowControl, Channel
+**[`receive-flow-control.md`](receive-flow-control.md)** ✅
+- Recording received chunks with sequence and budget validation
+- Chunk storage in read buffer (zero-copy VirtualBuffer)
+- User consumption tracking with idempotent `done()` method
+- Low-water mark trigger for ACK generation
+- Protocol violation handling (out-of-order, over-budget, unknown channel)
+- Chunk object API with bound functions/closures (scoped consumption state)
+- Module responsibilities: ChannelFlowControl, Channel, Transport, Protocol, VirtualBuffer
 
 **[`ack-generation-processing.md`](ack-generation-processing.md)** ✅
 - Generating ACK information (channel low-water mark trigger)
@@ -361,7 +364,7 @@ Each scenario document should include:
 
 ## Current Status Summary (2026-01-15)
 
-- **16 scenarios complete** (✅):
+- **18 scenarios complete** (✅):
   - **Transport Lifecycle**:
     - [`transport-initialization.md`](transport-initialization.md) - Transport startup with TCC/C2C channels, **role determination** (step 7d), handshake
     - [`transport-shutdown.md`](transport-shutdown.md) - Graceful transport closure with channel cleanup and timeout handling
@@ -379,6 +382,8 @@ Each scenario document should include:
     - [`streaming-read.md`](streaming-read.md) - Multi-chunk read with streaming vs buffering
   - **Flow Control and Budgets**:
     - [`ack-generation-processing.md`](ack-generation-processing.md) - ACK generation and processing (ring buffer only, fire-and-forget)
+    - [`receive-flow-control.md`](receive-flow-control.md) - Receive-side flow control with validation and consumption tracking
+    - [`send-flow-control.md`](send-flow-control.md) - Send-side flow control with three-resource coordination and atomic reservations
 - **All other scenarios planned** (📋): Not yet written, will incorporate bidirectional channel model from the start
 
 **Note**: Role determination is fully documented in [`transport-initialization.md`](transport-initialization.md) step 7d (lines 316-351). A separate scenario is not needed as it's an integral part of the handshake sequence.
