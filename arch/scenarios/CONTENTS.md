@@ -26,7 +26,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 ### 1. Transport Lifecycle
 
-**[`transport-initialization.md`](transport-initialization.md)** ✅
+**[`transport-initialization.md`](transport-initialization.md)** ✅ Complete
 - Creating a transport instance
 - Configuring channel defaults
 - Starting the transport
@@ -35,18 +35,11 @@ Scenarios are organized by functional area and complexity. The order below repre
 - TCC and C2C channel initialization (both bidirectional)
 - Module responsibilities: Transport base, specific transport implementations
 
-**[`role-determination.md`](role-determination.md)** 📋
-- Transport UUID generation via `crypto.randomUUID()`
-- Handshake exchange with transport IDs
-- Lexicographic comparison for role assignment
-- EVEN_ROLE vs ODD_ROLE implications
-- Even/odd ID assignment strategy
-- Module responsibilities: Transport base, Protocol
 
-**[`transport-shutdown.md`](transport-shutdown.md)** 📋
+**[`transport-shutdown.md`](transport-shutdown.md)** ✅ Complete
 - Graceful transport closure
 - Channel cleanup sequence
-- `beforeClosing` and `closed` event dispatch
+- `beforeStopping` and `stopped` event dispatch
 - Timeout handling
 - Discard vs graceful shutdown
 - Transport shutdown messages on TCC (`tranStop`)
@@ -54,7 +47,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 ### 2. Channel Lifecycle
 
-**[`channel-request.md`](channel-request.md)** 📋
+**[`channel-request.md`](channel-request.md)** ✅ Complete
 - Requesting a new bidirectional channel
 - Channel request as TCC data message (`chanReq`)
 - `newChannelRequest` event handling
@@ -64,7 +57,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Timeout scenarios
 - Module responsibilities: Transport, Channel, Protocol
 
-**[`channel-acceptance.md`](channel-acceptance.md)** 📋
+**[`channel-acceptance.md`](channel-acceptance.md)** ✅ Complete
 - Receiving channel request
 - Event handler invocation
 - Accept response with configuration (TCC data message `chanResp`)
@@ -74,7 +67,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Channel registration (bidirectional)
 - Module responsibilities: Transport, Channel, Protocol
 
-**[`id-jitter-settlement.md`](id-jitter-settlement.md)** 📋
+**[`id-jitter-settlement.md`](id-jitter-settlement.md)** ✅ Complete
 - Simultaneous channel requests from both sides
 - Temporary use of higher ID during overlap
 - Automatic settlement to lower ID
@@ -82,7 +75,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - First (lowest) ID used for sending
 - Module responsibilities: Transport, Channel
 
-**[`channel-closure.md`](channel-closure.md)** 📋
+**[`channel-closure.md`](channel-closure.md)** ✅ Complete
 - Initiating channel close (entire channel, not directional)
 - Flushing pending data in both directions
 - Close message on TCC (`chanClose`)
@@ -189,14 +182,16 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Consumption tracking
 - Module responsibilities: ChannelFlowControl, Channel
 
-**[`ack-generation-processing.md`](ack-generation-processing.md)** 📋
-- Generating ACK information
-- Range-based acknowledgments
+**[`ack-generation-processing.md`](ack-generation-processing.md)** ✅
+- Generating ACK information (channel low-water mark trigger)
+- Range-based acknowledgments (base sequence + include/skip ranges)
 - ACK message format (transport-level, type 0 headers)
-- Processing received ACKs
-- Budget restoration
-- Unblocking waiting writes
-- Module responsibilities: ChannelFlowControl, Protocol
+- Processing received ACKs (channel and transport budget restoration)
+- **Critical**: ACKs use ring buffer space only (fire-and-forget, no ACK-on-ACK)
+- Ring buffer reservation with `forAck: true` parameter
+- Protocol violation handling (unknown channel, duplicate ACK, premature ACK)
+- Unblocking waiting writes (FIFO order)
+- Module responsibilities: ChannelFlowControl, Protocol, Transport, OutputRingBuffer
 
 **[`protocol-violation.md`](protocol-violation.md)** 📋
 - Out-of-order sequence detection
@@ -366,19 +361,27 @@ Each scenario document should include:
 
 ## Current Status Summary (2026-01-15)
 
-- **9 scenarios complete** (✅):
-  - [`transport-initialization.md`](transport-initialization.md) - Updated with TCC/C2C message types, transport budget, writer serialization
-  - [`transport-shutdown.md`](transport-shutdown.md) - Updated with TCC message types, writer serialization
-  - [`channel-request.md`](channel-request.md) - Updated with TCC message types, writer serialization, TaskQueue
-  - [`channel-acceptance.md`](channel-acceptance.md) - Updated with TCC message types, writer serialization, TaskQueue
-  - [`channel-closure.md`](channel-closure.md)
-  - [`message-type-registration.md`](message-type-registration.md)
-  - [`simple-write.md`](simple-write.md) - Single-chunk write scenario
-  - [`multi-chunk-write.md`](multi-chunk-write.md) - Multi-chunk write scenario for large messages
-  - [`simple-read.md`](simple-read.md) - Single-chunk read scenario
-  - [`streaming-read.md`](streaming-read.md) - Multi-chunk read scenario (streaming vs buffering)
-- **2 new scenarios needed** (📋): role-determination.md, id-jitter-settlement.md
+- **16 scenarios complete** (✅):
+  - **Transport Lifecycle**:
+    - [`transport-initialization.md`](transport-initialization.md) - Transport startup with TCC/C2C channels, **role determination** (step 7d), handshake
+    - [`transport-shutdown.md`](transport-shutdown.md) - Graceful transport closure with channel cleanup and timeout handling
+  - **Channel Lifecycle**:
+    - [`channel-request.md`](channel-request.md) - Requesting side of channel creation with pending request tracking
+    - [`channel-acceptance.md`](channel-acceptance.md) - Accepting side with ID assignment and event handlers
+    - [`id-jitter-settlement.md`](id-jitter-settlement.md) - Simultaneous requests and automatic ID settlement
+    - [`channel-closure.md`](channel-closure.md) - Channel closure protocol with graceful/discard modes
+  - **Message-Type Registration**:
+    - [`message-type-registration.md`](message-type-registration.md) - Message-type registration on channels
+  - **Data Transfer**:
+    - [`simple-write.md`](simple-write.md) - Single-chunk write with zero-copy encoding
+    - [`multi-chunk-write.md`](multi-chunk-write.md) - Multi-chunk write with automatic chunking
+    - [`simple-read.md`](simple-read.md) - Single-chunk read with chunk object API
+    - [`streaming-read.md`](streaming-read.md) - Multi-chunk read with streaming vs buffering
+  - **Flow Control and Budgets**:
+    - [`ack-generation-processing.md`](ack-generation-processing.md) - ACK generation and processing (ring buffer only, fire-and-forget)
 - **All other scenarios planned** (📋): Not yet written, will incorporate bidirectional channel model from the start
+
+**Note**: Role determination is fully documented in [`transport-initialization.md`](transport-initialization.md) step 7d (lines 316-351). A separate scenario is not needed as it's an integral part of the handshake sequence.
 
 ## Contributing
 

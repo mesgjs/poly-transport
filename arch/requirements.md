@@ -1418,3 +1418,16 @@ The `channel.close({ discard })` method accepts a single parameter:
 - **Chunk-level** (fair): `A1 B1 A2 C1 A3 A4 ... A50` (B and C interleave with A)
 
 **Implementation**: See [`arch/writer-serialization.md`](writer-serialization.md) for complete details.
+
+## Updates & Clarifications 2026-01-15-A
+
+- CRITICAL architectural detail: There are no ACK messages for ACK messages
+- An ACK message **CANNOT** consume transport budget, because there are no ACKs for ACKs to restore it!
+- ACK messages must therefore consume **ring-buffer budget ONLY**
+  - The ring space becomes available again after the message is sent
+- Ring buffer reservations must support a `forAck` parameter or option
+  - If true, the reservation may be fulfilled by the requested number of bytes as provided
+  - If false (the default), the reservation must wait until `requestedBytes + RESERVE_ACK_BYTES` are available (so that `RESERVE_ACK_BYTES` remain available in the ring for ACKs)
+- A protocol violation error results from a buggy or malicious remote transport, not local user action
+  - A PVE should emit a `protocolViolation` event on the transport (or possibly the channel, depending on the error)
+  - It seems unlikely that a `ProtocolViolationError` would ever be needed
