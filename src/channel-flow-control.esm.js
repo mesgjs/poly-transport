@@ -48,7 +48,7 @@ export class ChannelFlowControl {
 	#nextSendSeq;           // Next sequence number to assign
 	#inFlightChunks;        // Map<seq, bytes> of sent but not ACK'd chunks
 	#inFlightBytes;         // Total bytes in flight
-	#waiters;               // Array of { bytes, resolve } for waiting senders
+	#waiter;                // Single { bytes, resolve } for waiting sender (TaskQueue ensures serialization)
 
 	/**
 	 * Create a new FlowControl instance.
@@ -66,7 +66,7 @@ export class ChannelFlowControl {
 		this.#nextSendSeq = 1;  // Sequence numbers start at 1
 		this.#inFlightChunks = new Map();
 		this.#inFlightBytes = 0;
-		this.#waiters = [];
+		this.#waiter = null;
 	}
 
 	/**
@@ -120,8 +120,9 @@ export class ChannelFlowControl {
 		}
 
 		// Otherwise, wait for budget to become available
+		// Note: TaskQueue ensures only one chunk waiting at a time per channel
 		return new Promise((resolve) => {
-			this.#waiters.push({ bytes: chunkBytes, resolve });
+			this.#waiter = { bytes: chunkBytes, resolve };
 		});
 	}
 
@@ -219,36 +220,24 @@ export class ChannelFlowControl {
 			inFlightChunks: this.#inFlightChunks.size,
 			inFlightBytes: this.#inFlightBytes,
 			sendingBudget: this.sendingBudget,
-			waiters: this.#waiters.length,
+			waiter: this.#waiter ? this.#waiter.bytes : null,
 		};
 	}
 
 	/**
-	 * Process waiters and wake up those that now have sufficient budget.
-	 * Uses FIFO ordering to ensure fairness and prevent starvation.
+	 * Process waiter and wake up if sufficient budget is now available.
+	 * Note: TaskQueue ensures only one chunk waiting at a time per channel.
 	 * @private
 	 */
 	#processWaiters () {
-		let budget = this.sendingBudget;
-
-		// Process waiters in FIFO order (shift from front)
-		while (this.#waiters.length > 0) {
-			const waiter = this.#waiters[0];
-
-			// Check if sufficient budget for this waiter
-			if (budget === Infinity || budget >= waiter.bytes) {
-				// Wake up this waiter and remove from queue
-				this.#waiters.shift();
+		// Check if there's a waiter and if budget is now sufficient
+		if (this.#waiter) {
+			const budget = this.sendingBudget;
+			if (budget === Infinity || budget >= this.#waiter.bytes) {
+				// Wake up the waiter
+				const waiter = this.#waiter;
+				this.#waiter = null;
 				waiter.resolve();
-
-				// Deduct from remaining budget (if not unlimited)
-				if (budget !== Infinity) {
-					budget -= waiter.bytes;
-				}
-			} else {
-				// Insufficient budget for this waiter, stop processing
-				// (prevents starving earlier large requests for later small ones)
-				break;
 			}
 		}
 	}

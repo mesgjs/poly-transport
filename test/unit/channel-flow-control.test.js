@@ -145,24 +145,22 @@ Deno.test('ChannelFlowControl - waitForBudget waits for ACK', async () => {
 	assertEquals(fc.sendingBudget, 10000);
 });
 
-Deno.test('ChannelFlowControl - waitForBudget FIFO ordering', async () => {
+Deno.test('ChannelFlowControl - waitForBudget single waiter model', async () => {
 	const fc = new ChannelFlowControl(10000, 10000);
 	fc.recordSent(9000);  // Budget now 1000
 
-	const order = [];
+	// Start waiting for 5000 bytes (insufficient)
+	const waitPromise = fc.waitForBudget(5000);
+	
+	// Wait a bit to ensure it's actually waiting
+	await new Promise(resolve => setTimeout(resolve, 10));
 
-	// Queue three waiters
-	const wait1 = fc.waitForBudget(2000).then(() => order.push(1));
-	const wait2 = fc.waitForBudget(3000).then(() => order.push(2));
-	const wait3 = fc.waitForBudget(1500).then(() => order.push(3));
+	// ACK the sent chunk to restore budget
+	fc.processAck(1, []);
 
-	// ACK to restore budget
-	fc.processAck(1, []);  // Budget now 10000
-
-	await Promise.all([wait1, wait2, wait3]);
-
-	// Should resolve in FIFO order: 1, 2, 3
-	assertEquals(order, [1, 2, 3]);
+	// Now the wait should resolve
+	await waitPromise;
+	assertEquals(fc.sendingBudget, 10000);
 });
 
 Deno.test('ChannelFlowControl - send getStats', () => {
@@ -176,7 +174,9 @@ Deno.test('ChannelFlowControl - send getStats', () => {
 	assertEquals(stats.inFlightChunks, 2);
 	assertEquals(stats.inFlightBytes, 5000);
 	assertEquals(stats.sendingBudget, 5000);
-	assertEquals(stats.waiters, 0);
+	// Note: In real usage with TaskQueue, waiters would be queue size + (waiter ? 1 : 0)
+	// For this test (no TaskQueue), just check waiter state
+	assertEquals(stats.waiter, null);
 });
 
 // ============================================================================

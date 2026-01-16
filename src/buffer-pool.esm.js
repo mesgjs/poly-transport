@@ -33,13 +33,14 @@
  * pool.release(buffer);
  */
 export class BufferPool {
-	#pools;           // Map<size, ArrayBuffer[]>
+	#groups = new Map();// Map<size, Object>
 	#sizeClasses;     // number[] - sorted size classes
-	#waterMarks;      // Map<size, {low, high}> - per-size-class water marks
 	#isWorker;        // boolean - true if in worker context
 	#requestCallback; // function - callback to request buffers from main thread
 	#returnCallback;  // function - callback to return buffers to main thread
-	#stats;           // Map<size, {acquired, released, allocated, transferred}>
+	#stopped = false;
+	#manageSizes = new Set();  // Additional pool-level management required
+	#timer = null;    // Scheduled pool-level management
 
 	/**
 	 * Create a new BufferPool.
@@ -67,32 +68,25 @@ export class BufferPool {
 		this.#returnCallback = options.returnCallback;
 
 		// Initialize pools, water marks, and stats for each size class
-		this.#pools = new Map();
-		this.#waterMarks = new Map();
-		this.#stats = new Map();
-
 		for (const size of this.#sizeClasses) {
-			this.#pools.set(size, []);
-
 			// Use override if provided, otherwise use defaults
 			const override = overrides[size] || {};
-			this.#waterMarks.set(size, {
-				low: override.low ?? defaultLow,
-				high: override.high ?? defaultHigh
-			});
-
-			// Initialize stats for this size class
-			this.#stats.set(size, {
-				acquired: 0,
-				released: 0,
-				allocated: 0,
-				transferred: 0
+			this.#groups.set(size, {
+				cleanPool: [],
+				dirtyPool: [],
+				marks: { low: override.low ?? defaultLow, high: override.high ?? defaultHigh },
+				stats: {
+					acquired: 0,
+					released: 0,
+					allocated: 0,
+					transferred: 0
+				}
 			});
 		}
 
 		// Pre-allocate to low water mark
 		for (const size of this.#sizeClasses) {
-			this.#ensureLowWaterMark(size);
+			this.#ensureMinimum(size, true);
 		}
 	}
 
@@ -116,47 +110,127 @@ export class BufferPool {
 	 * Ensure pool has at least lowWaterMark buffers.
 	 * 
 	 * @param {number} size - Size class
+	 * @param {boolean} sync - True (do it now) or false (schedule for later)
 	 */
-	#ensureLowWaterMark (size) {
-		const pool = this.#pools.get(size);
-		const marks = this.#waterMarks.get(size);
-		const needed = marks.low - pool.length;
+	#ensureMinimum (size, sync = false) {
+		if (!sync) {
+			// Async pool management
+			this.#manageSizes.add(size);
+			this.#manageLevels();
+			return;
+		}
+
+		// Check immediately
+		const group = this.#groups.get(size);
+		const { cleanPool, dirtyPool, marks, stats } = group;
+		const needed = marks.low - cleanPool.length;
 
 		if (needed > 0) {
 			if (this.#isWorker && this.#requestCallback) {
 				// Request buffers from main thread
 				this.#requestCallback(size, needed);
 			} else {
-				// Allocate directly
-				const stats = this.#stats.get(size);
 				for (let i = 0; i < needed; i++) {
-					pool.push(new ArrayBuffer(size));
-					stats.allocated++;
+					if (dirtyPool.length > 0) {
+						// Clean a dirty buffer and reuse it
+						const buffer = dirtyPool.pop();
+						this.#zeroBuffer(buffer);
+						cleanPool.push(buffer);
+					} else {
+						// Allocate directly
+						cleanPool.push(new ArrayBuffer(size));
+						++stats.allocated;
+					}
 				}
 			}
 		}
 	}
 
 	/**
-	 * Release excess buffers above high water mark.
+	 * Stop pool management (e.g. during transport shutdown)
+	 */
+	stop () {
+		this.#stopped = true;
+		if (this.#timer) {
+			clearTimeout(this.#timer);
+		}
+	}
+
+	/**
+	 * Asynchronously manage pool levels
+	 * @param {boolean} handler Timeout handler (true) or scheduling call (false)
+	 */
+	async #manageLevels (handler = false) {
+		if (!handler) {
+			// Schedule management in the next event loop if not yet running
+			if (!this.#timer && !this.#stopped) {
+				this.#timer = setTimeout(() => this.#manageLevels(true), 0);
+			}
+			return;
+		}
+
+		let runAgain = false;
+		for (const size of this.#manageSizes) {
+			this.#manageSizes.delete(size);
+			if (runAgain) {
+				// Yield to the event queue between sizes
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			} else {
+				runAgain = true;
+			}
+
+			// Make sure pool has the minimum
+			this.#ensureMinimum(size, true);
+
+			// Scrub dirty buffers to top off and then release excess
+			this.#releaseExcess(size, true);
+
+		}
+
+		if (runAgain && !this.#stopped) {
+			this.#timer = setTimeout(() => this.#manageLevels(true), 0);
+		} else {
+			this.#timer = null;
+		}
+	}
+
+	/**
+	 * Scrub dirty buffers to top off, then release excess buffers above high water mark.
 	 * 
 	 * @param {number} size - Size class
+	 * @param {boolean} sync - True (do it now) or false (schedule for later)
 	 */
-	#releaseExcess (size) {
-		const pool = this.#pools.get(size);
-		const marks = this.#waterMarks.get(size);
-		const excess = pool.length - marks.high;
-
-		if (excess > 0) {
-			const toRelease = pool.splice(marks.high, excess);
-
-			if (this.#isWorker && this.#returnCallback) {
-				// Return buffers to main thread
-				this.#returnCallback(size, toRelease);
-				this.#stats.get(size).transferred += toRelease.length;
-			}
-			// In main thread, buffers are simply dropped (GC'd)
+	#releaseExcess (size, sync = false) {
+		if (!sync) {
+			this.#manageSizes.add(size);
+			this.#manageLevels();
+			return;
 		}
+
+		const group = this.#groups.get(size);
+		const { cleanPool, dirtyPool, marks, stats } = group;
+		const release = (pool, excess, high = 0) => {
+			const toRelease = pool.splice(high, excess);
+			if (this.#isWorker && this.#returnCallback) {
+				// Return (assumed dirty) buffers to main thread
+				this.#returnCallback(size, toRelease);
+				stats.transferred += toRelease.length;
+			}
+			// In the main thread, excess buffers are just dropped and GC'd
+		};
+
+		// Top-off the clean pool up to the high-water mark by scrubbing dirty buffers
+		while (cleanPool.length < marks.high && dirtyPool.length > 0) {
+			const buffer = dirtyPool.pop();
+			this.#zeroBuffer(buffer);
+			cleanPool.push(buffer);
+		}
+
+		// Everything over is excess to be released
+		// (The main thread assumes we're sending dirty buffers, so send those first)
+		if (dirtyPool.length > 0) release(dirtyPool, dirtyPool.length);
+		const excess = cleanPool.length - marks.high;
+		if (excess > 0) release(cleanPool, excess, marks.high);
 	}
 
 	/**
@@ -181,47 +255,49 @@ export class BufferPool {
 			return null; // Size too large
 		}
 
-		const pool = this.#pools.get(size);
-		const stats = this.#stats.get(size);
+		const group = this.#groups.get(size);
+		const { cleanPool, dirtyPool, stats } = group;
 		let buffer;
 
-		if (pool.length > 0) {
-			// Reuse from pool
-			buffer = pool.pop();
+		if (cleanPool.length > 0) {
+			// Reuse a ready buffer from the clean pool
+			buffer = cleanPool.pop();
+		} else if (dirtyPool.length > 0) {
+			// Clean a buffer from the dirty pool and reuse it
+			buffer = dirtyPool.pop();
+			this.#zeroBuffer(buffer);
 		} else {
 			// Allocate new buffer
 			buffer = new ArrayBuffer(size);
-			stats.allocated++;
+			++stats.allocated;
 		}
 
-		stats.acquired++;
+		++stats.acquired;
 
 		// Ensure low water mark after acquisition
-		this.#ensureLowWaterMark(size);
+		this.#ensureMinimum(size);
 
 		return buffer;
 	}
 
 	/**
-	 * Release a buffer back to the pool.
-	 * Buffer is zeroed before being returned to pool (requirements.md:850).
+	 * Release a buffer to the dirty pool.
+	 * Buffer will be zeroed before returning to the main pool (requirements.md:850).
 	 * 
 	 * @param {ArrayBuffer} buffer - Buffer to release
 	 * @returns {boolean} True if released, false if not a recognized size class
 	 */
 	release (buffer) {
 		const size = buffer.byteLength;
-		const pool = this.#pools.get(size);
+		const group = this.#groups.get(size);
 
-		if (!pool) {
+		if (!group) {
 			return false; // Not a recognized size class
 		}
 
-		// Zero buffer before returning to pool (requirements.md:850)
-		this.#zeroBuffer(buffer);
-
-		pool.push(buffer);
-		this.#stats.get(size).released++;
+		const { dirtyPool, stats } = group;
+		dirtyPool.push(buffer); // Note: Added to *dirty* pool (to be cleaned later)
+		++stats.released;
 
 		// Release excess if above high water mark
 		this.#releaseExcess(size);
@@ -240,13 +316,12 @@ export class BufferPool {
 			throw new Error('receiveBuffers can only be called in worker context');
 		}
 
-		const pool = this.#pools.get(size);
-		if (!pool) {
+		const group = this.#groups.get(size);
+		if (!group) {
 			throw new Error(`Invalid size class: ${size}`);
 		}
-
-		pool.push(...buffers);
-		this.#stats.get(size).transferred += buffers.length;
+		group.cleanPool.push(...buffers);
+		group.stats.transferred += buffers.length;
 	}
 
 	/**
@@ -262,12 +337,14 @@ export class BufferPool {
 		};
 
 		for (const size of this.#sizeClasses) {
-			const marks = this.#waterMarks.get(size);
-			const sizeStats = this.#stats.get(size);
+			const group = this.#groups.get(size);
+			const { cleanPool, dirtyPool, marks, stats: sizeStats } = group;
 			stats.pools[size] = {
 				lowWaterMark: marks.low,
 				highWaterMark: marks.high,
-				available: this.#pools.get(size).length,
+				available: cleanPool.length + dirtyPool.length,
+				clean: cleanPool.length,
+				dirty: dirtyPool.length,
 				acquired: sizeStats.acquired,
 				released: sizeStats.released,
 				allocated: sizeStats.allocated,
@@ -286,7 +363,8 @@ export class BufferPool {
 	getPoolSizes () {
 		const sizes = {};
 		for (const size of this.#sizeClasses) {
-			sizes[size] = this.#pools.get(size).length;
+			const group = this.#groups.get(size);
+			sizes[size] = group.cleanPool.length + group.dirtyPool.length;
 		}
 		return sizes;
 	}
@@ -298,7 +376,7 @@ export class BufferPool {
 	 * @returns {Object|null} { low, high } or null if invalid size
 	 */
 	getWaterMarks (size) {
-		const marks = this.#waterMarks.get(size);
+		const marks = this.#groups.get(size)?.marks;
 		return marks ? { ...marks } : null;
 	}
 
@@ -306,8 +384,8 @@ export class BufferPool {
 	 * Clear all pools (for testing/cleanup).
 	 */
 	clear () {
-		for (const pool of this.#pools.values()) {
-			pool.length = 0;
+		for (const group of this.#groups.values()) {
+			group.cleanPool.length = group.dirtyPool.length = 0;
 		}
 	}
 

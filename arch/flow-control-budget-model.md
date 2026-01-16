@@ -215,7 +215,7 @@ class TransportFlowControl {
   
   #remoteMaxBytes;
   #inFlightBytes = 0;
-  #waiters = [];  // FIFO queue for channels
+  #waiter = null;  // Single { bytes, resolve } object (not array)
   
   constructor(localMaxBytes, remoteMaxBytes) {
     this.#localMaxBytes = localMaxBytes;
@@ -229,7 +229,8 @@ class TransportFlowControl {
   
   async waitForBudget(bytes) {
     if (this.available >= bytes) return;
-    return new Promise(resolve => this.#waiters.push({ bytes, resolve }));
+    // Note: TaskQueue ensures only one channel waiting at a time
+    return new Promise(resolve => { this.#waiter = { bytes, resolve }; });
   }
   
   recordSent(bytes) {
@@ -238,18 +239,16 @@ class TransportFlowControl {
   
   recordAcked(bytes) {
     this.#inFlightBytes -= bytes;
-    this.#processWaiters();
+    this.#processWaiter();
   }
   
-  #processWaiters() {
-    // FIFO processing (same as ChannelFlowControl)
-    while (this.#waiters.length > 0) {
-      const waiter = this.#waiters[0];
-      if (this.available >= waiter.bytes) {
-        this.#waiters.shift();
+  #processWaiter() {
+    // Single Waiter Model: Only one waiter at a time (TaskQueue ensures serialization)
+    if (this.#waiter) {
+      if (this.available >= this.#waiter.bytes) {
+        const waiter = this.#waiter;
+        this.#waiter = null;
         waiter.resolve();
-      } else {
-        break;
       }
     }
   }
@@ -352,10 +351,12 @@ class TransportFlowControl {
 
 **Problem**: Multiple channels competing for shared transport budget
 
-**Solution**: FIFO queue at transport level ensures fair allocation
-- Channels wait in order for transport budget
+**Solution**: TaskQueue at transport level ensures fair allocation
+- **TaskQueue serializes budget reservations** across all channels (FIFO round-robin)
+- **Single waiter model**: Only one channel waiting for budget at a time (not array)
+- **"Waiting to wait"**: Other channels are in TaskQueue, not in waiter queue
 - Prevents starvation of large writes by small writes
-- Can use `TaskQueue` from `@task-queue` for this
+- Uses `TaskQueue` from `@task-queue` for serialization
 
 ### 2. ACK Priority
 

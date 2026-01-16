@@ -152,19 +152,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 **Note**: ChannelFlowControl class manages both send and receive flow control for bidirectional channels. Each bidirectional channel uses one instance of ChannelFlowControl.
 
-**[`transport-budget.md`](transport-budget.md)** 📋
-- Transport-level budget management
-- ACK messages and transport budget (ACKs are transport-level, not channel-level)
-- Distinction from channel budget
-- Transport-level flow control
-- Module responsibilities: Transport, ChannelFlowControl
-
-**[`channel-budget.md`](channel-budget.md)** 📋
-- Channel-level budget management
-- Control messages and channel budget (type 1 headers)
-- Data messages and channel budget (type 2 headers)
-- Per-channel budget tracking (bidirectional channels have both send and receive budgets)
-- Module responsibilities: Channel, ChannelFlowControl
+**Budget Consolidation Decision (2026-01-15)**: Transport budget and channel budget are documented together in [`send-flow-control.md`](send-flow-control.md) rather than as separate scenarios. Both budgets are always used together in practice (both must be available before a chunk can be sent), so consolidating them provides a complete picture without duplication. See [`send-flow-control.md`](send-flow-control.md) "Three-Resource Coordination System" section for detailed explanations of channel budget, transport budget, and ring buffer space management.
 
 **[`send-flow-control.md`](send-flow-control.md)** ✅
 - Three-resource coordination (channel budget, transport budget, ring buffer space)

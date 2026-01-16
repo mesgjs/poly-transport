@@ -740,12 +740,3 @@ try {
   }
 }
 ```
-
-FEEDBACK:
-- "Registration is directional" is confusing. The protocol is directional, but the results apply to the (bidirectional) channel.
-- Message-type mapping uses in-channel, channel control messages.
-- Use a Map indexed by ids and name with value object containing name and ids (like channels map).
-- Store it in the associated channel object.
-- Send with id[0], just like channels.
-- No need to design two different systems.
-- Different requests could have overlapping types. I think it will be cleaner just to create pendingReg for individual types (as many as needed for the types in the request).

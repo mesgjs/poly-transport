@@ -1393,7 +1393,7 @@ The `channel.close({ discard })` method accepts a single parameter:
 - `async reserveBudget(chunkBytes)` - Reserve budget atomically (was `waitForBudget()`)
 - `releaseBudget(bytes)` - Release unused budget after shrinking (new)
 - `assignSequence(chunkBytes)` - Assign sequence number (was part of `recordSent()`)
-- `#processWaiters()` - Now reserves atomically before resolving
+- `#processWaiter()` - Now reserves atomically before resolving
 
 **Transport**:
 - `async _reserveBudget(bytes)` - Reserve transport budget (channels call this)
@@ -1431,3 +1431,13 @@ The `channel.close({ discard })` method accepts a single parameter:
 - A protocol violation error results from a buggy or malicious remote transport, not local user action
   - A PVE should emit a `protocolViolation` event on the transport (or possibly the channel, depending on the error)
   - It seems unlikely that a `ProtocolViolationError` would ever be needed
+
+## Updates & Clarifications 2026-01-15-B
+
+- Numeric channel ids are for internal use only
+- The visible user interface should have no direct access to channels by number, only by name or access symbol (e.g. Transport.LOG_CHANNEL)
+- Reminder: internals that need it should cache LOG_CHANNEL early, as the applet bootstrap module will remove it during environment sanitization
+- The visible user interface should only have access to numeric message types below the negotiated maximum minMessageTypeId
+- All other user-visible message-types must be accessed by name (string with map lookup)
+- To reduce confusion, always refer to the type used to control header parsing as the "header type" or "header-type id" and the type used to control data parsing and read-filtering as the "message type" or "message-type id"
+- A `ProtocolViolationError` MAY be used internally if it makes sense to do so (as part of flow that triggers emitting a `protocolViolation` event), but it should never be an error that user code is expected to catch or handle directly

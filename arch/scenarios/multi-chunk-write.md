@@ -221,7 +221,7 @@ await channel.write(JSON.stringify(largeObject), { eom: true, type: 2 });
 - `flowControl.#inFlightBytes`: Bytes reserved (provisional until chunk completes)
 - `flowControl.#remoteMaxBufferBytes`: Remote's buffer limit
 - `sendingBudget = remoteMaxBufferBytes - inFlightBytes`
-- `flowControl.#waiters`: Queue of waiting senders (FIFO order)
+- `flowControl.#waiter`: Single waiter object (not array) - TaskQueue ensures serialization
 
 **Blocking**: Waits asynchronously for ACKs to restore budget (transparent to user)
 

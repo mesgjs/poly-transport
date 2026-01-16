@@ -383,16 +383,16 @@ Both levels must be restored for sender to continue sending.
 **Goal**: Ensure fairness and prevent starvation.
 
 **Strategy**:
-- Process waiters in FIFO order (shift from front)
-- Wake up waiters that now have sufficient budget
+- Process waiters in FIFO order
+- Wake up waiters (successively, as they complete) that now have sufficient budget
 - Stop when insufficient budget for next waiter
 
 **Example**:
-- Waiters: [A: 10KB, B: 5KB, C: 20KB]
+- Waiter + queue: [A: 10KB, B: 5KB, C: 20KB]
 - Budget freed: 15KB
 - Wake A (10KB), budget remaining: 5KB
-- Wake B (5KB), budget remaining: 0KB
-- Stop (insufficient for C)
+- When A completes, wake B (5KB), budget remaining: 0KB
+- When B completes, stop (insufficient for C)
 
 ### Protocol Violation Handling
 

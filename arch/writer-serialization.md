@@ -165,7 +165,7 @@ class Channel {
 ```javascript
 class ChannelFlowControl {
     #inFlightBytes = 0;
-    #waiters = [];  // Array of { bytes, resolve }
+    #waiter = null;  // Single { bytes, resolve } object (not array)
     
     // Reserve budget (provisional until chunk completes)
     async reserveBudget(chunkBytes) {
@@ -174,15 +174,16 @@ class ChannelFlowControl {
             return;
         }
         
+        // Note: TaskQueue ensures only one chunk waiting at a time per channel
         return new Promise((resolve) => {
-            this.#waiters.push({ bytes: chunkBytes, resolve });
+            this.#waiter = { bytes: chunkBytes, resolve };
         });
     }
     
     // Release unused budget (after shrinking)
     releaseBudget(bytes) {
         this.#inFlightBytes -= bytes;
-        this.#processWaiters();  // Wake up waiters with freed budget
+        this.#processWaiter();  // Wake up waiter with freed budget
     }
     
     // Assign sequence number (after budget reserved)
@@ -192,26 +193,19 @@ class ChannelFlowControl {
         return seq;
     }
     
-    // Process waiters (reserves atomically before resolving)
-    #processWaiters() {
-        let budget = this.sendingBudget;
-        
-        while (this.#waiters.length > 0) {
-            const waiter = this.#waiters[0];
+    // Process waiter (reserves atomically before resolving)
+    // Single Waiter Model: Only one waiter at a time (TaskQueue ensures serialization)
+    #processWaiter() {
+        if (this.#waiter) {
+            const budget = this.sendingBudget;
             
-            if (budget === Infinity || budget >= waiter.bytes) {
-                this.#waiters.shift();
-                
+            if (budget === Infinity || budget >= this.#waiter.bytes) {
                 // RESERVE ATOMICALLY BEFORE RESOLVING
-                this.#inFlightBytes += waiter.bytes;
+                this.#inFlightBytes += this.#waiter.bytes;
                 
+                const waiter = this.#waiter;
+                this.#waiter = null;
                 waiter.resolve();
-                
-                if (budget !== Infinity) {
-                    budget -= waiter.bytes;
-                }
-            } else {
-                break;
             }
         }
     }
@@ -219,9 +213,11 @@ class ChannelFlowControl {
 ```
 
 **Key points**:
+- **Single waiter model**: Only one waiter at a time (not array) - TaskQueue ensures serialization
+- **"Waiting to wait"**: Other chunks are in TaskQueue, not in waiter queue
 - **Atomic reservation**: Budget reserved when waiter is awakened (before promise resolves)
-- **Release mechanism**: `releaseBudget()` frees unused budget and wakes waiters
-- **FIFO ordering**: Waiters processed in order, prevents starvation
+- **Release mechanism**: `releaseBudget()` frees unused budget and wakes waiter
+- **FIFO ordering**: TaskQueue processes chunks in order, prevents starvation
 
 ### 3. Transport Budget Management
 
@@ -249,7 +245,7 @@ class Transport {
 
 class TransportFlowControl {
     #inFlightBytes = 0;
-    #waiters = [];
+    #waiter = null;  // Single { bytes, resolve } object (not array)
     
     async reserveBudget(bytes) {
         if (this.available >= bytes) {
@@ -257,35 +253,30 @@ class TransportFlowControl {
             return;
         }
         
+        // Note: TaskQueue ensures only one channel waiting at a time
         return new Promise((resolve) => {
-            this.#waiters.push({ bytes, resolve });
+            this.#waiter = { bytes, resolve };
         });
     }
     
     releaseBudget(bytes) {
         this.#inFlightBytes -= bytes;
-        this.#processWaiters();
+        this.#processWaiter();
     }
     
-    #processWaiters() {
-        let budget = this.available;
-        
-        while (this.#waiters.length > 0) {
-            const waiter = this.#waiters[0];
+    // Process waiter (reserves atomically before resolving)
+    // Single Waiter Model: Only one waiter at a time (TaskQueue ensures serialization)
+    #processWaiter() {
+        if (this.#waiter) {
+            const budget = this.available;
             
-            if (budget === Infinity || budget >= waiter.bytes) {
-                this.#waiters.shift();
-                
+            if (budget === Infinity || budget >= this.#waiter.bytes) {
                 // RESERVE ATOMICALLY BEFORE RESOLVING
-                this.#inFlightBytes += waiter.bytes;
+                this.#inFlightBytes += this.#waiter.bytes;
                 
+                const waiter = this.#waiter;
+                this.#waiter = null;
                 waiter.resolve();
-                
-                if (budget !== Infinity) {
-                    budget -= waiter.bytes;
-                }
-            } else {
-                break;
             }
         }
     }
@@ -293,8 +284,10 @@ class TransportFlowControl {
 ```
 
 **Key points**:
+- **Single waiter model**: Only one waiter at a time (not array) - TaskQueue ensures serialization
+- **"Waiting to wait"**: Other channels are in TaskQueue, not in waiter queue
 - **Shared TaskQueue**: All channels serialize through single transport budget queue
-- **FIFO round-robin**: Channels get budget in order, prevents channel starvation
+- **FIFO round-robin**: TaskQueue processes channels in order, prevents channel starvation
 - **Same atomic reservation pattern**: Budget reserved before promise resolves
 
 ### 4. Ring Buffer Space Management
@@ -447,7 +440,7 @@ Messages B and C interleave with message A
 
 **Modified methods**:
 - `reserveBudget(chunkBytes)` - Now reserves atomically (was `waitForBudget()`)
-- `#processWaiters()` - Now reserves atomically before resolving
+- `#processWaiter()` - Now reserves atomically before resolving
 
 **Removed methods**:
 - `recordSent(chunkBytes)` - Split into `reserveBudget()` + `assignSequence()`
@@ -540,17 +533,13 @@ Messages B and C interleave with message A
 - Direct reservation and encoding
 - Minimal latency
 
-**Batch processing**:
-- Multiple waiters can be awakened in single `#processWaiters()` call
-- Efficient use of freed budget
-
 ## Migration Path
 
 ### Phase 1: Update ChannelFlowControl
 
 1. Add `releaseBudget()` method
 2. Add `assignSequence()` method
-3. Update `#processWaiters()` to reserve atomically
+3. Update `#processWaiter()` to reserve atomically
 4. Rename `waitForBudget()` → `reserveBudget()`
 5. Update tests
 

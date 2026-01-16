@@ -72,12 +72,24 @@ All three must be available before a chunk can be sent.
 - Counter: `transportInFlightBytes` (total across all channels)
 - No sequence tracking (channels handle that)
 
-### Budget Waiting
+### Budget Waiting and TaskQueue Serialization
 
-**FIFO Ordering**:
-- Channel level: Per-channel FIFO queue of waiting writes
-- Transport level: Cross-channel FIFO queue (round-robin fairness)
-- Ring buffer level: Single waiter (TaskQueue ensures serialization)
+**TaskQueue Serialization** (Critical Architecture):
+- **Channel level**: TaskQueue serializes entire chunk operations (reserve → encode → commit)
+- **Transport level**: TaskQueue serializes budget reservations across all channels (FIFO round-robin)
+- **Ring buffer level**: TaskQueue serializes space reservations (single waiter model)
+
+**Single Waiter Model**:
+- **Channel**: Single `#waiter` object (not array) - TaskQueue ensures only one chunk waiting for budget at a time
+- **Transport**: Single `#waiter` object (not array) - TaskQueue ensures only one channel waiting for budget at a time
+- **Ring**: Single `#spaceWaiter` object (not array) - TaskQueue ensures only one chunk waiting for space at a time
+
+**"Waiting to Wait"**:
+- Other chunks/channels are in TaskQueue (not in waiter queue)
+- TaskQueue processes operations in FIFO order
+- Only the currently-executing operation can be in waiter state
+- Stats reporting: the number of pending write operations = the task queue size
+  - The current operation is running (already got its resource) if #waiter is null; it's still waiting if #waiter is not null
 
 **Atomic Reservation**:
 - Budget reserved when waiter awakened (before promise resolves)
@@ -123,12 +135,13 @@ All three must be available before a chunk can be sent.
 1. Check if can send now (via [`canSend()`](../../src/channel-flow-control.esm.js:105))
 2. If yes, resolve immediately
 3. If no, create waiter object: `{ bytes: chunkBytes, resolve }`
-4. Add to waiters queue (FIFO order)
+4. Set as single waiter (not added to queue - TaskQueue ensures serialization)
 5. Return promise that resolves when budget available
 
 **Data Structures**:
-- `#waiters`: Array of `{ bytes, resolve }` objects
-- FIFO ordering: New waiters pushed to end, processed from front
+- `#waiter`: Single `{ bytes, resolve }` object (not array)
+- TaskQueue ensures only one chunk waiting for budget at a time
+- Other chunks are "waiting to wait" in TaskQueue
 
 **Blocking**: Waits asynchronously for ACKs to restore budget
 
@@ -367,20 +380,17 @@ All three must be available before a chunk can be sent.
 
 **Details**:
 1. Calculate current budget: `sendingBudget = remoteMaxBufferBytes - inFlightBytes`
-2. Process waiters in FIFO order (shift from front)
-3. For each waiter:
-   - Check if sufficient budget: `budget >= waiter.bytes`
-   - If yes:
-     - **Atomically reserve budget**: `#inFlightBytes += waiter.bytes`
-     - Wake waiter: `waiter.resolve()`
-     - Deduct from remaining budget
-   - If no: Stop processing (prevents starving earlier large requests)
+2. Check if single waiter exists and has sufficient budget
+3. If waiter exists and budget sufficient:
+   - **Atomically reserve budget**: `#inFlightBytes += waiter.bytes`
+   - Wake waiter: `waiter.resolve()`
+   - Clear waiter: `#waiter = null`
 
 **State Changes**:
-- `#waiters`: Awakened waiters removed from queue
-- `#inFlightBytes`: Increased by awakened waiters' reservations (atomic)
+- `#waiter`: Cleared after awakening (set to null)
+- `#inFlightBytes`: Increased by awakened waiter's reservation (atomic)
 
-**Note**: Atomic reservation when awakening prevents budget theft.
+**Note**: Atomic reservation when awakening prevents budget theft. Single waiter model - TaskQueue ensures only one chunk waiting at a time.
 
 #### Step 14: Process ACK (Transport Level)
 
@@ -553,18 +563,44 @@ Protocol violations are detected when processing incoming ACKs from remote trans
 
 **Critical Architecture**: FIFO ordering at all levels ensures fairness.
 
+**TaskQueue Serialization** (Complete Chunk Operations):
+- **Channel level**: TaskQueue serializes **entire chunk operations** from start to finish:
+  - Reserve channel budget (atomic, provisional)
+  - Reserve transport budget (atomic, provisional)
+  - Reserve ring buffer space (atomic)
+  - Assign sequence number
+  - Encode header and data
+  - Shrink reservation if needed (release unused budget)
+  - Commit to ring buffer
+  - **Only then** does the next chunk operation begin
+- **Transport level**: TaskQueue serializes budget reservations across all channels (FIFO round-robin)
+- **Ring buffer level**: TaskQueue serializes space reservations (single waiter model)
+
+**Why Complete Serialization**:
+- **Shrinkable reservations**: Actual size only known after encoding (text encoding is variable-length UTF-8)
+- **Budget accuracy**: Next chunk must see freed budget from shrinking
+- **No race conditions**: Prevents budget theft between reserve and encode
+- **Fairness**: Chunks from different messages can interleave (e.g., `A1 B1 A2 C1 A3...`)
+
+**Single Waiter Model**:
+- Only one waiter at a time at each level (not arrays)
+- TaskQueue ensures only one operation waiting for resources at a time
+- Other operations are "waiting to wait" in TaskQueue (not in waiter queue)
+- FIFO ordering implicit (TaskQueue processes in order)
+
 **Channel Level**:
-- Per-channel FIFO queue of waiting writes
+- Per-channel TaskQueue of **complete chunk operations** (not just budget waiting)
 - Prevents starvation within channel
-- Large requests don't block small requests indefinitely
+- Large requests don't block small requests indefinitely (chunk-level serialization)
 
 **Transport Level**:
-- Cross-channel FIFO queue (round-robin)
+- Cross-channel TaskQueue (round-robin)
 - Prevents starvation across channels
 - One channel doesn't monopolize transport budget
 
 **Ring Buffer Level**:
-- Single waiter model (TaskQueue ensures serialization)
+- Per-ring TaskQueue for space reservations
+- Single waiter model (only one chunk waiting for space at a time)
 - FIFO ordering implicit (TaskQueue processes in order)
 
 ### Budget Includes Headers
