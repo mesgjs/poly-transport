@@ -500,3 +500,543 @@ Deno.test('BufferPool - multiple acquire/release cycles', async () => {
 
 	pool.stop();
 });
+
+// Test: Acquire from dirty pool when clean pool is empty
+Deno.test('BufferPool - acquire from dirty pool when clean pool empty', async () => {
+	const pool = new BufferPool({ lowWaterMark: 0, highWaterMark: 10 });
+
+	// Acquire and release to populate dirty pool
+	const buffer1 = pool.acquire(1024);
+	const view1 = new Uint8Array(buffer1);
+	view1[0] = 42; // Mark buffer
+	pool.release(buffer1);
+
+	// Do not pause (dirty buffer will get scrubbed)
+	// Clear clean pool (dirty pool should have 1 buffer)
+	const stats1 = pool.getStats();
+	assertEquals(stats1.pools[1024].dirty, 1);
+	assertEquals(stats1.pools[1024].clean, 0);
+
+	// Acquire should get buffer from dirty pool and zero it
+	const buffer2 = pool.acquire(1024);
+	assertEquals(buffer2, buffer1);
+	assertEquals(view1[0], 0); // Should be zeroed
+
+	pool.stop();
+});
+
+// Test: Dirty pool scrubbing to reach high water mark
+Deno.test('BufferPool - dirty pool scrubbing to high water mark', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 5 });
+
+	// Acquire and release 8 buffers to populate dirty pool
+	const buffers = [];
+	for (let i = 0; i < 8; i++) {
+		buffers.push(pool.acquire(1024));
+	}
+	for (const buffer of buffers) {
+		pool.release(buffer);
+	}
+
+	// Wait for async management to scrub dirty buffers
+	await pause(2);
+
+	const stats = pool.getStats();
+	// Should have high water mark (5) clean buffers
+	assertEquals(stats.pools[1024].clean, 5);
+	// Excess should be released (8 - 5 = 3 released)
+	assertEquals(stats.pools[1024].available, 5);
+
+	pool.stop();
+});
+
+// Test: Exact size class boundary
+Deno.test('BufferPool - acquire exact size class boundary', () => {
+	const pool = new BufferPool();
+
+	// Request exactly 1024 bytes
+	const buffer1 = pool.acquire(1024);
+	assertEquals(buffer1.byteLength, 1024);
+
+	// Request exactly 4096 bytes
+	const buffer2 = pool.acquire(4096);
+	assertEquals(buffer2.byteLength, 4096);
+
+	// Request exactly 16384 bytes
+	const buffer3 = pool.acquire(16384);
+	assertEquals(buffer3.byteLength, 16384);
+
+	// Request exactly 65536 bytes
+	const buffer4 = pool.acquire(65536);
+	assertEquals(buffer4.byteLength, 65536);
+
+	pool.stop();
+});
+
+// Test: Acquire one byte less than size class
+Deno.test('BufferPool - acquire one byte less than size class', () => {
+	const pool = new BufferPool();
+
+	// Request 1023 bytes, should get 1KB buffer
+	const buffer1 = pool.acquire(1023);
+	assertEquals(buffer1.byteLength, 1024);
+
+	// Request 4095 bytes, should get 4KB buffer
+	const buffer2 = pool.acquire(4095);
+	assertEquals(buffer2.byteLength, 4096);
+
+	pool.stop();
+});
+
+// Test: Acquire one byte more than size class
+Deno.test('BufferPool - acquire one byte more than size class', () => {
+	const pool = new BufferPool();
+
+	// Request 1025 bytes, should get 4KB buffer (next size class)
+	const buffer1 = pool.acquire(1025);
+	assertEquals(buffer1.byteLength, 4096);
+
+	// Request 4097 bytes, should get 16KB buffer
+	const buffer2 = pool.acquire(4097);
+	assertEquals(buffer2.byteLength, 16384);
+
+	pool.stop();
+});
+
+// Test: Stop prevents async management
+Deno.test('BufferPool - stop prevents async management', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 5 });
+
+	// Acquire buffers
+	const buffers = [];
+	for (let i = 0; i < 3; i++) {
+		buffers.push(pool.acquire(1024));
+	}
+
+	// Stop pool immediately
+	pool.stop();
+
+	// Release buffers (should not trigger async management)
+	for (const buffer of buffers) {
+		pool.release(buffer);
+	}
+
+	// Wait to ensure no async management runs
+	await pause(2);
+
+	// Pool should have released buffers but no management occurred
+	const stats = pool.getStats();
+	// Dirty pool should have the released buffers (not cleaned)
+	assertEquals(stats.pools[1024].dirty, 3);
+});
+
+// Test: Multiple size classes needing management simultaneously
+Deno.test('BufferPool - multiple size classes async management', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 5 });
+
+	// Acquire and release buffers from multiple size classes
+	const buffers1k = [];
+	const buffers4k = [];
+	const buffers16k = [];
+
+	for (let i = 0; i < 6; i++) {
+		buffers1k.push(pool.acquire(1024));
+		buffers4k.push(pool.acquire(4096));
+		buffers16k.push(pool.acquire(16384));
+	}
+
+	for (const buffer of buffers1k) pool.release(buffer);
+	for (const buffer of buffers4k) pool.release(buffer);
+	for (const buffer of buffers16k) pool.release(buffer);
+
+	// Wait for async management
+	await pause(3);
+
+	const stats = pool.getStats();
+	// All size classes should be at high water mark
+	assertEquals(stats.pools[1024].available, 5);
+	assertEquals(stats.pools[4096].available, 5);
+	assertEquals(stats.pools[16384].available, 5);
+
+	pool.stop();
+});
+
+// Test: Rapid acquire/release cycles
+Deno.test('BufferPool - rapid acquire/release cycles', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 10 });
+
+	// Perform 20 rapid acquire/release cycles
+	for (let i = 0; i < 20; i++) {
+		const buffer = pool.acquire(1024);
+		pool.release(buffer);
+	}
+
+	// Wait for async management to settle
+	await pause(2);
+
+	const stats = pool.getStats();
+	assertEquals(stats.pools[1024].acquired, 20);
+	assertEquals(stats.pools[1024].released, 20);
+	// Pool should be at or below high water mark
+	assert(stats.pools[1024].available <= 10);
+
+	pool.stop();
+});
+
+// Test: Clean and dirty buffer counts in stats
+Deno.test('BufferPool - stats show clean and dirty counts', async () => {
+	const pool = new BufferPool({ lowWaterMark: 0, highWaterMark: 10 });
+
+	// Acquire and release 3 buffers (should go to dirty pool)
+	const buffers = [];
+	for (let i = 0; i < 3; i++) {
+		buffers.push(pool.acquire(1024));
+	}
+	for (const buffer of buffers) {
+		pool.release(buffer);
+	}
+
+	// Before async management, should have dirty buffers
+	const stats1 = pool.getStats();
+	assertEquals(stats1.pools[1024].dirty, 3);
+	assertEquals(stats1.pools[1024].clean, 0);
+	assertEquals(stats1.pools[1024].available, 3);
+
+	// After async management, dirty buffers should be cleaned
+	await pause(2);
+	const stats2 = pool.getStats();
+	assertEquals(stats2.pools[1024].clean, 3);
+	assertEquals(stats2.pools[1024].dirty, 0);
+	assertEquals(stats2.pools[1024].available, 3);
+
+	pool.stop();
+});
+
+// Test: Worker mode - transferred count accuracy
+Deno.test('BufferPool - worker mode transferred count accuracy', async () => {
+	let totalReturned = 0;
+
+	const pool = new BufferPool({
+		isWorker: true,
+		lowWaterMark: 0,
+		highWaterMark: 3,
+		returnCallback: (size, buffers) => {
+			totalReturned += buffers.length;
+		}
+	});
+
+	// Receive 5 buffers
+	const buffers = [];
+	for (let i = 0; i < 5; i++) {
+		buffers.push(new ArrayBuffer(1024));
+	}
+	pool.receiveBuffers(1024, buffers);
+
+	const stats1 = pool.getStats();
+	assertEquals(stats1.pools[1024].transferred, 5); // Received
+
+	// Acquire and release to trigger return
+	const acquired = [];
+	for (let i = 0; i < 5; i++) {
+		acquired.push(pool.acquire(1024));
+	}
+	for (const buffer of acquired) {
+		pool.release(buffer);
+	}
+
+	// Wait for async management to return excess
+	await pause(2);
+
+	const stats2 = pool.getStats();
+	// Should have returned 2 buffers (5 - 3 high water mark)
+	assertEquals(totalReturned, 2);
+	assertEquals(stats2.pools[1024].transferred, 5 + 2); // 5 received + 2 returned
+
+	pool.stop();
+});
+
+// Test: Acquire zero bytes
+Deno.test('BufferPool - acquire zero bytes', () => {
+	const pool = new BufferPool();
+
+	// Request 0 bytes, should get smallest size class (1KB)
+	const buffer = pool.acquire(0);
+	assertEquals(buffer.byteLength, 1024);
+
+	pool.stop();
+});
+
+// Test: Acquire negative size
+Deno.test('BufferPool - acquire negative size', () => {
+	const pool = new BufferPool();
+
+	// Request negative bytes, should get smallest size class (1KB)
+	const buffer = pool.acquire(-100);
+	assertEquals(buffer.byteLength, 1024);
+
+	pool.stop();
+});
+
+// Test: Release during active async management
+Deno.test('BufferPool - release during active async management', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 5 });
+
+	// Acquire and release to trigger management
+	const buffers1 = [];
+	for (let i = 0; i < 6; i++) {
+		buffers1.push(pool.acquire(1024));
+	}
+	for (const buffer of buffers1) {
+		pool.release(buffer);
+	}
+
+	// Immediately acquire and release more (during management)
+	const buffers2 = [];
+	for (let i = 0; i < 3; i++) {
+		buffers2.push(pool.acquire(1024));
+	}
+	for (const buffer of buffers2) {
+		pool.release(buffer);
+	}
+
+	// Wait for all management to complete
+	await pause(3);
+
+	const stats = pool.getStats();
+	// Should still enforce high water mark
+	assertEquals(stats.pools[1024].available, 5);
+	assertEquals(stats.pools[1024].acquired, 9); // 6 + 3
+	assertEquals(stats.pools[1024].released, 9);
+
+	pool.stop();
+});
+
+// Test: Custom size classes with gaps
+Deno.test('BufferPool - custom size classes with gaps', () => {
+	const pool = new BufferPool({
+		sizeClasses: [1024, 8192, 65536] // Gaps: no 4KB, 16KB, 32KB
+	});
+
+	// Request 2KB, should get 8KB (next available)
+	const buffer1 = pool.acquire(2048);
+	assertEquals(buffer1.byteLength, 8192);
+
+	// Request 10KB, should get 64KB (next available)
+	const buffer2 = pool.acquire(10240);
+	assertEquals(buffer2.byteLength, 65536);
+
+	// Request 70KB, should return null (exceeds largest)
+	const buffer3 = pool.acquire(71680);
+	assertEquals(buffer3, null);
+
+	pool.stop();
+});
+
+// Test: Single size class pool
+Deno.test('BufferPool - single size class pool', async () => {
+	const pool = new BufferPool({
+		sizeClasses: [4096],
+		lowWaterMark: 3,
+		highWaterMark: 8
+	});
+
+	assertEquals(pool.sizeClasses, [4096]);
+
+	// Any request should use the single size class
+	const buffer1 = pool.acquire(100);
+	assertEquals(buffer1.byteLength, 4096);
+
+	const buffer2 = pool.acquire(4096);
+	assertEquals(buffer2.byteLength, 4096);
+
+	// Request larger than size class should return null
+	const buffer3 = pool.acquire(5000);
+	assertEquals(buffer3, null);
+
+	await pause();
+	pool.stop();
+});
+
+// Test: Water marks with low > high (invalid configuration)
+Deno.test('BufferPool - water marks low > high still works', async () => {
+	// Note: Implementation doesn't validate low <= high, so test actual behavior
+	const pool = new BufferPool({
+		lowWaterMark: 10,
+		highWaterMark: 5 // Invalid: high < low
+	});
+
+	// Pool should still function (pre-allocate to low water mark)
+	const sizes = pool.getPoolSizes();
+	assertEquals(sizes[1024], 10); // Pre-allocated to low water mark
+
+	// Acquire and release
+	const buffer = pool.acquire(1024);
+	await pause();
+	pool.release(buffer);
+	await pause();
+
+	// Pool behavior with inverted marks is implementation-defined
+	// Just verify it doesn't crash
+	const stats = pool.getStats();
+	assertExists(stats.pools[1024]);
+
+	pool.stop();
+});
+
+// Test: Zero water marks
+Deno.test('BufferPool - zero water marks', async () => {
+	const pool = new BufferPool({
+		lowWaterMark: 0,
+		highWaterMark: 0
+	});
+
+	// Pool starts empty
+	assertEquals(pool.getPoolSizes()[1024], 0);
+
+	// Acquire should allocate new buffer
+	const buffer = pool.acquire(1024);
+	assertExists(buffer);
+
+	await pause();
+	pool.release(buffer);
+	await pause();
+
+	// With high water mark 0, released buffer should be dropped
+	assertEquals(pool.getPoolSizes()[1024], 0);
+
+	pool.stop();
+});
+
+// Test: Very large water marks
+Deno.test('BufferPool - very large water marks', () => {
+	const pool = new BufferPool({
+		lowWaterMark: 100,
+		highWaterMark: 1000
+	});
+
+	// Pool should pre-allocate to low water mark
+	const sizes = pool.getPoolSizes();
+	assertEquals(sizes[1024], 100);
+	assertEquals(sizes[4096], 100);
+
+	const stats = pool.getStats();
+	assertEquals(stats.pools[1024].allocated, 100);
+
+	pool.stop();
+});
+
+// Test: Worker mode - request callback with multiple size classes
+Deno.test('BufferPool - worker mode request callback multiple sizes', async () => {
+	const requests = [];
+
+	const pool = new BufferPool({
+		isWorker: true,
+		lowWaterMark: 2,
+		highWaterMark: 5,
+		requestCallback: (size, count) => {
+			requests.push({ size, count });
+		}
+	});
+
+	// Constructor should have requested for all size classes
+	assertEquals(requests.length, 4); // 4 size classes
+	assertEquals(requests[0].size, 1024);
+	assertEquals(requests[0].count, 2);
+	assertEquals(requests[3].size, 65536);
+	assertEquals(requests[3].count, 2);
+
+	pool.stop();
+});
+
+// Test: Acquire and release different size classes interleaved
+Deno.test('BufferPool - interleaved acquire/release different sizes', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 10 });
+
+	const buffer1k = pool.acquire(1024);
+	const buffer4k = pool.acquire(4096);
+	const buffer16k = pool.acquire(16384);
+
+	pool.release(buffer4k);
+	pool.release(buffer1k);
+	pool.release(buffer16k);
+
+	await pause(3);
+	pool.stop();
+
+	const stats = pool.getStats();
+	assertEquals(stats.pools[1024].acquired, 1);
+	assertEquals(stats.pools[1024].released, 1);
+	assertEquals(stats.pools[4096].acquired, 1);
+	assertEquals(stats.pools[4096].released, 1);
+	assertEquals(stats.pools[16384].acquired, 1);
+	assertEquals(stats.pools[16384].released, 1);
+
+});
+
+// Test: getWaterMarks returns copy (not reference)
+Deno.test('BufferPool - getWaterMarks returns copy', () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 10 });
+
+	const marks1 = pool.getWaterMarks(1024);
+	marks1.low = 999; // Modify returned object
+
+	const marks2 = pool.getWaterMarks(1024);
+	assertEquals(marks2.low, 2); // Should still be original value
+
+	pool.stop();
+});
+
+// Test: sizeClasses getter returns copy (not reference)
+Deno.test('BufferPool - sizeClasses getter returns copy', () => {
+	const pool = new BufferPool();
+
+	const classes1 = pool.sizeClasses;
+	classes1.push(999999); // Modify returned array
+
+	const classes2 = pool.sizeClasses;
+	assertEquals(classes2, [1024, 4096, 16384, 65536]); // Should be unchanged
+
+	pool.stop();
+});
+
+// Test: Clear during active operations
+Deno.test('BufferPool - clear during active operations', async () => {
+	const pool = new BufferPool({ lowWaterMark: 2, highWaterMark: 10 });
+
+	// Acquire buffers
+	const buffers = [];
+	for (let i = 0; i < 5; i++) {
+		buffers.push(pool.acquire(1024));
+	}
+
+	// Clear pool (doesn't affect acquired buffers)
+	pool.clear();
+	assertEquals(pool.getPoolSizes()[1024], 0);
+
+	// Release buffers back
+	for (const buffer of buffers) {
+		pool.release(buffer);
+	}
+
+	await pause(2);
+
+	// Pool should have released buffers
+	const stats = pool.getStats();
+	assertEquals(stats.pools[1024].released, 5);
+	assert(stats.pools[1024].available > 0);
+
+	pool.stop();
+});
+
+// Test: Multiple stop calls
+Deno.test('BufferPool - multiple stop calls', () => {
+	const pool = new BufferPool();
+
+	pool.stop();
+	pool.stop(); // Should not throw
+	pool.stop(); // Should not throw
+
+	// Pool should remain stopped
+	const buffer = pool.acquire(1024);
+	assertExists(buffer); // Acquire still works, just no async management
+});
