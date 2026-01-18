@@ -171,13 +171,13 @@ export class BufferPool {
 
 		let runAgain = false;
 		for (const size of this.#manageSizes) {
-			this.#manageSizes.delete(size);
 			if (runAgain) {
 				// Yield to the event queue between sizes
 				await new Promise((resolve) => setTimeout(resolve, 0));
 			} else {
 				runAgain = true;
 			}
+			this.#manageSizes.delete(size);
 
 			// Make sure pool has the minimum
 			this.#ensureMinimum(size, true);

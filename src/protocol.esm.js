@@ -12,10 +12,10 @@ export const MAX_DATA_HEADER_BYTES = 18;
 export const MIN_DATA_RES_BYTES = 4;
 export const RESERVE_ACK_BYTES = 514;
 
-// Message type constants (requirements.md:415-421)
-export const MSG_TYPE_ACK = 0;
-export const MSG_TYPE_CHANNEL_CONTROL = 1;
-export const MSG_TYPE_CHANNEL_DATA = 2;
+// Header type constants (requirements.md:415-421)
+export const HDR_TYPE_ACK = 0;
+export const HDR_TYPE_CHAN_CONTROL = 1;
+export const HDR_TYPE_CHAN_DATA = 2;
 
 // Transport handshake markers (requirements.md:395-404)
 const HANDSHAKE_START = 0x02;  // STX
@@ -26,35 +26,40 @@ const BINARY_STREAM_START = 0x01;  // SOH
 const TRANSPORT_ID = 'PolyTransport';
 
 // Default transport configuration (requirements.md:406-413)
+export const MIN_CHANNEL_ID = 2;
+export const MIN_MESG_TYPE_ID = 256;
 const DEFAULT_CONFIG = {
 	c2cEnabled: false,
-	minChannelId: 256,
-	minMessageTypeId: 1024,
+	minChannelId: MIN_CHANNEL_ID,
+	minMessageTypeId: MIN_MESG_TYPE_ID,
 	version: 1
 };
 
 // Flag constants
 export const FLAG_EOM = 0x0001;  // End of message
 
-// Channel constants
+// Foundational channel constants
+// (Channels not required at transport start should be registered/mapped)
 export const CHANNEL_TCC = 0;  // Transport-Control Channel
 export const CHANNEL_C2C = 1;  // Console-Content Channel
 
-// TCC message types (requirements.md:482-493)
-export const TCC_MSG_TRANSPORT_STATE = 0;
-export const TCC_MSG_CHANNEL_REQUEST = 1;
-export const TCC_MSG_CHANNEL_RESPONSE = 2;
+// TCC pre-defined (foundational) message types (requirements.md:482-493)
+// (One shared namespace for TCC control/data and control on all channels)
+// (Message-types not required at transport start should be registered/mapped)
+export const TCC_DTAM_TRAN_STOP = 0;
+export const TCC_DTAM_CHAN_REQUEST = 1;
+export const TCC_DTAM_CHAN_RESPONSE = 2;
+export const TCC_CTLM_MESG_TYPE_REG_REQ = 3; // message-type registration request
+export const TCC_CTLM_MESG_TYPE_REG_RESP = 4; // message-type registration response
 
-// C2C message types (requirements.md:495-505)
-export const C2C_MSG_UNCAUGHT_EXCEPTION = 0;
-export const C2C_MSG_DEBUG = 1;
-export const C2C_MSG_INFO = 2;
-export const C2C_MSG_WARN = 3;
-export const C2C_MSG_ERROR = 4;
-
-// CCM (Channel Control Message) types (requirements.md:507-517)
-export const CCM_MSG_TYPE_REGISTER_REQUEST = 0;
-export const CCM_MSG_TYPE_REGISTER_RESPONSE = 1;
+// C2C pre-defined (foundational) message types (requirements.md:495-505)
+// (Message-types not required at transport start should be registered/mapped)
+export const C2C_MESG_UNCAUGHT = 0; // uncaught exceptions
+export const C2C_MESG_TRACE = 1;
+export const C2C_MESG_DEBUG = 2;
+export const C2C_MESG_INFO = 3;
+export const C2C_MESG_WARN = 4;
+export const C2C_MESG_ERROR = 5;
 
 /**
  * Helper: Round up to even number
@@ -139,7 +144,7 @@ export function encodeAckHeaderInto (target, offset, fields) {
 	const remainingSize = totalToEncAddl(headerSize);
 
 	let o = offset;
-	target.setUint8(o++, MSG_TYPE_ACK);
+	target.setUint8(o++, HDR_TYPE_ACK);
 	target.setUint8(o++, remainingSize);
 	target.setUint16(o, flags); o += 2;
 	target.setUint32(o, channelId); o += 4;
@@ -170,7 +175,7 @@ export function encodeAckHeaderInto (target, offset, fields) {
  * 
  * @param {VirtualRWBuffer|DataView} target - Target buffer with DataView-compatible API
  * @param {number} offset - Offset in target buffer
- * @param {number} type - MSG_TYPE_CHANNEL_CONTROL or MSG_TYPE_CHANNEL_DATA
+ * @param {number} type - HDR_TYPE_CHAN_CONTROL or HDR_TYPE_CHAN_DATA
  * @param {Object} fields - { dataSize=0, flags=0, channelId, sequence, messageType }
  * @returns {number} Header size in bytes (always 18)
  */
@@ -181,7 +186,7 @@ export function encodeChannelHeaderInto (target, offset, type, fields) {
 	if (!Number.isInteger(offset) || offset < 0) {
 		throw new RangeError('offset out of range');
 	}
-	if (type !== MSG_TYPE_CHANNEL_CONTROL && type !== MSG_TYPE_CHANNEL_DATA) {
+	if (type !== HDR_TYPE_CHAN_CONTROL && type !== HDR_TYPE_CHAN_DATA) {
 		throw new Error(`Invalid channel message type: ${type}`);
 	}
 
@@ -216,7 +221,7 @@ export function encodeAckHeader (fields) {
 /**
  * Allocating wrapper for channel header encoding (for testing)
  * 
- * @param {number} type - MSG_TYPE_CHANNEL_CONTROL or MSG_TYPE_CHANNEL_DATA
+ * @param {number} type - HDR_TYPE_CHAN_CONTROL or HDR_TYPE_CHAN_DATA
  * @param {Object} fields - { dataSize=0, flags=0, channelId, sequence, messageType }
  * @returns {Uint8Array} Encoded channel header
  */
@@ -252,11 +257,11 @@ export function decodeHeaderSizeFromPrefix (buffer, offset = 0) {
 	const type = buffer.getUint8(offset);
 	const sizeByte = buffer.getUint8(offset + 1);
 
-	if (type === MSG_TYPE_ACK) {
+	if (type === HDR_TYPE_ACK) {
 		return encAddlToTotal(sizeByte);
 	}
 
-	if (type === MSG_TYPE_CHANNEL_CONTROL || type === MSG_TYPE_CHANNEL_DATA) {
+	if (type === HDR_TYPE_CHAN_CONTROL || type === HDR_TYPE_CHAN_DATA) {
 		return MAX_DATA_HEADER_BYTES;
 	}
 
@@ -357,10 +362,10 @@ export function decodeHeaderFrom (buffer, offset = 0) {
 	}
 
 	const type = buffer.getUint8(offset);
-	if (type === MSG_TYPE_ACK) {
+	if (type === HDR_TYPE_ACK) {
 		return decodeAckHeaderFrom(buffer, offset);
 	}
-	if (type === MSG_TYPE_CHANNEL_CONTROL || type === MSG_TYPE_CHANNEL_DATA) {
+	if (type === HDR_TYPE_CHAN_CONTROL || type === HDR_TYPE_CHAN_DATA) {
 		return decodeChannelHeaderFrom(buffer, offset);
 	}
 	throw new Error(`Unknown message type: ${type}`);

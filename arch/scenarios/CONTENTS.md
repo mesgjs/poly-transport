@@ -184,33 +184,38 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Unblocking waiting writes (FIFO order)
 - Module responsibilities: ChannelFlowControl, Protocol, Transport, OutputRingBuffer
 
-**[`protocol-violation.md`](protocol-violation.md)** 📋
-- Out-of-order sequence detection
-- Over-budget chunk detection
-- ProtocolViolationError handling
-- Transport event emission
-- Connection termination
+**[`protocol-violation.md`](protocol-violation.md)** ✅
+- Protocol violation detection and handling (events, not exceptions)
+- Five violation types: out-of-order sequence, over-budget chunk, duplicate ACK, premature ACK, unknown channel
+- ProtocolViolationError structure with reason and details
+- Transport `protocolViolation` event emission
+- Application-defined handling policies (close transport, close channel, log and ignore)
+- Channel state unchanged after violation (no side effects)
+- Closed channel tracking (prevents false "unknown channel" violations)
 - Module responsibilities: ChannelFlowControl, Transport, Channel
 
 ### 6. Message Protocol
 
-**[`message-encoding.md`](message-encoding.md)** 📋
-- ACK message encoding (type 0 headers, transport-level)
-- Channel control message encoding (type 1 headers, on-channel)
-- Channel data message encoding (type 2 headers, on-channel)
-- TCC data messages for channel setup/teardown
-- Header format details
-- Zero-copy encoding into ring buffer
-- Module responsibilities: Protocol, OutputRingBuffer, VirtualRWBuffer
+**[`message-encoding.md`](message-encoding.md)** ✅
+- ACK message encoding (header type 0, transport-level)
+- Channel control message encoding (header type 1, on-channel)
+- Channel data message encoding (header type 2, on-channel)
+- Zero-copy encoding into ring buffer via VirtualRWBuffer
+- Remaining size encoding (16-bit word counting)
+- ACK base independence and range encoding
+- String encoding with over-allocation and shrinking
+- Multi-chunk message encoding with EOM flag handling
+- Module responsibilities: Protocol, OutputRingBuffer, VirtualRWBuffer, ChannelFlowControl
 
-**[`message-decoding.md`](message-decoding.md)** 📋
-- Header size detection
+**[`message-decoding.md`](message-decoding.md)** ✅
+- Header size detection and incremental decoding (streaming input)
 - Message type identification (0=ACK, 1=control, 2=data)
-- ACK message decoding
-- Channel control message decoding
-- Channel data message decoding
-- Multi-segment buffer handling
-- Module responsibilities: Protocol, VirtualBuffer
+- ACK message decoding with range interpretation
+- Channel control message decoding with sequence validation
+- Channel data message decoding with multi-chunk support
+- Zero-copy data extraction via VirtualBuffer
+- Protocol validation (invalid header type, out-of-order, over-budget)
+- Module responsibilities: Protocol, VirtualBuffer, ChannelFlowControl, Transport
 
 **[`handshake.md`](handshake.md)** 📋
 - Transport handshake sequence
@@ -223,29 +228,39 @@ Scenarios are organized by functional area and complexity. The order below repre
 
 ### 7. Buffer Management
 
-**[`buffer-pool-lifecycle.md`](buffer-pool-lifecycle.md)** 📋
-- Buffer acquisition
-- Size class selection
-- Water mark management
-- Buffer release and zeroing
-- Worker buffer transfer
+**[`buffer-pool-lifecycle.md`](buffer-pool-lifecycle.md)** ✅
+- Complete buffer pool lifecycle with dual-pool architecture (clean and dirty pools)
+- Buffer acquisition (clean pool → dirty pool with zeroing → allocate new)
+- Buffer release to dirty pool (deferred zeroing for performance)
+- Asynchronous pool management (water mark enforcement in next event loop)
+- Size class selection (1KB, 4KB, 16KB, 64KB)
+- Worker mode: request/receive/return buffers with zero-copy transfer
+- Statistics tracking (acquired, released, allocated, transferred, clean, dirty)
+- Graceful shutdown with `stop()` method
 - Module responsibilities: BufferPool
 
-**[`ring-buffer-lifecycle.md`](ring-buffer-lifecycle.md)** 📋
-- Space reservation
-- Writing to reservation (VirtualRWBuffer)
-- Committing reservation
-- Getting buffers for I/O
-- Consuming sent data
-- Wrap-around handling
-- Module responsibilities: OutputRingBuffer, VirtualRWBuffer
+**[`ring-buffer-lifecycle.md`](ring-buffer-lifecycle.md)** ✅
+- Complete lifecycle for OutputRingBuffer (byte-stream transports) and VirtualRingBuffer (Worker transport)
+- OutputRingBuffer: Single reusable ring with zero-after-write security and wrap-around support
+- VirtualRingBuffer: Budget/space abstraction using BufferPool buffers for transferable output
+- Shared pool architecture: Main and worker coordinate via buffer transfer (request/return)
+- Space reservation with single pending reservation (might shrink)
+- Zero-copy encoding via VirtualRWBuffer
+- Committing reservation and getting buffers for I/O
+- Consuming sent data (OutputRingBuffer zeros and reuses, VirtualRingBuffer transfers to worker)
+- Multi-buffer support for large reservations (exceeds 64KB)
+- Module responsibilities: OutputRingBuffer, VirtualRingBuffer, BufferPool, VirtualRWBuffer
 
-**[`virtual-buffer-operations.md`](virtual-buffer-operations.md)** 📋
-- Creating virtual buffers
-- Multi-segment views
-- Text decoding
-- DataView operations
-- Slicing and copying
+**[`virtual-buffer-operations.md`](virtual-buffer-operations.md)** ✅
+- Creating virtual buffers (VirtualBuffer read-only, VirtualRWBuffer read-write)
+- Multi-segment views (2+ segments: OutputRingBuffer wrap-around, VirtualRingBuffer large reservations)
+- Text decoding with streaming (handles UTF-8 sequences split across segments)
+- DataView operations (getUint8/16/32, setUint8/16/32)
+- Segment caching optimization (minimizes segment searches during sequential access)
+- Slicing and copying (zero-copy slice, toUint8Array copy)
+- Write operations (set, fill, encodeFrom with shrinking)
+- Single pending reservation model (enforced by ring buffer)
+- Multi-chunk encoding loop (reserve→encode→shrink→commit cycle)
 - Module responsibilities: VirtualBuffer, VirtualRWBuffer
 
 ### 8. Channel Multiplexing
@@ -350,9 +365,9 @@ Each scenario document should include:
 - 📋 **Planned**: Scenario identified but not yet started
 - *(Future)*: Scenario for future implementation phases
 
-## Current Status Summary (2026-01-15)
+## Current Status Summary (2026-01-17)
 
-- **18 scenarios complete** (✅):
+- **24 scenarios complete** (✅):
   - **Transport Lifecycle**:
     - [`transport-initialization.md`](transport-initialization.md) - Transport startup with TCC/C2C channels, **role determination** (step 7d), handshake
     - [`transport-shutdown.md`](transport-shutdown.md) - Graceful transport closure with channel cleanup and timeout handling
@@ -372,6 +387,14 @@ Each scenario document should include:
     - [`ack-generation-processing.md`](ack-generation-processing.md) - ACK generation and processing (ring buffer only, fire-and-forget)
     - [`receive-flow-control.md`](receive-flow-control.md) - Receive-side flow control with validation and consumption tracking
     - [`send-flow-control.md`](send-flow-control.md) - Send-side flow control with three-resource coordination and atomic reservations
+    - [`protocol-violation.md`](protocol-violation.md) - Protocol violation detection and handling with application-defined policies
+  - **Buffer Management**:
+    - [`buffer-pool-lifecycle.md`](buffer-pool-lifecycle.md) - Complete buffer pool lifecycle with dual-pool architecture and async management
+    - [`ring-buffer-lifecycle.md`](ring-buffer-lifecycle.md) - OutputRingBuffer (byte-stream) and VirtualRingBuffer (Worker) with shared pool architecture
+    - [`virtual-buffer-operations.md`](virtual-buffer-operations.md) - VirtualBuffer and VirtualRWBuffer operations with segment caching and multi-segment support
+  - **Message Protocol**:
+    - [`message-encoding.md`](message-encoding.md) - Message encoding with zero-copy into ring buffer, remaining size encoding, ACK/control/data headers
+    - [`message-decoding.md`](message-decoding.md) - Message decoding with incremental parsing, zero-copy extraction, protocol validation
 - **All other scenarios planned** (📋): Not yet written, will incorporate bidirectional channel model from the start
 
 **Note**: Role determination is fully documented in [`transport-initialization.md`](transport-initialization.md) step 7d (lines 316-351). A separate scenario is not needed as it's an integral part of the handshake sequence.

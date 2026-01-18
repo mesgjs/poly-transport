@@ -12,22 +12,23 @@ import {
 	MAX_DATA_HEADER_BYTES,
 	MIN_DATA_RES_BYTES,
 	RESERVE_ACK_BYTES,
-	MSG_TYPE_ACK,
-	MSG_TYPE_CHANNEL_CONTROL,
-	MSG_TYPE_CHANNEL_DATA,
+	HDR_TYPE_ACK,
+	HDR_TYPE_CHAN_CONTROL,
+	HDR_TYPE_CHAN_DATA,
 	FLAG_EOM,
 	CHANNEL_TCC,
 	CHANNEL_C2C,
-	TCC_MSG_TRANSPORT_STATE,
-	TCC_MSG_CHANNEL_REQUEST,
-	TCC_MSG_CHANNEL_RESPONSE,
-	C2C_MSG_UNCAUGHT_EXCEPTION,
-	C2C_MSG_DEBUG,
-	C2C_MSG_INFO,
-	C2C_MSG_WARN,
-	C2C_MSG_ERROR,
-	CCM_MSG_TYPE_REGISTER_REQUEST,
-	CCM_MSG_TYPE_REGISTER_RESPONSE,
+	TCC_DTAM_TRAN_STOP,
+	TCC_DTAM_CHAN_REQUEST,
+	TCC_DTAM_CHAN_RESPONSE,
+	C2C_MESG_UNCAUGHT,
+	C2C_MESG_TRACE,
+	C2C_MESG_DEBUG,
+	C2C_MESG_INFO,
+	C2C_MESG_WARN,
+	C2C_MESG_ERROR,
+	MIN_CHANNEL_ID,
+	MIN_MESG_TYPE_ID,
 	// Helper functions
 	totalToEncAddl,
 	addlToEncAddl,
@@ -64,9 +65,9 @@ Deno.test('Protocol - constants are defined', () => {
 });
 
 Deno.test('Protocol - message type constants', () => {
-	assertEquals(MSG_TYPE_ACK, 0);
-	assertEquals(MSG_TYPE_CHANNEL_CONTROL, 1);
-	assertEquals(MSG_TYPE_CHANNEL_DATA, 2);
+	assertEquals(HDR_TYPE_ACK, 0);
+	assertEquals(HDR_TYPE_CHAN_CONTROL, 1);
+	assertEquals(HDR_TYPE_CHAN_DATA, 2);
 });
 
 Deno.test('Protocol - flag constants', () => {
@@ -79,22 +80,18 @@ Deno.test('Protocol - channel constants', () => {
 });
 
 Deno.test('Protocol - TCC message type constants', () => {
-	assertEquals(TCC_MSG_TRANSPORT_STATE, 0);
-	assertEquals(TCC_MSG_CHANNEL_REQUEST, 1);
-	assertEquals(TCC_MSG_CHANNEL_RESPONSE, 2);
+	assertEquals(TCC_DTAM_TRAN_STOP, 0);
+	assertEquals(TCC_DTAM_CHAN_REQUEST, 1);
+	assertEquals(TCC_DTAM_CHAN_RESPONSE, 2);
 });
 
 Deno.test('Protocol - C2C message type constants', () => {
-	assertEquals(C2C_MSG_UNCAUGHT_EXCEPTION, 0);
-	assertEquals(C2C_MSG_DEBUG, 1);
-	assertEquals(C2C_MSG_INFO, 2);
-	assertEquals(C2C_MSG_WARN, 3);
-	assertEquals(C2C_MSG_ERROR, 4);
-});
-
-Deno.test('Protocol - CCM message type constants', () => {
-	assertEquals(CCM_MSG_TYPE_REGISTER_REQUEST, 0);
-	assertEquals(CCM_MSG_TYPE_REGISTER_RESPONSE, 1);
+	assertEquals(C2C_MESG_UNCAUGHT, 0);
+	assertEquals(C2C_MESG_TRACE, 1);
+	assertEquals(C2C_MESG_DEBUG, 2);
+	assertEquals(C2C_MESG_INFO, 3);
+	assertEquals(C2C_MESG_WARN, 4);
+	assertEquals(C2C_MESG_ERROR, 5);
 });
 
 // ============================================================================
@@ -175,7 +172,7 @@ Deno.test('Protocol - encodeAckHeader basic', () => {
 	});
 
 	assertEquals(header.length, 14);
-	assertEquals(header[0], MSG_TYPE_ACK);
+	assertEquals(header[0], HDR_TYPE_ACK);
 	assertEquals(header[1], 5);  // (14-4)>>1 = 5
 	
 	// Verify channelId (big-endian)
@@ -224,7 +221,7 @@ Deno.test('Protocol - encodeAckHeaderInto with VirtualRWBuffer', () => {
 	});
 
 	assertEquals(size, 14);
-	assertEquals(buffer[0], MSG_TYPE_ACK);
+	assertEquals(buffer[0], HDR_TYPE_ACK);
 	assertEquals(buffer[1], 5);
 });
 
@@ -240,7 +237,7 @@ Deno.test('Protocol - encodeAckHeaderInto with DataView', () => {
 	});
 
 	assertEquals(size, 14);
-	assertEquals(buffer[0], MSG_TYPE_ACK);
+	assertEquals(buffer[0], HDR_TYPE_ACK);
 	assertEquals(buffer[1], 5);
 });
 
@@ -256,7 +253,7 @@ Deno.test('Protocol - encodeAckHeaderInto with offset', () => {
 	});
 
 	assertEquals(size, 14);
-	assertEquals(buffer[10], MSG_TYPE_ACK);
+	assertEquals(buffer[10], HDR_TYPE_ACK);
 	assertEquals(buffer[11], 5);
 });
 
@@ -298,7 +295,7 @@ Deno.test('Protocol - encodeAckHeaderInto validation', () => {
 // ============================================================================
 
 Deno.test('Protocol - encodeChannelHeader control message', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_CONTROL, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_CONTROL, {
 		dataSize: 100,
 		flags: 0,
 		channelId: 200,
@@ -307,7 +304,7 @@ Deno.test('Protocol - encodeChannelHeader control message', () => {
 	});
 
 	assertEquals(header.length, 18);
-	assertEquals(header[0], MSG_TYPE_CHANNEL_CONTROL);
+	assertEquals(header[0], HDR_TYPE_CHAN_CONTROL);
 	assertEquals(header[1], 7);  // (18-4)>>1 = 7
 
 	const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
@@ -319,7 +316,7 @@ Deno.test('Protocol - encodeChannelHeader control message', () => {
 });
 
 Deno.test('Protocol - encodeChannelHeader data message', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_DATA, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_DATA, {
 		dataSize: 1024,
 		flags: FLAG_EOM,
 		channelId: 500,
@@ -328,7 +325,7 @@ Deno.test('Protocol - encodeChannelHeader data message', () => {
 	});
 
 	assertEquals(header.length, 18);
-	assertEquals(header[0], MSG_TYPE_CHANNEL_DATA);
+	assertEquals(header[0], HDR_TYPE_CHAN_DATA);
 
 	const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
 	assertEquals(view.getUint32(2), 1024);
@@ -339,7 +336,7 @@ Deno.test('Protocol - encodeChannelHeader data message', () => {
 });
 
 Deno.test('Protocol - encodeChannelHeader with defaults', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_DATA, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_DATA, {
 		channelId: 100,
 		sequence: 200,
 		messageType: 300
@@ -354,7 +351,7 @@ Deno.test('Protocol - encodeChannelHeaderInto with VirtualRWBuffer', () => {
 	const buffer = new Uint8Array(20);
 	const vb = new VirtualRWBuffer(buffer);
 	
-	const size = encodeChannelHeaderInto(vb, 0, MSG_TYPE_CHANNEL_DATA, {
+	const size = encodeChannelHeaderInto(vb, 0, HDR_TYPE_CHAN_DATA, {
 		dataSize: 100,
 		flags: 0,
 		channelId: 200,
@@ -363,14 +360,14 @@ Deno.test('Protocol - encodeChannelHeaderInto with VirtualRWBuffer', () => {
 	});
 
 	assertEquals(size, 18);
-	assertEquals(buffer[0], MSG_TYPE_CHANNEL_DATA);
+	assertEquals(buffer[0], HDR_TYPE_CHAN_DATA);
 });
 
 Deno.test('Protocol - encodeChannelHeaderInto with DataView', () => {
 	const buffer = new Uint8Array(20);
 	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 	
-	const size = encodeChannelHeaderInto(view, 0, MSG_TYPE_CHANNEL_DATA, {
+	const size = encodeChannelHeaderInto(view, 0, HDR_TYPE_CHAN_DATA, {
 		dataSize: 100,
 		flags: 0,
 		channelId: 200,
@@ -379,7 +376,7 @@ Deno.test('Protocol - encodeChannelHeaderInto with DataView', () => {
 	});
 
 	assertEquals(size, 18);
-	assertEquals(buffer[0], MSG_TYPE_CHANNEL_DATA);
+	assertEquals(buffer[0], HDR_TYPE_CHAN_DATA);
 });
 
 Deno.test('Protocol - encodeChannelHeaderInto validation', () => {
@@ -388,14 +385,14 @@ Deno.test('Protocol - encodeChannelHeaderInto validation', () => {
 
 	// Invalid target
 	assertThrows(
-		() => encodeChannelHeaderInto(null, 0, MSG_TYPE_CHANNEL_DATA, { channelId: 100, sequence: 200, messageType: 300 }),
+		() => encodeChannelHeaderInto(null, 0, HDR_TYPE_CHAN_DATA, { channelId: 100, sequence: 200, messageType: 300 }),
 		TypeError,
 		'target must have DataView-compatible API'
 	);
 
 	// Invalid offset
 	assertThrows(
-		() => encodeChannelHeaderInto(view, -1, MSG_TYPE_CHANNEL_DATA, { channelId: 100, sequence: 200, messageType: 300 }),
+		() => encodeChannelHeaderInto(view, -1, HDR_TYPE_CHAN_DATA, { channelId: 100, sequence: 200, messageType: 300 }),
 		RangeError,
 		'offset out of range'
 	);
@@ -437,7 +434,7 @@ Deno.test('Protocol - decodeHeaderSizeFromPrefix ACK with ranges', () => {
 });
 
 Deno.test('Protocol - decodeHeaderSizeFromPrefix channel message', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_DATA, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_DATA, {
 		channelId: 100,
 		sequence: 200,
 		messageType: 300
@@ -509,7 +506,7 @@ Deno.test('Protocol - decodeHeaderFrom ACK', () => {
 	
 	const decoded = decodeHeaderFrom(vb, 0);
 	
-	assertEquals(decoded.type, MSG_TYPE_ACK);
+	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.headerLength, 16);
 	assertEquals(decoded.flags, 0x1234);
 	assertEquals(decoded.channelId, 100);
@@ -519,7 +516,7 @@ Deno.test('Protocol - decodeHeaderFrom ACK', () => {
 });
 
 Deno.test('Protocol - decodeHeaderFrom channel control', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_CONTROL, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_CONTROL, {
 		dataSize: 100,
 		flags: 0x5678,
 		channelId: 200,
@@ -530,7 +527,7 @@ Deno.test('Protocol - decodeHeaderFrom channel control', () => {
 	
 	const decoded = decodeHeaderFrom(vb, 0);
 	
-	assertEquals(decoded.type, MSG_TYPE_CHANNEL_CONTROL);
+	assertEquals(decoded.type, HDR_TYPE_CHAN_CONTROL);
 	assertEquals(decoded.headerLength, 18);
 	assertEquals(decoded.dataSize, 100);
 	assertEquals(decoded.flags, 0x5678);
@@ -541,7 +538,7 @@ Deno.test('Protocol - decodeHeaderFrom channel control', () => {
 });
 
 Deno.test('Protocol - decodeHeaderFrom channel data with EOM', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_DATA, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_DATA, {
 		dataSize: 1024,
 		flags: FLAG_EOM,
 		channelId: 500,
@@ -552,7 +549,7 @@ Deno.test('Protocol - decodeHeaderFrom channel data with EOM', () => {
 	
 	const decoded = decodeHeaderFrom(vb, 0);
 	
-	assertEquals(decoded.type, MSG_TYPE_CHANNEL_DATA);
+	assertEquals(decoded.type, HDR_TYPE_CHAN_DATA);
 	assertEquals(decoded.dataSize, 1024);
 	assertEquals(decoded.flags, FLAG_EOM);
 	assertEquals(decoded.eom, true);
@@ -568,7 +565,7 @@ Deno.test('Protocol - decodeHeaderFrom with DataView', () => {
 	
 	const decoded = decodeHeaderFrom(view, 0);
 	
-	assertEquals(decoded.type, MSG_TYPE_ACK);
+	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 	assertEquals(decoded.baseSequence, 200);
 });
@@ -585,7 +582,7 @@ Deno.test('Protocol - decodeHeaderFrom with offset', () => {
 	
 	const decoded = decodeHeaderFrom(vb, 10);
 	
-	assertEquals(decoded.type, MSG_TYPE_ACK);
+	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 });
 
@@ -629,7 +626,7 @@ Deno.test('Protocol - decodeHeader convenience function', () => {
 	
 	const decoded = decodeHeader(vb);
 	
-	assertEquals(decoded.type, MSG_TYPE_ACK);
+	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 });
 
@@ -719,8 +716,8 @@ Deno.test('Protocol - decodeHandshakeFrom basic', () => {
 	
 	assertEquals(result.bytesConsumed, size);
 	assertEquals(result.config.c2cEnabled, false);
-	assertEquals(result.config.minChannelId, 256);
-	assertEquals(result.config.minMessageTypeId, 1024);
+	assertEquals(result.config.minChannelId, MIN_CHANNEL_ID);
+	assertEquals(result.config.minMessageTypeId, MIN_MESG_TYPE_ID);
 	assertEquals(result.config.version, 1);
 });
 
@@ -826,7 +823,7 @@ Deno.test('Protocol - ACK round-trip', () => {
 	const vb = new VirtualBuffer(encoded);
 	const decoded = decodeHeader(vb);
 	
-	assertEquals(decoded.type, MSG_TYPE_ACK);
+	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, original.channelId);
 	assertEquals(decoded.baseSequence, original.baseSequence);
 	assertEquals(decoded.flags, original.flags);
@@ -842,11 +839,11 @@ Deno.test('Protocol - channel control round-trip', () => {
 		messageType: 777
 	};
 	
-	const encoded = encodeChannelHeader(MSG_TYPE_CHANNEL_CONTROL, original);
+	const encoded = encodeChannelHeader(HDR_TYPE_CHAN_CONTROL, original);
 	const vb = new VirtualBuffer(encoded);
 	const decoded = decodeHeader(vb);
 	
-	assertEquals(decoded.type, MSG_TYPE_CHANNEL_CONTROL);
+	assertEquals(decoded.type, HDR_TYPE_CHAN_CONTROL);
 	assertEquals(decoded.dataSize, original.dataSize);
 	assertEquals(decoded.flags, original.flags);
 	assertEquals(decoded.channelId, original.channelId);
@@ -863,11 +860,11 @@ Deno.test('Protocol - channel data round-trip', () => {
 		messageType: 333
 	};
 	
-	const encoded = encodeChannelHeader(MSG_TYPE_CHANNEL_DATA, original);
+	const encoded = encodeChannelHeader(HDR_TYPE_CHAN_DATA, original);
 	const vb = new VirtualBuffer(encoded);
 	const decoded = decodeHeader(vb);
 	
-	assertEquals(decoded.type, MSG_TYPE_CHANNEL_DATA);
+	assertEquals(decoded.type, HDR_TYPE_CHAN_DATA);
 	assertEquals(decoded.dataSize, original.dataSize);
 	assertEquals(decoded.flags, original.flags);
 	assertEquals(decoded.eom, true);
@@ -917,14 +914,14 @@ Deno.test('Protocol - decode ACK from multi-segment VirtualBuffer', () => {
 	
 	const decoded = decodeHeader(vb);
 	
-	assertEquals(decoded.type, MSG_TYPE_ACK);
+	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 	assertEquals(decoded.baseSequence, 200);
 	assertEquals(decoded.ranges, [10, 20]);
 });
 
 Deno.test('Protocol - decode channel header from multi-segment VirtualBuffer', () => {
-	const header = encodeChannelHeader(MSG_TYPE_CHANNEL_DATA, {
+	const header = encodeChannelHeader(HDR_TYPE_CHAN_DATA, {
 		dataSize: 1024,
 		flags: FLAG_EOM,
 		channelId: 500,
@@ -943,7 +940,7 @@ Deno.test('Protocol - decode channel header from multi-segment VirtualBuffer', (
 	
 	const decoded = decodeHeader(vb);
 	
-	assertEquals(decoded.type, MSG_TYPE_CHANNEL_DATA);
+	assertEquals(decoded.type, HDR_TYPE_CHAN_DATA);
 	assertEquals(decoded.dataSize, 1024);
 	assertEquals(decoded.channelId, 500);
 	assertEquals(decoded.sequence, 600);
