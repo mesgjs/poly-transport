@@ -44,9 +44,7 @@ import {
 	encodeHandshakeInto,
 	// Decoding functions
 	decodeHeaderSizeFromPrefix,
-	decodeHeaderFrom,
 	decodeHeader,
-	decodeHandshakeFrom,
 	decodeHandshake
 } from '../../src/protocol.esm.js';
 import { VirtualBuffer, VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
@@ -495,7 +493,7 @@ Deno.test('Protocol - decodeHeaderSizeFromPrefix validation', () => {
 	);
 });
 
-Deno.test('Protocol - decodeHeaderFrom ACK', () => {
+Deno.test('Protocol - decodeHeader ACK', () => {
 	const header = encodeAckHeader({
 		channelId: 100,
 		baseSequence: 200,
@@ -504,10 +502,10 @@ Deno.test('Protocol - decodeHeaderFrom ACK', () => {
 	});
 	const vb = new VirtualBuffer(header);
 	
-	const decoded = decodeHeaderFrom(vb, 0);
+	const decoded = decodeHeader(vb);
 	
 	assertEquals(decoded.type, HDR_TYPE_ACK);
-	assertEquals(decoded.headerLength, 16);
+	assertEquals(decoded.headerSize, 16);
 	assertEquals(decoded.flags, 0x1234);
 	assertEquals(decoded.channelId, 100);
 	assertEquals(decoded.baseSequence, 200);
@@ -515,7 +513,7 @@ Deno.test('Protocol - decodeHeaderFrom ACK', () => {
 	assertEquals(decoded.ranges, [10, 20, 30]);
 });
 
-Deno.test('Protocol - decodeHeaderFrom channel control', () => {
+Deno.test('Protocol - decodeHeader channel control', () => {
 	const header = encodeChannelHeader(HDR_TYPE_CHAN_CONTROL, {
 		dataSize: 100,
 		flags: 0x5678,
@@ -525,10 +523,10 @@ Deno.test('Protocol - decodeHeaderFrom channel control', () => {
 	});
 	const vb = new VirtualBuffer(header);
 	
-	const decoded = decodeHeaderFrom(vb, 0);
+	const decoded = decodeHeader(vb);
 	
 	assertEquals(decoded.type, HDR_TYPE_CHAN_CONTROL);
-	assertEquals(decoded.headerLength, 18);
+	assertEquals(decoded.headerSize, 18);
 	assertEquals(decoded.dataSize, 100);
 	assertEquals(decoded.flags, 0x5678);
 	assertEquals(decoded.channelId, 200);
@@ -537,7 +535,7 @@ Deno.test('Protocol - decodeHeaderFrom channel control', () => {
 	assertEquals(decoded.eom, false);
 });
 
-Deno.test('Protocol - decodeHeaderFrom channel data with EOM', () => {
+Deno.test('Protocol - decodeHeader channel data with EOM', () => {
 	const header = encodeChannelHeader(HDR_TYPE_CHAN_DATA, {
 		dataSize: 1024,
 		flags: FLAG_EOM,
@@ -547,7 +545,7 @@ Deno.test('Protocol - decodeHeaderFrom channel data with EOM', () => {
 	});
 	const vb = new VirtualBuffer(header);
 	
-	const decoded = decodeHeaderFrom(vb, 0);
+	const decoded = decodeHeader(vb);
 	
 	assertEquals(decoded.type, HDR_TYPE_CHAN_DATA);
 	assertEquals(decoded.dataSize, 1024);
@@ -555,7 +553,7 @@ Deno.test('Protocol - decodeHeaderFrom channel data with EOM', () => {
 	assertEquals(decoded.eom, true);
 });
 
-Deno.test('Protocol - decodeHeaderFrom with DataView', () => {
+Deno.test('Protocol - decodeHeader with DataView', () => {
 	const header = encodeAckHeader({
 		channelId: 100,
 		baseSequence: 200,
@@ -563,14 +561,14 @@ Deno.test('Protocol - decodeHeaderFrom with DataView', () => {
 	});
 	const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
 	
-	const decoded = decodeHeaderFrom(view, 0);
+	const decoded = decodeHeader(view);
 	
 	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 	assertEquals(decoded.baseSequence, 200);
 });
 
-Deno.test('Protocol - decodeHeaderFrom with offset', () => {
+Deno.test('Protocol - decodeHeader with offset', () => {
 	const buffer = new Uint8Array(30);
 	const header = encodeAckHeader({
 		channelId: 100,
@@ -580,54 +578,40 @@ Deno.test('Protocol - decodeHeaderFrom with offset', () => {
 	buffer.set(header, 10);
 	const vb = new VirtualBuffer(buffer);
 	
-	const decoded = decodeHeaderFrom(vb, 10);
+	const decoded = decodeHeader(vb, 10);
 	
 	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 });
 
-Deno.test('Protocol - decodeHeaderFrom buffer too small', () => {
+Deno.test('Protocol - decodeHeader buffer too small', () => {
 	const buffer = new Uint8Array(3);
 	const vb = new VirtualBuffer(buffer);
 	
 	assertThrows(
-		() => decodeHeaderFrom(vb, 0),
+		() => decodeHeader(vb),
 		Error,
 		'Buffer too small for header'
 	);
 });
 
-Deno.test('Protocol - decodeHeaderFrom validation', () => {
+Deno.test('Protocol - decodeHeader validation', () => {
 	const buffer = new Uint8Array(20);
 	const vb = new VirtualBuffer(buffer);
 
 	// Invalid buffer
 	assertThrows(
-		() => decodeHeaderFrom(null, 0),
+		() => decodeHeader(null),
 		TypeError,
 		'buffer must have DataView-compatible API'
 	);
 
 	// Invalid offset
 	assertThrows(
-		() => decodeHeaderFrom(vb, -1),
+		() => decodeHeader(vb, -1),
 		RangeError,
 		'offset out of range'
 	);
-});
-
-Deno.test('Protocol - decodeHeader convenience function', () => {
-	const header = encodeAckHeader({
-		channelId: 100,
-		baseSequence: 200,
-		ranges: []
-	});
-	const vb = new VirtualBuffer(header);
-	
-	const decoded = decodeHeader(vb);
-	
-	assertEquals(decoded.type, HDR_TYPE_ACK);
-	assertEquals(decoded.channelId, 100);
 });
 
 // ============================================================================
@@ -668,7 +652,7 @@ Deno.test('Protocol - encodeHandshakeInto with custom config', () => {
 	const size = encodeHandshakeInto(vb, 0, config);
 	
 	// Decode to verify config
-	const result = decodeHandshakeFrom(vb, 0);
+	const result = decodeHandshake(vb);
 	assertEquals(result.config.c2cEnabled, true);
 	assertEquals(result.config.minChannelId, 512);
 	assertEquals(result.config.minMessageTypeId, 2048);
@@ -707,12 +691,12 @@ Deno.test('Protocol - encodeHandshakeInto validation', () => {
 // Handshake Decoding Tests
 // ============================================================================
 
-Deno.test('Protocol - decodeHandshakeFrom basic', () => {
+Deno.test('Protocol - decodeHandshake basic', () => {
 	const buffer = new Uint8Array(200);
 	const vb = new VirtualRWBuffer(buffer);
 	const size = encodeHandshakeInto(vb, 0);
 	
-	const result = decodeHandshakeFrom(vb, 0);
+	const result = decodeHandshake(vb);
 	
 	assertEquals(result.bytesConsumed, size);
 	assertEquals(result.config.c2cEnabled, false);
@@ -721,7 +705,7 @@ Deno.test('Protocol - decodeHandshakeFrom basic', () => {
 	assertEquals(result.config.version, 1);
 });
 
-Deno.test('Protocol - decodeHandshakeFrom with custom config', () => {
+Deno.test('Protocol - decodeHandshake with custom config', () => {
 	const buffer = new Uint8Array(200);
 	const vb = new VirtualRWBuffer(buffer);
 	
@@ -733,7 +717,7 @@ Deno.test('Protocol - decodeHandshakeFrom with custom config', () => {
 	};
 	
 	encodeHandshakeInto(vb, 0, config);
-	const result = decodeHandshakeFrom(vb, 0);
+	const result = decodeHandshake(vb);
 	
 	assertEquals(result.config.c2cEnabled, true);
 	assertEquals(result.config.minChannelId, 512);
@@ -741,26 +725,26 @@ Deno.test('Protocol - decodeHandshakeFrom with custom config', () => {
 	assertEquals(result.config.version, 2);
 });
 
-Deno.test('Protocol - decodeHandshakeFrom with offset', () => {
+Deno.test('Protocol - decodeHandshake with offset', () => {
 	const buffer = new Uint8Array(200);
 	const vb = new VirtualRWBuffer(buffer);
 	const size = encodeHandshakeInto(vb, 10);
 	
-	const result = decodeHandshakeFrom(vb, 10);
+	const result = decodeHandshake(vb, 10);
 	
 	assertEquals(result.bytesConsumed, size);
 	assertEquals(result.config.version, 1);
 });
 
-Deno.test('Protocol - decodeHandshakeFrom incomplete', () => {
+Deno.test('Protocol - decodeHandshake incomplete', () => {
 	const buffer = new Uint8Array(5);
 	const vb = new VirtualBuffer(buffer);
 	
-	const result = decodeHandshakeFrom(vb, 0);
+	const result = decodeHandshake(vb);
 	assertEquals(result, null);
 });
 
-Deno.test('Protocol - decodeHandshakeFrom invalid transport ID', () => {
+Deno.test('Protocol - decodeHandshake invalid transport greeting', () => {
 	const buffer = new Uint8Array(100);
 	const vb = new VirtualRWBuffer(buffer);
 	
@@ -771,40 +755,29 @@ Deno.test('Protocol - decodeHandshakeFrom invalid transport ID', () => {
 	vb.setUint8(1 + invalidId.length, 0x03);  // ETX
 	
 	assertThrows(
-		() => decodeHandshakeFrom(vb, 0),
+		() => decodeHandshake(vb),
 		Error,
-		'Invalid transport identifier'
+		'Invalid transport greeting'
 	);
 });
 
-Deno.test('Protocol - decodeHandshakeFrom validation', () => {
+Deno.test('Protocol - decodeHandshake validation', () => {
 	const buffer = new Uint8Array(100);
 	const vb = new VirtualBuffer(buffer);
 
 	// Invalid buffer
 	assertThrows(
-		() => decodeHandshakeFrom(null, 0),
+		() => decodeHandshake(null),
 		TypeError,
 		'buffer must have DataView-compatible API'
 	);
 
 	// Invalid offset
 	assertThrows(
-		() => decodeHandshakeFrom(vb, -1),
+		() => decodeHandshake(vb, -1),
 		RangeError,
 		'offset out of range'
 	);
-});
-
-Deno.test('Protocol - decodeHandshake convenience function', () => {
-	const buffer = new Uint8Array(200);
-	const vb = new VirtualRWBuffer(buffer);
-	const size = encodeHandshakeInto(vb, 0);
-	
-	const result = decodeHandshake(vb);
-	
-	assertEquals(result.bytesConsumed, size);
-	assertEquals(result.config.version, 1);
 });
 
 // ============================================================================

@@ -196,8 +196,8 @@ export class ChannelFlowControl {
 			currentSeq += skip;
 		}
 
-		// Wake up any waiters that now have sufficient budget
-		this.#processWaiters();
+		// If there's a waiter and sufficient budget, wake it
+		this.#checkWaiter();
 
 		return bytesFreed;
 	}
@@ -225,11 +225,11 @@ export class ChannelFlowControl {
 	}
 
 	/**
-	 * Process waiter and wake up if sufficient budget is now available.
+	 * Check for waiter and wake up if sufficient budget is now available.
 	 * Note: TaskQueue ensures only one chunk waiting at a time per channel.
 	 * @private
 	 */
-	#processWaiters () {
+	#checkWaiter () {
 		// Check if there's a waiter and if budget is now sufficient
 		if (this.#waiter) {
 			const budget = this.sendingBudget;

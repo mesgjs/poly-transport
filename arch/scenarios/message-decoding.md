@@ -138,12 +138,12 @@ if (inputBuffer.length < headerSize) {
 **Actor**: Protocol Layer
 
 ```javascript
-import { decodeHeaderFrom } from './protocol.esm.js';
+import { decodeHeader } from './protocol.esm.js';
 
-const header = decodeHeaderFrom(inputBuffer, 0);
+const header = decodeHeader(inputBuffer);
 // header = {
 //   type: 0,              // HDR_TYPE_ACK
-//   headerLength: 16,     // Total header bytes
+//   headerSize: 16,       // Total header bytes
 //   flags: 0,             // No flags defined for ACKs
 //   channelId: 42,        // Channel ID
 //   baseSequence: 5,      // Base sequence (ACK'd independently)
@@ -194,7 +194,7 @@ function decodeAckHeaderFrom (buffer, offset) {
 
   return {
     type,
-    headerLength: encAddlToTotal(sizeByte),
+    headerSize: encAddlToTotal(sizeByte),
     flags,
     channelId,
     baseSequence,
@@ -253,8 +253,8 @@ const bytesFreed = flowControl.processAck(
 
 ```javascript
 // Remove header from input buffer
-inputBuffer.consume(header.headerLength);
-// or advance read pointer by header.headerLength
+inputBuffer.consume(header.headerSize);
+// or advance read pointer by header.headerSize
 ```
 
 **State**:
@@ -325,10 +325,10 @@ if (inputBuffer.length < headerSize) {
 **Actor**: Protocol Layer
 
 ```javascript
-const header = decodeHeaderFrom(inputBuffer, 0);
+const header = decodeHeader(inputBuffer);
 // header = {
 //   type: 1,                    // HDR_TYPE_CHAN_CONTROL
-//   headerLength: 18,           // Total header bytes
+//   headerSize: 18,             // Total header bytes
 //   dataSize: 45,               // Payload size in bytes
 //   flags: 0x0001,              // FLAG_EOM (control messages always single-chunk)
 //   channelId: 42,              // Channel ID
@@ -379,7 +379,7 @@ function decodeChannelHeaderFrom (buffer, offset) {
 
   return {
     type,
-    headerLength: MAX_DATA_HEADER_BYTES,
+    headerSize: MAX_DATA_HEADER_BYTES,
     dataSize,
     flags,
     channelId,
@@ -396,7 +396,7 @@ function decodeChannelHeaderFrom (buffer, offset) {
 **Actor**: Transport
 
 ```javascript
-const totalBytes = header.headerLength + header.dataSize;
+const totalBytes = header.headerSize + header.dataSize;
 if (inputBuffer.length < totalBytes) {
   // Wait for more data
   return null;
@@ -414,8 +414,8 @@ if (inputBuffer.length < totalBytes) {
 ```javascript
 // Extract data payload (zero-copy slice)
 const dataPayload = inputBuffer.slice(
-  header.headerLength,
-  header.headerLength + header.dataSize
+  header.headerSize,
+  header.headerSize + header.dataSize
 );
 
 // dataPayload is VirtualBuffer view (zero-copy)
@@ -597,10 +597,10 @@ if (inputBuffer.length < headerSize) {
 **Actor**: Protocol Layer
 
 ```javascript
-const header = decodeHeaderFrom(inputBuffer, 0);
+const header = decodeHeader(inputBuffer);
 // header = {
 //   type: 2,                    // HDR_TYPE_CHAN_DATA
-//   headerLength: 18,           // Total header bytes
+//   headerSize: 18,             // Total header bytes
 //   dataSize: 1024,             // Payload size in bytes
 //   flags: 0x0000,              // No EOM (intermediate chunk)
 //   channelId: 42,              // Channel ID
@@ -632,7 +632,7 @@ Total: 18 bytes (MAX_DATA_HEADER_BYTES)
 **Actor**: Transport
 
 ```javascript
-const totalBytes = header.headerLength + header.dataSize;
+const totalBytes = header.headerSize + header.dataSize;
 if (inputBuffer.length < totalBytes) {
   return null;  // Wait for more data
 }
@@ -645,8 +645,8 @@ if (inputBuffer.length < totalBytes) {
 ```javascript
 // Extract data payload (zero-copy slice)
 const dataPayload = inputBuffer.slice(
-  header.headerLength,
-  header.headerLength + header.dataSize
+  header.headerSize,
+  header.headerSize + header.dataSize
 );
 ```
 
@@ -807,7 +807,7 @@ inputBuffer.consume(totalBytes);
 
 ```javascript
 // Decode first chunk (as in Scenario 3)
-const chunk1 = decodeHeaderFrom(inputBuffer, 0);
+const chunk1 = decodeHeader(inputBuffer);
 // chunk1.eom = false (intermediate chunk)
 // chunk1.sequence = 8
 // chunk1.messageTypeId = 1024
@@ -848,14 +848,14 @@ chunk.done();
 
 ```javascript
 // Decode second chunk
-const chunk2 = decodeHeaderFrom(inputBuffer, 0);
+const chunk2 = decodeHeader(inputBuffer);
 // chunk2.eom = false (still intermediate)
 // chunk2.sequence = 9 (consecutive)
 // chunk2.messageTypeId = 1024 (same as first)
 // chunk2.messageType = 'userMessage' (same as first)
 
 // Decode third chunk
-const chunk3 = decodeHeaderFrom(inputBuffer, 0);
+const chunk3 = decodeHeader(inputBuffer);
 // chunk3.eom = true (last chunk)
 // chunk3.sequence = 10 (consecutive)
 // chunk3.messageTypeId = 1024 (same as first)
@@ -962,7 +962,7 @@ if (inputBuffer.length < headerSize) {
 }
 
 // Complete header available, decode it
-const header = decodeHeaderFrom(inputBuffer, 0);
+const header = decodeHeader(inputBuffer);
 ```
 
 **State**:
@@ -976,7 +976,7 @@ const header = decodeHeaderFrom(inputBuffer, 0);
 
 ```javascript
 // Have complete header, check for complete data
-const totalBytes = header.headerLength + header.dataSize;
+const totalBytes = header.headerSize + header.dataSize;
 if (inputBuffer.length < totalBytes) {
   // Not enough bytes for complete message
   // Wait for more data
@@ -985,8 +985,8 @@ if (inputBuffer.length < totalBytes) {
 
 // Complete message available, extract it
 const dataPayload = inputBuffer.slice(
-  header.headerLength,
-  header.headerLength + header.dataSize
+  header.headerSize,
+  header.headerSize + header.dataSize
 );
 ```
 
@@ -1030,12 +1030,12 @@ while (inputBuffer.length >= 2) {
 
 ```javascript
 // Zero-copy decoding from VirtualBuffer
-const header = decodeHeaderFrom(virtualBuffer, 0);
+const header = decodeHeader(virtualBuffer);
 
 // Zero-copy data extraction
 const dataPayload = virtualBuffer.slice(
-  header.headerLength,
-  header.headerLength + header.dataSize
+  header.headerSize,
+  header.headerSize + header.dataSize
 );
 
 // Decode string data
@@ -1077,7 +1077,7 @@ while (inputBuffer.length >= 2) {
 
 ```javascript
 try {
-  const header = decodeHeaderFrom(inputBuffer, 0);
+  const header = decodeHeader(inputBuffer);
 } catch (err) {
   if (err.message.includes('Unknown message type')) {
     // Invalid header type (not 0, 1, or 2)

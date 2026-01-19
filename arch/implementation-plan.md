@@ -318,9 +318,8 @@ export function encodeHandshakeInto(target, offset, config)
 
 // Decoding functions (read from VirtualBuffer/DataView)
 export function decodeHeaderSizeFromPrefix(buffer, offset = 0)
-export function decodeHeaderFrom(buffer, offset = 0)
-export function decodeHeader(buffer)  // offset = 0
-export function decodeHandshakeFrom(buffer, offset = 0)
+export function decodeHeader(buffer, offset = 0)
+export function decodeHandshake(buffer, offset = 0)
 export function decodeHandshake(buffer)  // offset = 0
 
 // Test wrappers (allocate Uint8Array for convenience)

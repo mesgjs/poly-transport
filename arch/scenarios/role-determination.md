@@ -77,14 +77,14 @@ this.#transportId = crypto.randomUUID();
 
 **Action**: Decode remote handshake and extract `transportId`  
 **Responsible**: Both transports  
-**Code Location**: [`protocol.decodeHandshakeFrom()`](../../src/protocol.esm.js:432)
+**Code Location**: [`protocol.decodeHandshake()`](../../src/protocol.esm.js:432)
 
 ```javascript
 // Read and decode remote handshake
 const buffer = this.bufferPool.acquire(1024);
 const bytesRead = await this.readFromStream(buffer);
 const vb = new VirtualBuffer(buffer, 0, bytesRead);
-const remoteConfig = protocol.decodeHandshakeFrom(vb, 0);
+const remoteConfig = protocol.decodeHandshake(vb, 0);
 
 // Extract remote transport ID
 const remoteTransportId = remoteConfig.transportId;

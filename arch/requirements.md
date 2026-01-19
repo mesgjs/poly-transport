@@ -1072,13 +1072,13 @@ These methods enable zero-copy protocol encoding directly into the output ring b
 - [`decodeHeaderSizeFromPrefix()`](../src/protocol.esm.js:238) - Requires buffer with `getUint8()` method
 - [`decodeAckHeaderFrom()`](../src/protocol.esm.js:273) - Requires buffer with `getUint8/16/32()` methods
 - [`decodeChannelHeaderFrom()`](../src/protocol.esm.js:311) - Requires buffer with `getUint8/16/32()` methods
-- [`decodeHeaderFrom()`](../src/protocol.esm.js:346) - Requires buffer with `getUint8()` method
-- [`decodeHandshakeFrom()`](../src/protocol.esm.js:428) - New function, reads from VirtualBuffer/DataView
+- [`decodeHeader()`](../src/protocol.esm.js:346) - Requires buffer with `getUint8()` method
+- [`decodeHandshake()`](../src/protocol.esm.js:428) - New function, reads from VirtualBuffer/DataView
 
 **Removed**:
 - All Uint8Array fallback code paths in decode functions
 - `encodeHandshake()` function that returned Uint8Array (replaced with `encodeHandshakeInto()`)
-- Original `decodeHandshake()` that accepted Uint8Array (replaced with `decodeHandshakeFrom()`)
+- Original `decodeHandshake()` that accepted Uint8Array (replaced with `decodeHandshake()`)
 
 **Validation**:
 - All functions validate buffer has required DataView-compatible methods

@@ -244,7 +244,7 @@ export class BufferPool {
 	}
 
 	/**
-	 * Acquire a buffer from the pool.
+	 * Acquire a (single) buffer from the pool.
 	 * 
 	 * @param {number} requestedSize - Requested buffer size in bytes
 	 * @returns {ArrayBuffer|null} Buffer or null if size exceeds largest class
@@ -281,6 +281,23 @@ export class BufferPool {
 	}
 
 	/**
+	 * Acquire a set of buffers from the pool sufficient to hold the request.
+	 * @param {number} request - Requested total buffer size in bytes
+	 * @returns {Array<ArrayBuffer>} Array of buffers to hold the requested size
+	 */
+	acquireSet (request) {
+		let remaining = request;
+		const biggestSize = this.#sizeClasses.slice(-1);;
+		const buffers = [];
+		while (remaining > 0) {
+			const size = (remaining >= biggestSize) ? biggestSize : this.#getSizeClass(remaining);
+			buffers.push(this.acquire(size));
+			remaining -= size;
+		}
+		return buffers;
+	}
+
+	/**
 	 * Release a buffer to the dirty pool.
 	 * Buffer will be zeroed before returning to the main pool (requirements.md:850).
 	 * 
@@ -306,7 +323,7 @@ export class BufferPool {
 	}
 
 	/**
-	 * Receive buffers from main thread (worker context only).
+	 * Receive buffers from another thread
 	 * 
 	 * @param {number} size - Size class
 	 * @param {ArrayBuffer[]} buffers - Buffers received
@@ -320,7 +337,13 @@ export class BufferPool {
 		if (!group) {
 			throw new Error(`Invalid size class: ${size}`);
 		}
-		group.cleanPool.push(...buffers);
+		if (this.#isWorker) {
+			// Clean buffers from main thread
+			group.cleanPool.push(...buffers);
+		} else {
+			// Dirty buffers from worker threads
+			group.dirtyPool.push(...buffers);
+		}
 		group.stats.transferred += buffers.length;
 	}
 

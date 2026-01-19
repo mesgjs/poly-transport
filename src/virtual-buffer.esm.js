@@ -2,7 +2,6 @@
  * VirtualBuffer - Zero-copy buffer management with views into underlying storage
  * 
  * Wraps Uint8Array or ring buffer segments to support slicing without copying.
- * Includes pin/unpin mechanism for ring buffer integration.
  *
  * @copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
@@ -19,16 +18,10 @@ export class VirtualBuffer {
 	 * @param {number} offset - Starting offset (only used if source is Uint8Array)
 	 * @param {number} length - Length (only used if source is Uint8Array)
 	 */
-	constructor (source, offset = 0, length = undefined) {
-		this.#state = {
-			segments: [],
-			length: 0,
-			// Segment cache for DataView methods (getUint8/setUint8)
-			cachedSegIndex: -1,
-			cachedSegStart: 0,
-			cachedSegEnd: 0
-		};
+	constructor (source, { offset = 0, length = undefined } = {}) {
+		this.#state = {};
 		privateState.set(this, this.#state);
+		this.clear();
 
 		if (source !== undefined) {
 			this.append(source, offset, length);
@@ -47,8 +40,10 @@ export class VirtualBuffer {
 		if (Array.isArray(source)) {
 			// Already segmented
 			for (const seg of source) {
-				state.segments.push(seg);
-				state.length += seg.length;
+				if (seg?.buffer instanceof Uint8Array && typeof seg.length === 'number' && seg.length > 0) {
+					state.segments.push(seg);
+					state.length += seg.length;
+				}
 			}
 		} else if (source instanceof VirtualBuffer) {
 			// VirtualBuffer - copy segments
@@ -74,13 +69,6 @@ export class VirtualBuffer {
 	}
 
 	/**
-	 * Get the total length of the virtual buffer
-	 */
-	get length () {
-		return this.#state.length;
-	}
-
-	/**
 	 * Get the byte length (alias for length)
 	 */
 	get byteLength () {
@@ -88,104 +76,18 @@ export class VirtualBuffer {
 	}
 
 	/**
-	 * Get the number of segments
+	 * Clear/reset VirtualBuffer
 	 */
-	get segmentCount () {
-		return this.#state.segments.length;
-	}
-
-	/**
-	 * Create a slice of this virtual buffer
-	 * @param {number} start - Starting position (default 0)
-	 * @param {number} end - Ending position (default length)
-	 * @returns {VirtualBuffer}
-	 */
-	slice (start = 0, end = this.length) {
+	clear () {
 		const state = this.#state;
-		// Normalize negative indices
-		if (start < 0) start = Math.max(0, state.length + start);
-		if (end < 0) end = Math.max(0, state.length + end);
-
-		// Clamp to valid range
-		start = Math.max(0, Math.min(start, state.length));
-		end = Math.max(start, Math.min(end, state.length));
-
-		const sliceLength = end - start;
-		if (sliceLength === 0) {
-			return new VirtualBuffer();
-		}
-
-		// Find segments that overlap with [start, end)
-		const segments = state.segments;
-		const newSegments = [];
-		let currentPos = 0;
-
-		for (const seg of segments) {
-			const segStart = currentPos;
-			const segEnd = currentPos + seg.length;
-
-			if (segEnd <= start) {
-				// Segment is entirely before slice
-				currentPos = segEnd;
-				continue;
-			}
-
-			if (segStart >= end) {
-				// Segment is entirely after slice
-				break;
-			}
-
-			// Segment overlaps with slice
-			const overlapStart = Math.max(0, start - segStart);
-			const overlapEnd = Math.min(seg.length, end - segStart);
-			const overlapLength = overlapEnd - overlapStart;
-
-			newSegments.push({
-				buffer: seg.buffer,
-				offset: seg.offset + overlapStart,
-				length: overlapLength
-			});
-
-			currentPos = segEnd;
-		}
-
-		return new VirtualBuffer(newSegments);
-	}
-
-	/**
-	 * Convert to a contiguous Uint8Array (always copies for security)
-	 * @param {Uint8Array} buffer - Optional destination buffer (must be at least this.length bytes)
-	 * @returns {Uint8Array} The destination buffer (or new buffer if not provided)
-	 */
-	toUint8Array (buffer = null) {
-		const state = this.#state;
-		const segments = state.segments;
-
-		if (segments.length === 0) {
-			return buffer || new Uint8Array(0);
-		}
-
-		// Validate provided buffer
-		if (buffer !== null) {
-			if (!(buffer instanceof Uint8Array)) {
-				throw new TypeError('Buffer must be a Uint8Array');
-			}
-			if (buffer.length < state.length) {
-				throw new RangeError(`Buffer too small: need ${state.length} bytes, got ${buffer.length}`);
-			}
-		}
-
-		// Use provided buffer or allocate new one
-		const result = buffer || new Uint8Array(state.length);
-		let destOffset = 0;
-
-		for (const seg of segments) {
-			const view = seg.buffer.subarray(seg.offset, seg.offset + seg.length);
-			result.set(view, destOffset);
-			destOffset += seg.length;
-		}
-
-		return result;
+		Object.assign(state, {
+			segments: [], // of {buffer: Uint8Array, offset: number, length: number}
+			length: 0,
+			// Segment cache for DataView methods (getUint8/setUint8)
+			cachedSegIndex: -1,
+			cachedSegStart: 0,
+			cachedSegEnd: 0
+		});
 	}
 
 	/**
@@ -258,6 +160,143 @@ export class VirtualBuffer {
 
 		return parts.join('');
 	}
+
+	/**
+	 * Get the total length of the virtual buffer
+	 */
+	get length () {
+		return this.#state.length;
+	}
+
+	/**
+	 * Get the number of segments
+	 */
+	get segmentCount () {
+		return this.#state.segments.length;
+	}
+
+	/**
+	 * Create a slice of this virtual buffer
+	 * @param {number} start - Starting position (default 0)
+	 * @param {number} end - Ending position (default length)
+	 * @returns {VirtualBuffer|VirtualRWBuffer}
+	 */
+	slice (start = 0, end = this.length) {
+		const state = this.#state;
+		// Normalize negative indices
+		if (start < 0) start = Math.max(0, state.length + start);
+		if (end < 0) end = Math.max(0, state.length + end);
+
+		// Clamp to valid range
+		start = Math.max(0, Math.min(start, state.length));
+		end = Math.max(start, Math.min(end, state.length));
+
+		const sliceLength = end - start;
+		if (sliceLength === 0) {
+			return new this.constructor();
+		}
+
+		// Find segments that overlap with [start, end)
+		const segments = state.segments;
+		const newSegments = [];
+		let currentPos = 0;
+
+		for (const seg of segments) {
+			const segEnd = currentPos + seg.length;
+			if (segEnd <= start) {
+				// Segment is entirely before slice
+				currentPos = segEnd;
+				continue;
+			}
+
+			const segStart = currentPos;
+			if (segStart >= end) {
+				// Segment is entirely after slice
+				break;
+			}
+
+			// Segment overlaps with slice
+			const overlapStart = Math.max(0, start - segStart);
+			const overlapEnd = Math.min(seg.length, end - segStart);
+			const overlapLength = overlapEnd - overlapStart;
+
+			newSegments.push({
+				buffer: seg.buffer,
+				offset: seg.offset + overlapStart,
+				length: overlapLength
+			});
+
+			currentPos = segEnd;
+		}
+
+		return new this.constructor(newSegments);
+	}
+
+	/**
+	 * Copy to buffers from a pool
+	 * @param {BufferPool} pool - The buffer source-pool
+	 * @returns {Array<{ buffer, offset, length }>} Array of segments
+	 */
+	toPool (pool) {
+		if (typeof pool.acquireSet !== 'function') {
+			throw new TypeError('Pool does not support acquireSet');
+		}
+		const state = this.#state;
+		const segments = [];
+		// Acquire a set of buffers sufficient for the current view
+		const buffers = pool.acquireSet(state.length);
+		let offset = 0, remaining = state.length;
+		for (const buffer of buffers) {
+			const length = Math.min(buffer.byteLength, remaining), end = offset + length;
+			const slice = this.slice(offset, end);
+			const view = new Uint8Array(buffer);
+			slice.toUint8Array(view); // Copy successive buffers' worth
+			segments.push({ buffer: view, offset: 0, length });
+			offset = end;
+			remaining -= length;
+		}
+		return segments;
+	}
+
+	/**
+	 * Convert to a contiguous Uint8Array (always copies for security)
+	 * @param {Uint8Array} buffer - Optional destination buffer (must be at least this.length bytes)
+	 * @returns {Uint8Array} The destination buffer (or new buffer if not provided)
+	 */
+	toUint8Array (buffer = null) {
+		const state = this.#state;
+		const segments = state.segments;
+
+		if (segments.length === 0) {
+			return buffer || new Uint8Array(0);
+		}
+
+		// Validate provided buffer
+		if (buffer !== null) {
+			if (!(buffer instanceof Uint8Array)) {
+				throw new TypeError('Buffer must be a Uint8Array');
+			}
+			if (buffer.length < state.length) {
+				throw new RangeError(`Buffer too small: need ${state.length} bytes, got ${buffer.length}`);
+			}
+		}
+
+		// Use provided buffer or allocate new one
+		const result = buffer || new Uint8Array(state.length);
+		let destOffset = 0;
+
+		for (const seg of segments) {
+			const view = seg.buffer.subarray(seg.offset, seg.offset + seg.length);
+			result.set(view, destOffset);
+			destOffset += seg.length;
+		}
+
+		return result;
+	}
+
+	//
+	// DataView-compatible methods
+	//
 
 	/**
 	 * Read an unsigned 8-bit integer at the specified offset
@@ -349,9 +388,17 @@ export class VirtualBuffer {
 export class VirtualRWBuffer extends VirtualBuffer {
 	#state;
 
-	constructor (...args) {
-		super(...args);
-		this.#state = privateState.get(this);
+	/**
+	 * @param {*} source - Initial contents
+	 * @param {Object} options 
+	 * @param {Function} options.onShrink - A shrink-event callback
+	 */
+	constructor (source, options = {}) {
+		super(source, options);
+		const state = this.#state = privateState.get(this);
+		if (options.onShrink) {
+			state.onShrink = options.onShrink;
+		}
 	}
 
 	/**
@@ -366,119 +413,6 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			throw new TypeError('VirtualRWBuffer can only append from Uint8Array, VirtualRWBuffer, or array of segments');
 		}
 		super.append(source, offset, length);
-	}
-
-	/**
-	 * Write bytes from source into this buffer
-	 * @param {Uint8Array|VirtualRWBuffer} source - Data to write
-	 * @param {number} offset - Offset in this buffer to start writing (default 0)
-	 * @returns {number} Number of bytes written
-	 */
-	set (source, offset = 0) {
-		const state = this.#state;
-		if (offset < 0 || offset >= state.length) {
-			throw new RangeError(`Offset ${offset} is out of range [0, ${state.length})`);
-		}
-
-		// Security: Only accept Uint8Array or VirtualRWBuffer
-		let sourceData;
-		if (source instanceof VirtualRWBuffer) {
-			sourceData = source.toUint8Array();
-		} else if (source instanceof Uint8Array) {
-			sourceData = source;
-		} else {
-			throw new TypeError('Source must be Uint8Array or VirtualRWBuffer');
-		}
-
-		const bytesToWrite = Math.min(sourceData.length, state.length - offset);
-		if (bytesToWrite === 0) {
-			return 0;
-		}
-
-		// Get segments and write data
-		const segments = state.segments;
-		let sourceOffset = 0;
-		let remainingOffset = offset;
-		let remainingBytes = bytesToWrite;
-
-		for (const seg of segments) {
-			if (remainingOffset >= seg.length) {
-				// Skip this segment
-				remainingOffset -= seg.length;
-				continue;
-			}
-
-			// Calculate how much to write to this segment
-			const segWriteStart = seg.offset + remainingOffset;
-			const segAvailable = seg.length - remainingOffset;
-			const segWriteLength = Math.min(segAvailable, remainingBytes);
-
-			// Write to this segment
-			seg.buffer.set(
-				sourceData.subarray(sourceOffset, sourceOffset + segWriteLength),
-				segWriteStart
-			);
-
-			sourceOffset += segWriteLength;
-			remainingBytes -= segWriteLength;
-			remainingOffset = 0;
-
-			if (remainingBytes === 0) {
-				break;
-			}
-		}
-
-		return bytesToWrite;
-	}
-
-	/**
-	 * Fill this buffer with a repeated byte value
-	 * @param {number} value - Byte value to fill (0-255; default 0)
-	 * @param {number} start - Start position (default 0)
-	 * @param {number} end - End position (default length)
-	 * @returns {VirtualRWBuffer} This buffer for chaining
-	 */
-	fill (value = 0, start = 0, end = this.length) {
-		const state = this.#state;
-		// Normalize range
-		if (start < 0) start = Math.max(0, state.length + start);
-		if (end < 0) end = Math.max(0, state.length + end);
-		start = Math.max(0, Math.min(start, state.length));
-		end = Math.max(start, Math.min(end, state.length));
-
-		if (start === end) {
-			return this;
-		}
-
-		// Fill segments
-		const segments = state.segments;
-		let currentPos = 0;
-
-		for (const seg of segments) {
-			const segStart = currentPos;
-			const segEnd = currentPos + seg.length;
-
-			if (segEnd <= start) {
-				// Segment is entirely before fill range
-				currentPos = segEnd;
-				continue;
-			}
-
-			if (segStart >= end) {
-				// Segment is entirely after fill range
-				break;
-			}
-
-			// Segment overlaps with fill range
-			const fillStart = Math.max(0, start - segStart);
-			const fillEnd = Math.min(seg.length, end - segStart);
-
-			seg.buffer.fill(value, seg.offset + fillStart, seg.offset + fillEnd);
-
-			currentPos = segEnd;
-		}
-
-		return this;
 	}
 
 	/**
@@ -545,6 +479,155 @@ export class VirtualRWBuffer extends VirtualBuffer {
 	}
 
 	/**
+	 * Fill this buffer with a repeated byte value
+	 * @param {number} value - Byte value to fill (0-255; default 0)
+	 * @param {number} start - Start position (default 0)
+	 * @param {number} end - End position (default length)
+	 * @returns {VirtualRWBuffer} This buffer for chaining
+	 */
+	fill (value = 0, start = 0, end = this.length) {
+		const state = this.#state;
+		// Normalize range
+		if (start < 0) start = Math.max(0, state.length + start);
+		if (end < 0) end = Math.max(0, state.length + end);
+		start = Math.max(0, Math.min(start, state.length));
+		end = Math.max(start, Math.min(end, state.length));
+
+		if (start === end) {
+			return this;
+		}
+
+		// Fill segments
+		const segments = state.segments;
+		let currentPos = 0;
+
+		for (const seg of segments) {
+			const segStart = currentPos;
+			const segEnd = currentPos + seg.length;
+
+			if (segEnd <= start) {
+				// Segment is entirely before fill range
+				currentPos = segEnd;
+				continue;
+			}
+
+			if (segStart >= end) {
+				// Segment is entirely after fill range
+				break;
+			}
+
+			// Segment overlaps with fill range
+			const fillStart = Math.max(0, start - segStart);
+			const fillEnd = Math.min(seg.length, end - segStart);
+
+			seg.buffer.fill(value, seg.offset + fillStart, seg.offset + fillEnd);
+
+			currentPos = segEnd;
+		}
+
+		return this;
+	}
+
+	/**
+	 * Release bytes at the start of the buffer
+	 * @param {number} count - The number of bytes to release
+	 * @param {BufferPool} pool - Optional pool for releasing buffers
+	 * @returns {boolean} True if successful
+	 */
+	release (count, pool = undefined) {
+		const state = this.#state;
+		if (state.length < count) {
+			return false;
+		}
+		state.cachedSegIndex = -1;
+		let remaining = count;
+		while (remaining > 0) {
+			const seg = state.segments[0];
+			const { buffer, offset, length } = seg;
+			if (remaining < length) {
+				// Partial release of segment
+				seg.offset += remaining;
+				seg.length -= remaining;
+				state.length -= remaining;
+				return true;
+			}
+			// Full release of segment
+			state.segments.shift();
+			state.length -= length;
+			remaining -= length;
+			if (pool) {
+				// Attempt to release to the pool
+				// (Fails silently if it's not a standard size)
+				pool.release(buffer.buffer);
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Write bytes from source into this buffer
+	 * @param {Uint8Array|VirtualRWBuffer} source - Data to write
+	 * @param {number} offset - Offset in this buffer to start writing (default 0)
+	 * @returns {number} Number of bytes written
+	 */
+	set (source, offset = 0) {
+		const state = this.#state;
+		if (offset < 0 || offset >= state.length) {
+			throw new RangeError(`Offset ${offset} is out of range [0, ${state.length})`);
+		}
+
+		// Security: Only accept Uint8Array or VirtualRWBuffer
+		let sourceData;
+		if (source instanceof VirtualRWBuffer) {
+			sourceData = source.toUint8Array();
+		} else if (source instanceof Uint8Array) {
+			sourceData = source;
+		} else {
+			throw new TypeError('Source must be Uint8Array or VirtualRWBuffer');
+		}
+
+		const bytesToWrite = Math.min(sourceData.length, state.length - offset);
+		if (bytesToWrite === 0) {
+			return 0;
+		}
+
+		// Get segments and write data
+		const segments = state.segments;
+		let sourceOffset = 0;
+		let remainingOffset = offset;
+		let remainingBytes = bytesToWrite;
+
+		for (const seg of segments) {
+			if (remainingOffset >= seg.length) {
+				// Skip this segment
+				remainingOffset -= seg.length;
+				continue;
+			}
+
+			// Calculate how much to write to this segment
+			const segWriteStart = seg.offset + remainingOffset;
+			const segAvailable = seg.length - remainingOffset;
+			const segWriteLength = Math.min(segAvailable, remainingBytes);
+
+			// Write to this segment
+			seg.buffer.set(
+				sourceData.subarray(sourceOffset, sourceOffset + segWriteLength),
+				segWriteStart
+			);
+
+			sourceOffset += segWriteLength;
+			remainingBytes -= segWriteLength;
+			remainingOffset = 0;
+
+			if (remainingBytes === 0) {
+				break;
+			}
+		}
+
+		return bytesToWrite;
+	}
+
+	/**
 	 * Shrink this buffer to a new length (releases over-allocated space)
 	 * @param {number} newLength - New length (must be <= current length)
 	 */
@@ -558,24 +641,18 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			return;
 		}
 
-		// If this is a ring reservation, notify the ring buffer
-		if (this._ringReservation && this._ringReservation.ring) {
-			this._ringReservation.ring.shrinkReservation(this, newLength);
-		}
-
 		// Adjust segments to match new length
 		let currentPos = 0;
 		const newSegments = [];
 
 		for (const seg of state.segments) {
 			const segStart = currentPos;
-			const segEnd = currentPos + seg.length;
-
 			if (segStart >= newLength) {
 				// This segment is entirely beyond new length
 				break;
 			}
 
+			const segEnd = currentPos + seg.length;
 			if (segEnd <= newLength) {
 				// This segment is entirely within new length
 				newSegments.push(seg);
@@ -598,7 +675,16 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 		// Invalidate segment cache
 		state.cachedSegIndex = -1;
+
+		// Can be used to e.g. update ring reservations
+		if (state.onShrink) {
+			state.onShrink.call(undefined, this, newLength);
+		}
 	}
+
+	//
+	// DataView-compatible methods
+	//
 
 	/**
 	 * Write an unsigned 8-bit integer at the specified offset

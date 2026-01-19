@@ -22,8 +22,8 @@ const HANDSHAKE_START = 0x02;  // STX
 const HANDSHAKE_END = 0x03;    // ETX
 const BINARY_STREAM_START = 0x01;  // SOH
 
-// Transport identifier
-const TRANSPORT_ID = 'PolyTransport';
+// Transport greeting
+export const TRANSPORT_GREETING = 'PolyTransport';
 
 // Default transport configuration (requirements.md:406-413)
 export const MIN_CHANNEL_ID = 2;
@@ -151,8 +151,8 @@ export function encodeAckHeaderInto (target, offset, fields) {
 	target.setUint32(o, baseSequence); o += 4;
 	target.setUint8(o++, rangeCount);
 	
-	for (const q of ranges) {
-		target.setUint8(o++, q);
+	for (const range of ranges) {
+		target.setUint8(o++, range);
 	}
 
 	// Zero-pad requirement is handled by ArrayBuffer constructor or zero-on-release strategy
@@ -257,12 +257,11 @@ export function decodeHeaderSizeFromPrefix (buffer, offset = 0) {
 	const type = buffer.getUint8(offset);
 	const sizeByte = buffer.getUint8(offset + 1);
 
-	if (type === HDR_TYPE_ACK) {
+	switch (type) {
+	case HDR_TYPE_ACK:
+	case HDR_TYPE_CHAN_CONTROL:
+	case HDR_TYPE_CHAN_DATA:
 		return encAddlToTotal(sizeByte);
-	}
-
-	if (type === HDR_TYPE_CHAN_CONTROL || type === HDR_TYPE_CHAN_DATA) {
-		return MAX_DATA_HEADER_BYTES;
 	}
 
 	throw new Error(`Unknown message type: ${type}`);
@@ -297,7 +296,7 @@ function decodeAckHeaderFrom (buffer, offset) {
 
 	return {
 		type,
-		headerLength: encAddlToTotal(sizeByte),
+		headerSize: encAddlToTotal(sizeByte),
 		flags,
 		channelId,
 		baseSequence,
@@ -331,7 +330,7 @@ function decodeChannelHeaderFrom (buffer, offset) {
 
 	return {
 		type,
-		headerLength: MAX_DATA_HEADER_BYTES,
+		headerSize: MAX_DATA_HEADER_BYTES,
 		dataSize,
 		flags,
 		channelId,
@@ -348,7 +347,7 @@ function decodeChannelHeaderFrom (buffer, offset) {
  * @param {number} offset - Offset in buffer
  * @returns {Object} Decoded header
  */
-export function decodeHeaderFrom (buffer, offset = 0) {
+export function decodeHeader (buffer, offset = 0) {
 	if (!buffer || typeof buffer.getUint8 !== 'function') {
 		throw new TypeError('buffer must have DataView-compatible API (getUint8)');
 	}
@@ -369,16 +368,6 @@ export function decodeHeaderFrom (buffer, offset = 0) {
 		return decodeChannelHeaderFrom(buffer, offset);
 	}
 	throw new Error(`Unknown message type: ${type}`);
-}
-
-/**
- * Decode header from buffer starting at offset 0
- *
- * @param {VirtualBuffer|DataView} buffer - Buffer containing header
- * @returns {Object} Decoded header
- */
-export function decodeHeader (buffer) {
-	return decodeHeaderFrom(buffer, 0);
 }
 
 /**
@@ -403,10 +392,10 @@ export function encodeHandshakeInto (target, offset, config = {}) {
 	
 	let o = offset;
 	
-	// Encode transport identifier: \x02PolyTransport\x03
+	// Encode transport greeting: \x02PolyTransport\x03
 	target.setUint8(o++, HANDSHAKE_START);
 	// Use target.encodeFrom
-	const idBytes = new TextEncoder().encode(TRANSPORT_ID);
+	const idBytes = new TextEncoder().encode(TRANSPORT_GREETING);
 	for (let i = 0; i < idBytes.length; i++) {
 		target.setUint8(o++, idBytes[i]);
 	}
@@ -434,7 +423,7 @@ export function encodeHandshakeInto (target, offset, config = {}) {
  * @param {number} offset - Offset in buffer
  * @returns {Object|null} { config, bytesConsumed } or null if incomplete
  */
-export function decodeHandshakeFrom (buffer, offset = 0) {
+export function decodeHandshake (buffer, offset = 0) {
 	if (!buffer || typeof buffer.getUint8 !== 'function') {
 		throw new TypeError('buffer must have DataView-compatible API (getUint8)');
 	}
@@ -445,30 +434,30 @@ export function decodeHandshakeFrom (buffer, offset = 0) {
 	const length = buffer.length || buffer.byteLength;
 	let o = offset;
 	
-	// Parse transport identifier
+	// Parse transport greeting
 	if (length < o + 2 || buffer.getUint8(o) !== HANDSHAKE_START) {
 		return null;  // Incomplete or invalid
 	}
 	o++;
 	
-	// Find end of identifier
-	let idEnd = o;
-	while (idEnd < length && buffer.getUint8(idEnd) !== HANDSHAKE_END) {
-		idEnd++;
+	// Find end of greeting
+	let greetEnd = o;
+	while (greetEnd < length && buffer.getUint8(greetEnd) !== HANDSHAKE_END) {
+		greetEnd++;
 	}
-	if (idEnd >= length) {
+	if (greetEnd >= length) {
 		return null;  // Incomplete
 	}
 	
-	// Verify transport identifier (use VirtualBuffer.decode if available, otherwise slice)
-	const idSlice = buffer.slice ? buffer.slice(o, idEnd) : buffer;
-	const id = idSlice.decode ?
-		idSlice.decode({ start: buffer.slice ? 0 : o, end: buffer.slice ? undefined : idEnd }) :
-		new TextDecoder().decode(idSlice);
-	if (id !== TRANSPORT_ID) {
-		throw new Error(`Invalid transport identifier: ${id}`);
+	// Verify transport greeting (use VirtualBuffer.decode if available, otherwise slice)
+	const greetSlice = buffer.slice ? buffer.slice(o, greetEnd) : buffer;
+	const greet = greetSlice.decode ?
+		greetSlice.decode({ start: buffer.slice ? 0 : o, end: buffer.slice ? undefined : greetEnd }) :
+		new TextDecoder().decode(greetSlice);
+	if (greet !== TRANSPORT_GREETING) {
+		throw new Error(`Invalid transport greeting: ${greet}`);
 	}
-	o = idEnd + 1;
+	o = greetEnd + 1;
 	
 	// Parse configuration
 	if (length < o + 2 || buffer.getUint8(o) !== HANDSHAKE_START) {
@@ -500,16 +489,6 @@ export function decodeHandshakeFrom (buffer, offset = 0) {
 	o++;
 	
 	return { config, bytesConsumed: o - offset };
-}
-
-/**
- * Decode transport handshake from buffer starting at offset 0
- *
- * @param {VirtualBuffer} buffer - Buffer containing handshake
- * @returns {Object|null} { config, bytesConsumed } or null if incomplete
- */
-export function decodeHandshake (buffer) {
-	return decodeHandshakeFrom(buffer, 0);
 }
 
 /**

@@ -309,6 +309,105 @@ Deno.test('VirtualRWBuffer - shrink with invalid size', () => {
 	);
 });
 
+Deno.test('VirtualRWBuffer - release partial segment', () => {
+	const buffer = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualRWBuffer(buffer);
+	
+	const success = vb.release(2);
+	
+	assertEquals(success, true);
+	assertEquals(vb.length, 3);
+	assertEquals(Array.from(vb.toUint8Array()), [3, 4, 5]);
+});
+
+Deno.test('VirtualRWBuffer - release full segment', () => {
+	const buf1 = new Uint8Array([1, 2, 3]);
+	const buf2 = new Uint8Array([4, 5, 6]);
+	const segments = [
+		{ buffer: buf1, offset: 0, length: 3 },
+		{ buffer: buf2, offset: 0, length: 3 }
+	];
+	const vb = new VirtualRWBuffer(segments);
+	
+	const success = vb.release(3);
+	
+	assertEquals(success, true);
+	assertEquals(vb.length, 3);
+	assertEquals(vb.segmentCount, 1);
+	assertEquals(Array.from(vb.toUint8Array()), [4, 5, 6]);
+});
+
+Deno.test('VirtualRWBuffer - release across segments', () => {
+	const buf1 = new Uint8Array([1, 2, 3]);
+	const buf2 = new Uint8Array([4, 5, 6]);
+	const segments = [
+		{ buffer: buf1, offset: 0, length: 3 },
+		{ buffer: buf2, offset: 0, length: 3 }
+	];
+	const vb = new VirtualRWBuffer(segments);
+	
+	const success = vb.release(4);
+	
+	assertEquals(success, true);
+	assertEquals(vb.length, 2);
+	assertEquals(vb.segmentCount, 1);
+	assertEquals(Array.from(vb.toUint8Array()), [5, 6]);
+});
+
+Deno.test('VirtualRWBuffer - release more than available', () => {
+	const buffer = new Uint8Array([1, 2, 3]);
+	const vb = new VirtualRWBuffer(buffer);
+	
+	const success = vb.release(5);
+	
+	assertEquals(success, false);
+	assertEquals(vb.length, 3); // Should not change
+});
+
+Deno.test('VirtualRWBuffer - release with pool', () => {
+	// Mock buffer pool
+	const releasedBuffers = [];
+	const mockPool = {
+		release: (buffer) => {
+			releasedBuffers.push(buffer);
+		}
+	};
+	
+	const buf1 = new Uint8Array([1, 2, 3]);
+	const buf2 = new Uint8Array([4, 5, 6]);
+	const segments = [
+		{ buffer: buf1, offset: 0, length: 3 },
+		{ buffer: buf2, offset: 0, length: 3 }
+	];
+	const vb = new VirtualRWBuffer(segments);
+	
+	vb.release(3, mockPool);
+	
+	assertEquals(releasedBuffers.length, 1);
+	assertEquals(releasedBuffers[0], buf1.buffer);
+});
+
+Deno.test('VirtualRWBuffer - onShrink callback', () => {
+	let shrinkCalled = false;
+	let shrinkBuffer = null;
+	let shrinkNewLength = null;
+	
+	const onShrink = (buffer, newLength) => {
+		shrinkCalled = true;
+		shrinkBuffer = buffer;
+		shrinkNewLength = newLength;
+	};
+	
+	const buffer = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualRWBuffer(buffer, { onShrink });
+	
+	vb.shrink(3);
+	
+	assertEquals(shrinkCalled, true);
+	assertEquals(shrinkBuffer, vb);
+	assertEquals(shrinkNewLength, 3);
+});
+
 Deno.test('VirtualRWBuffer - combined operations', () => {
 	const buffer = new Uint8Array(20);
 	const vb = new VirtualRWBuffer(buffer);

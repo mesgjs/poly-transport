@@ -12,7 +12,7 @@ Deno.test('VirtualBuffer - construction from Uint8Array', () => {
 
 Deno.test('VirtualBuffer - construction with offset and length', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
-	const vb = new VirtualBuffer(data, 1, 3);
+	const vb = new VirtualBuffer(data, { offset: 1, length: 3 });
 
 	assertEquals(vb.length, 3);
 	const result = vb.toUint8Array();
@@ -73,6 +73,40 @@ Deno.test('VirtualBuffer - append segments', () => {
 
 	assertEquals(vb.length, 3);
 	assertEquals(vb.segmentCount, 2);
+});
+
+Deno.test('VirtualBuffer - append VirtualBuffer', () => {
+	const vb1 = new VirtualBuffer(new Uint8Array([1, 2, 3]));
+	const vb2 = new VirtualBuffer(new Uint8Array([4, 5, 6]));
+	
+	vb1.append(vb2);
+	
+	assertEquals(vb1.length, 6);
+	assertEquals(vb1.segmentCount, 2);
+	const result = vb1.toUint8Array();
+	assertEquals(Array.from(result), [1, 2, 3, 4, 5, 6]);
+});
+
+Deno.test('VirtualBuffer - append zero-length segment', () => {
+	const vb = new VirtualBuffer();
+	const segments = [
+		{ buffer: new Uint8Array([1, 2, 3]), offset: 0, length: 0 }, // Zero length
+		{ buffer: new Uint8Array([4, 5, 6]), offset: 0, length: 3 }
+	];
+	vb.append(segments);
+	
+	assertEquals(vb.length, 3);
+	assertEquals(vb.segmentCount, 1); // Zero-length segment should be skipped
+	const result = vb.toUint8Array();
+	assertEquals(Array.from(result), [4, 5, 6]);
+});
+
+Deno.test('VirtualBuffer - append zero-length Uint8Array', () => {
+	const vb = new VirtualBuffer(new Uint8Array([1, 2, 3]));
+	vb.append(new Uint8Array([4, 5, 6]), 0, 0); // Zero length
+	
+	assertEquals(vb.length, 3); // Should not change
+	assertEquals(vb.segmentCount, 1);
 });
 
 Deno.test('VirtualBuffer - slice basic', () => {
@@ -141,7 +175,7 @@ Deno.test('VirtualBuffer - toUint8Array single segment always copies', () => {
 
 Deno.test('VirtualBuffer - toUint8Array single segment with offset', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
-	const vb = new VirtualBuffer(data, 1, 3);
+	const vb = new VirtualBuffer(data, { offset: 1, length: 3 });
 	const result = vb.toUint8Array();
 
 	assertEquals(Array.from(result), [2, 3, 4]);
@@ -373,5 +407,43 @@ Deno.test('VirtualBuffer - toUint8Array with invalid buffer type', () => {
 		() => vb.toUint8Array([1, 2, 3, 4, 5]),
 		TypeError,
 		'Buffer must be a Uint8Array'
+	);
+});
+
+Deno.test('VirtualBuffer - toPool with BufferPool', async () => {
+	// Import BufferPool
+	const { BufferPool } = await import('../../src/buffer-pool.esm.js');
+	
+	const pool = new BufferPool({ sizeClasses: [1024, 4096] });
+	const data = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+	const vb = new VirtualBuffer(data);
+	
+	const segments = vb.toPool(pool);
+	pool.stop();
+	
+	// Should return array of segments
+	assertEquals(Array.isArray(segments), true);
+	assertEquals(segments.length > 0, true);
+	
+	// Verify data was copied correctly
+	let totalLength = 0;
+	const result = new Uint8Array(10);
+	for (const seg of segments) {
+		// seg.buffer is a Uint8Array
+		result.set(seg.buffer.subarray(seg.offset, seg.offset + seg.length), totalLength);
+		totalLength += seg.length;
+	}
+	assertEquals(totalLength, 10);
+	assertEquals(Array.from(result), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+});
+
+Deno.test('VirtualBuffer - toPool with invalid pool', () => {
+	const data = new Uint8Array([1, 2, 3, 4, 5]);
+	const vb = new VirtualBuffer(data);
+	
+	assertThrows(
+		() => vb.toPool({}),
+		TypeError,
+		'Pool does not support acquireSet'
 	);
 });

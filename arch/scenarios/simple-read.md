@@ -179,7 +179,7 @@ if (chunk) {
 
 **Logic**:
 - Transport receives bytes from remote (transport-specific)
-- Decode message header using [`Protocol.decodeHeaderFrom()`](../../src/protocol.esm.js)
+- Decode message header using [`Protocol.decodeHeader()`](../../src/protocol.esm.js)
 - Determine header type (0=ACK, 1=control, 2=data)
 - **If ACK**: Process ACK (restore sending budget, wake waiting writers)
 - **If control**: Process control message (channel setup, message type registration, etc.)

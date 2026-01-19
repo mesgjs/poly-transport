@@ -202,7 +202,7 @@ this.outputRing = new OutputRingBuffer(256 * 1024);  // 256KB default
 
 **Action**: Exchange transport configuration  
 **Responsible**: Transport Implementation, Protocol Layer, OutputRingBuffer  
-**Code Location**: [`protocol.encodeHandshakeInto()`](../../src/protocol.esm.js:388), [`protocol.decodeHandshakeFrom()`](../../src/protocol.esm.js:432)
+**Code Location**: [`protocol.encodeHandshakeInto()`](../../src/protocol.esm.js:388), [`protocol.decodeHandshake()`](../../src/protocol.esm.js:432)
 
 **Requirements Reference**: [`arch/requirements.md:395-413`](../../arch/requirements.md:395)
 
@@ -299,7 +299,7 @@ const bytesRead = await this.readFromStream(buffer);
 const vb = new VirtualBuffer(buffer, 0, bytesRead);
 
 // Decode handshake
-const remoteConfig = protocol.decodeHandshakeFrom(vb, 0);
+const remoteConfig = protocol.decodeHandshake(vb);
 // Returns: { transportId, c2cEnabled, c2cMaxBuffer, c2cMaxCount, minChannelId, minMessageTypeId, version }
 
 // Release buffer back to pool
@@ -458,7 +458,7 @@ this.outputRing.consume(1);
 
 **Data Flow**:
 ```
-Input Stream → Buffer Pool → Protocol.decodeHeaderFrom() → Message Router
+Input Stream → Buffer Pool → Protocol.decodeHeader() → Message Router
   ↓
   ├─ ACK → ChannelFlowControl.processAck()
   ├─ Control → Channel control handler
