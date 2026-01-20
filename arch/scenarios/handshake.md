@@ -563,7 +563,7 @@ if (this.#transportId < this.#remoteTransportId) {
 // TCC (Transport-Control Channel) - always present, bidirectional
 this.#channels.set(0, new Channel({
 	id: 0,
-	name: XP_CTRL_CHAN, // private symbol
+	name: XP_CTRL_CHANNEL, // private symbol
 	transport: this,
 	// ... other config
 }));
