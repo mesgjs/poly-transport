@@ -565,6 +565,14 @@ export class VirtualRWBuffer extends VirtualBuffer {
 	}
 
 	/**
+	 * Return a copy of the current segment list
+	 * @returns {Array<{buffer: Uint8Array, offset: number, length: number}}
+	 */
+	get segments () {
+		return this.#state.segments.map((segment) => ({...segment}));
+	}
+
+	/**
 	 * Write bytes from source into this buffer
 	 * @param {Uint8Array|VirtualRWBuffer} source - Data to write
 	 * @param {number} offset - Offset in this buffer to start writing (default 0)
