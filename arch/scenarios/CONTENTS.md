@@ -217,14 +217,19 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Protocol validation (invalid header type, out-of-order, over-budget)
 - Module responsibilities: Protocol, VirtualBuffer, ChannelFlowControl, Transport
 
-**[`handshake.md`](handshake.md)** 📋
-- Transport handshake sequence
-- Transport ID exchange
-- Configuration exchange
-- Role determination (EVEN_ROLE vs ODD_ROLE)
-- Protocol version negotiation
-- Switching to binary stream
-- Module responsibilities: Transport, Protocol
+**[`handshake.md`](handshake.md)** ✅
+- Transport handshake sequence (three phases: transmission, reception, role determination)
+- Transport ID exchange (crypto.randomUUID())
+- Configuration exchange (c2cEnabled, minChannelId, minMessageTypeId, version)
+- Operating value calculation (max of local and remote minChannelId/minMessageTypeId)
+- Role determination (EVEN_ROLE vs ODD_ROLE based on UUID comparison)
+- Protocol version negotiation (version 1)
+- Switching to binary stream (SOH marker)
+- VirtualRWBuffer accumulation for input (reader-supplied buffers up to SOH)
+- Zero-copy encoding/decoding (OutputRingBuffer for output, VirtualRWBuffer for input)
+- ACK-class message handling (exact: true parameter, ring buffer only)
+- Foundational channel initialization (TCC, C2C if enabled)
+- Module responsibilities: Transport, Protocol, OutputRingBuffer, VirtualRWBuffer, VirtualBuffer
 
 ### 7. Buffer Management
 
@@ -365,9 +370,9 @@ Each scenario document should include:
 - 📋 **Planned**: Scenario identified but not yet started
 - *(Future)*: Scenario for future implementation phases
 
-## Current Status Summary (2026-01-17)
+## Current Status Summary (2026-01-20)
 
-- **24 scenarios complete** (✅):
+- **25 scenarios complete** (✅):
   - **Transport Lifecycle**:
     - [`transport-initialization.md`](transport-initialization.md) - Transport startup with TCC/C2C channels, **role determination** (step 7d), handshake
     - [`transport-shutdown.md`](transport-shutdown.md) - Graceful transport closure with channel cleanup and timeout handling
@@ -395,6 +400,7 @@ Each scenario document should include:
   - **Message Protocol**:
     - [`message-encoding.md`](message-encoding.md) - Message encoding with zero-copy into ring buffer, remaining size encoding, ACK/control/data headers
     - [`message-decoding.md`](message-decoding.md) - Message decoding with incremental parsing, zero-copy extraction, protocol validation
+    - [`handshake.md`](handshake.md) - Transport handshake with UUID exchange, role determination, operating value calculation, VirtualRWBuffer accumulation
 - **All other scenarios planned** (📋): Not yet written, will incorporate bidirectional channel model from the start
 
 **Note**: Role determination is fully documented in [`transport-initialization.md`](transport-initialization.md) step 7d (lines 316-351). A separate scenario is not needed as it's an integral part of the handshake sequence.
