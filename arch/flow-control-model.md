@@ -142,7 +142,7 @@ ACKs are **transport-level messages** that restore budget but don't consume budg
 1. Application consumes chunk
 2. Channel buffer usage drops below low-water mark
 3. Generate ACK information (base sequence + ranges)
-4. Reserve ring buffer space (Layer 3 only, with forAck: true)
+4. Reserve ring buffer space (Layer 3 only, with exact: true)
 5. Encode ACK header
 6. Send ACK to transport A
 7. Free ring buffer space immediately
@@ -242,11 +242,11 @@ Total time: < 1ms typically
 **Mechanism**:
 1. **Data messages** reserve extra ring space (`RESERVE_ACK_BYTES` = 514 bytes)
    - This ensures ACKs can be sent even when ring is nearly full
-   - Formula: `reserve(dataBytes + RESERVE_ACK_BYTES, { forAck: false })`
+   - Formula: `reserve(dataBytes + RESERVE_ACK_BYTES, { exact: false })`
 
 2. **ACK messages** reserve exact space needed (no extra)
    - Bypasses `RESERVE_ACK_BYTES` requirement
-   - Formula: `reserve(ackBytes, { forAck: true })`
+   - Formula: `reserve(ackBytes, { exact: true })`
 
 3. **Ring buffer space** is freed immediately after ACK send
    - ACKs are fire-and-forget (no waiting for ACK-on-ACK)
@@ -342,7 +342,7 @@ Scenario 2: Ring has 251KB free
 5. Check channel buffer usage
 6. If below low-water mark:
    a. Generate ACK info (base + ranges)
-   b. Reserve ring space (forAck: true)
+   b. Reserve ring space (exact: true)
    c. Encode ACK header
    d. Send ACK to transport A
    e. Free ring space immediately

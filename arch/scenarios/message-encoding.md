@@ -121,14 +121,14 @@ const headerSize = ackHeaderSize(rangeCount);
 **Actor**: OutputRingBuffer
 
 ```javascript
-// ACK messages use forAck: true to bypass RESERVE_ACK_BYTES requirement
-const reservation = await ringBuffer.reserveAsync(headerSize, { forAck: true });
+// ACK messages use exact: true to bypass RESERVE_ACK_BYTES requirement
+const reservation = await ringBuffer.reserveAsync(headerSize, { exact: true });
 // reservation is VirtualRWBuffer with 16 bytes
 ```
 
-**Critical**: ACKs use `forAck: true` parameter:
-- **Data messages**: Reserve `length + RESERVE_ACK_BYTES` (ensure ACKs can be sent)
-- **ACK messages**: Reserve exactly `length` (no extra space needed)
+**Critical**: ACKs use `exact: true` parameter:
+- **Data messages**: Reserve `length + RESERVE_ACK_BYTES` (ensure ACKs can be sent) - default behavior with `exact: false`
+- **ACK messages**: Reserve exactly `length` (no extra space needed) - use `exact: true`
 - **Rationale**: ACKs are fire-and-forget, no ACK-on-ACK, so no budget restoration needed
 
 **State**:

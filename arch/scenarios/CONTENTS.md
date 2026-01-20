@@ -179,7 +179,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - ACK message format (transport-level, type 0 headers)
 - Processing received ACKs (channel and transport budget restoration)
 - **Critical**: ACKs use ring buffer space only (fire-and-forget, no ACK-on-ACK)
-- Ring buffer reservation with `forAck: true` parameter
+- Ring buffer reservation with `exact: true` parameter
 - Protocol violation handling (unknown channel, duplicate ACK, premature ACK)
 - Unblocking waiting writes (FIFO order)
 - Module responsibilities: ChannelFlowControl, Protocol, Transport, OutputRingBuffer

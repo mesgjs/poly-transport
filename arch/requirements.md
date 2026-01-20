@@ -1425,7 +1425,7 @@ The `channel.close({ discard })` method accepts a single parameter:
 - An ACK message **CANNOT** consume transport budget, because there are no ACKs for ACKs to restore it!
 - ACK messages must therefore consume **ring-buffer budget ONLY**
   - The ring space becomes available again after the message is sent
-- Ring buffer reservations must support a `forAck` parameter or option
+- Ring buffer reservations must support a `exact` parameter or option
   - If true, the reservation may be fulfilled by the requested number of bytes as provided
   - If false (the default), the reservation must wait until `requestedBytes + RESERVE_ACK_BYTES` are available (so that `RESERVE_ACK_BYTES` remain available in the ring for ACKs)
 - A protocol violation error results from a buggy or malicious remote transport, not local user action
