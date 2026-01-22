@@ -17,22 +17,19 @@ export const HDR_TYPE_ACK = 0;
 export const HDR_TYPE_CHAN_CONTROL = 1;
 export const HDR_TYPE_CHAN_DATA = 2;
 
-// Transport handshake markers (requirements.md:395-404)
-const HANDSHAKE_START = 0x02;  // STX
-const HANDSHAKE_END = 0x03;    // ETX
-const BINARY_STREAM_START = 0x01;  // SOH
-
-// Transport greeting
-export const TRANSPORT_GREETING = 'PolyTransport';
+// Byte-stream-transport greeting and start-byte-stream sequences
+export const GREET_CONFIG_PREFIX = '\x02PolyTransport:';
+export const GREET_CONFIG_SUFFIX = '\x03\n';
+export const START_BYTE_STREAM = '\x02\x01\x03\n';
 
 // Default transport configuration (requirements.md:406-413)
 export const MIN_CHANNEL_ID = 2;
 export const MIN_MESG_TYPE_ID = 256;
 const DEFAULT_CONFIG = {
+	version: 1,
 	c2cEnabled: false,
 	minChannelId: MIN_CHANNEL_ID,
-	minMessageTypeId: MIN_MESG_TYPE_ID,
-	version: 1
+	minMessageTypeId: MIN_MESG_TYPE_ID
 };
 
 // Flag constants
@@ -46,20 +43,20 @@ export const CHANNEL_C2C = 1;  // Console-Content Channel
 // TCC pre-defined (foundational) message types (requirements.md:482-493)
 // (One shared namespace for TCC control/data and control on all channels)
 // (Message-types not required at transport start should be registered/mapped)
-export const TCC_DTAM_TRAN_STOP = 0;
-export const TCC_DTAM_CHAN_REQUEST = 1;
-export const TCC_DTAM_CHAN_RESPONSE = 2;
-export const TCC_CTLM_MESG_TYPE_REG_REQ = 3; // message-type registration request
-export const TCC_CTLM_MESG_TYPE_REG_RESP = 4; // message-type registration response
+export const TCC_DTAM_TRAN_STOP = [0, 'tranStop'];
+export const TCC_DTAM_CHAN_REQUEST = [1, 'chanReq'];
+export const TCC_DTAM_CHAN_RESPONSE = [2, 'chanResp'];
+export const TCC_CTLM_MESG_TYPE_REG_REQ = [3, 'mesgTypeReq']; // message-type registration request
+export const TCC_CTLM_MESG_TYPE_REG_RESP = [4, 'mesgTypeResp']; // message-type registration response
 
 // C2C pre-defined (foundational) message types (requirements.md:495-505)
 // (Message-types not required at transport start should be registered/mapped)
-export const C2C_MESG_UNCAUGHT = 0; // uncaught exceptions
-export const C2C_MESG_TRACE = 1;
-export const C2C_MESG_DEBUG = 2;
-export const C2C_MESG_INFO = 3;
-export const C2C_MESG_WARN = 4;
-export const C2C_MESG_ERROR = 5;
+export const C2C_MESG_EXCEPT = [0, 'except']; // uncaught exceptions
+export const C2C_MESG_TRACE = [1, 'trace'];
+export const C2C_MESG_DEBUG = [2, 'debug'];
+export const C2C_MESG_INFO = [3, 'info'];
+export const C2C_MESG_WARN = [4, 'warn'];
+export const C2C_MESG_ERROR = [5, 'error'];
 
 /**
  * Helper: Round up to even number
@@ -100,6 +97,20 @@ export function ackHeaderSize (rangeCount) {
  */
 export function channelHeaderSize () {
 	return MAX_DATA_HEADER_BYTES;
+}
+
+/**
+ * Allocating wrapper for ACK header encoding (for testing)
+ * 
+ * @param {Object} fields - { channelId, baseSequence, flags=0, ranges=[] }
+ * @returns {Uint8Array} Encoded ACK header
+ */
+export function encodeAckHeader (fields) {
+	const ranges = fields?.ranges || [];
+	const buffer = new Uint8Array(ackHeaderSize(ranges.length));
+	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+	encodeAckHeaderInto(view, 0, fields);
+	return buffer;
 }
 
 /**
@@ -161,6 +172,20 @@ export function encodeAckHeaderInto (target, offset, fields) {
 }
 
 /**
+ * Allocating wrapper for channel header encoding (for testing)
+ * 
+ * @param {number} type - HDR_TYPE_CHAN_CONTROL or HDR_TYPE_CHAN_DATA
+ * @param {Object} fields - { dataSize=0, flags=0, channelId, sequence, messageType }
+ * @returns {Uint8Array} Encoded channel header
+ */
+export function encodeChannelHeader (type, fields) {
+	const buffer = new Uint8Array(MAX_DATA_HEADER_BYTES);
+	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+	encodeChannelHeaderInto(view, 0, type, fields);
+	return buffer;
+}
+
+/**
  * Encode channel control or data header directly into target buffer
  * 
  * Format (requirements.md:469-480):
@@ -205,31 +230,76 @@ export function encodeChannelHeaderInto (target, offset, type, fields) {
 }
 
 /**
- * Allocating wrapper for ACK header encoding (for testing)
- * 
- * @param {Object} fields - { channelId, baseSequence, flags=0, ranges=[] }
- * @returns {Uint8Array} Encoded ACK header
+ * Decode ACK header from buffer
+ *
+ * @param {VirtualBuffer|DataView} buffer - Buffer containing ACK header
+ * @param {number} offset - Offset in buffer
+ * @returns {Object} Decoded ACK header
  */
-export function encodeAckHeader (fields) {
-	const ranges = fields?.ranges || [];
-	const buffer = new Uint8Array(ackHeaderSize(ranges.length));
-	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-	encodeAckHeaderInto(view, 0, fields);
-	return buffer;
+export function decodeAckHeaderFrom (buffer, offset = 0) {
+	const headerSize = decodeHeaderSizeFromPrefix(buffer, offset);
+	const length = buffer.length || buffer.byteLength;
+	if (headerSize === null || length - offset < headerSize) {
+		throw new Error('Buffer too small for ACK header');
+	}
+
+	let o = offset;
+	const type = buffer.getUint8(o++);
+	const sizeByte = buffer.getUint8(o++);
+	const flags = buffer.getUint16(o); o += 2;
+	const channelId = buffer.getUint32(o); o += 4;
+	const baseSequence = buffer.getUint32(o); o += 4;
+	const rangeCount = buffer.getUint8(o++);
+
+	const ranges = [];
+	for (let i = 0; i < rangeCount; i++) {
+		ranges.push(buffer.getUint8(o++));
+	}
+
+	return {
+		type,
+		headerSize: encAddlToTotal(sizeByte),
+		flags,
+		channelId,
+		baseSequence,
+		rangeCount,
+		ranges
+	};
 }
 
 /**
- * Allocating wrapper for channel header encoding (for testing)
- * 
- * @param {number} type - HDR_TYPE_CHAN_CONTROL or HDR_TYPE_CHAN_DATA
- * @param {Object} fields - { dataSize=0, flags=0, channelId, sequence, messageType }
- * @returns {Uint8Array} Encoded channel header
+ * Decode channel control or data header from buffer
+ *
+ * @param {VirtualBuffer|DataView} buffer - Buffer containing channel header
+ * @param {number} offset - Offset in buffer
+ * @returns {Object} Decoded channel header
  */
-export function encodeChannelHeader (type, fields) {
-	const buffer = new Uint8Array(MAX_DATA_HEADER_BYTES);
-	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-	encodeChannelHeaderInto(view, 0, type, fields);
-	return buffer;
+export function decodeChannelHeaderFrom (buffer, offset = 0) {
+	const length = buffer.length || buffer.byteLength;
+	if (length - offset < MAX_DATA_HEADER_BYTES) {
+		throw new Error('Buffer too small for channel header');
+	}
+
+	let o = offset;
+	const type = buffer.getUint8(o++);
+	o++;  // Skip size byte
+	
+	const dataSize = buffer.getUint32(o); o += 4;
+	const flags = buffer.getUint16(o); o += 2;
+	const channelId = buffer.getUint32(o); o += 4;
+	const sequence = buffer.getUint32(o); o += 4;
+	const messageType = buffer.getUint16(o); o += 2;
+
+	return {
+		type,
+		headerSize: MAX_DATA_HEADER_BYTES,
+		dataSize,
+		flags,
+		channelId,
+		sequence,
+		messageType,
+		eom: (flags & FLAG_EOM) !== 0
+	};
 }
 
 /**
@@ -268,109 +338,6 @@ export function decodeHeaderSizeFromPrefix (buffer, offset = 0) {
 }
 
 /**
- * Decode ACK header from buffer
- *
- * @param {VirtualBuffer|DataView} buffer - Buffer containing ACK header
- * @param {number} offset - Offset in buffer
- * @returns {Object} Decoded ACK header
- */
-function decodeAckHeaderFrom (buffer, offset) {
-	const headerSize = decodeHeaderSizeFromPrefix(buffer, offset);
-	const length = buffer.length || buffer.byteLength;
-	if (headerSize === null || length - offset < headerSize) {
-		throw new Error('Buffer too small for ACK header');
-	}
-
-	let o = offset;
-	const type = buffer.getUint8(o++);
-	const sizeByte = buffer.getUint8(o++);
-	const flags = buffer.getUint16(o); o += 2;
-	const channelId = buffer.getUint32(o); o += 4;
-	const baseSequence = buffer.getUint32(o); o += 4;
-	const rangeCount = buffer.getUint8(o++);
-
-	const ranges = [];
-	for (let i = 0; i < rangeCount; i++) {
-		ranges.push(buffer.getUint8(o++));
-	}
-
-	return {
-		type,
-		headerSize: encAddlToTotal(sizeByte),
-		flags,
-		channelId,
-		baseSequence,
-		rangeCount,
-		ranges
-	};
-}
-
-/**
- * Decode channel control or data header from buffer
- *
- * @param {VirtualBuffer|DataView} buffer - Buffer containing channel header
- * @param {number} offset - Offset in buffer
- * @returns {Object} Decoded channel header
- */
-function decodeChannelHeaderFrom (buffer, offset) {
-	const length = buffer.length || buffer.byteLength;
-	if (length - offset < MAX_DATA_HEADER_BYTES) {
-		throw new Error('Buffer too small for channel header');
-	}
-
-	let o = offset;
-	const type = buffer.getUint8(o++);
-	o++;  // Skip size byte
-	
-	const dataSize = buffer.getUint32(o); o += 4;
-	const flags = buffer.getUint16(o); o += 2;
-	const channelId = buffer.getUint32(o); o += 4;
-	const sequence = buffer.getUint32(o); o += 4;
-	const messageType = buffer.getUint16(o); o += 2;
-
-	return {
-		type,
-		headerSize: MAX_DATA_HEADER_BYTES,
-		dataSize,
-		flags,
-		channelId,
-		sequence,
-		messageType,
-		eom: (flags & FLAG_EOM) !== 0
-	};
-}
-
-/**
- * Decode header from buffer (auto-detects type)
- *
- * @param {VirtualBuffer|DataView} buffer - Buffer containing header
- * @param {number} offset - Offset in buffer
- * @returns {Object} Decoded header
- */
-export function decodeHeader (buffer, offset = 0) {
-	if (!buffer || typeof buffer.getUint8 !== 'function') {
-		throw new TypeError('buffer must have DataView-compatible API (getUint8)');
-	}
-	if (!Number.isInteger(offset) || offset < 0) {
-		throw new RangeError('offset out of range');
-	}
-	
-	const length = buffer.length || buffer.byteLength;
-	if (length - offset < 4) {
-		throw new Error('Buffer too small for header');
-	}
-
-	const type = buffer.getUint8(offset);
-	if (type === HDR_TYPE_ACK) {
-		return decodeAckHeaderFrom(buffer, offset);
-	}
-	if (type === HDR_TYPE_CHAN_CONTROL || type === HDR_TYPE_CHAN_DATA) {
-		return decodeChannelHeaderFrom(buffer, offset);
-	}
-	throw new Error(`Unknown message type: ${type}`);
-}
-
-/**
  * Encode transport handshake directly into target buffer
  * Format: \x02PolyTransport\x03 \x02{...}\x03 \x01
  *
@@ -380,8 +347,8 @@ export function decodeHeader (buffer, offset = 0) {
  * @returns {number} Number of bytes written
  */
 export function encodeHandshakeInto (target, offset, config = {}) {
-	if (!target || typeof target.setUint8 !== 'function') {
-		throw new TypeError('target must have DataView-compatible API (setUint8)');
+	if (typeof target?.encodeFrom !== 'function') {
+		throw new TypeError('target does not support encodeFrom()');
 	}
 	if (!Number.isInteger(offset) || offset < 0) {
 		throw new RangeError('offset out of range');
@@ -389,106 +356,11 @@ export function encodeHandshakeInto (target, offset, config = {}) {
 
 	// Merge with defaults
 	const fullConfig = { ...DEFAULT_CONFIG, ...config };
-	
-	let o = offset;
-	
-	// Encode transport greeting: \x02PolyTransport\x03
-	target.setUint8(o++, HANDSHAKE_START);
-	// Use target.encodeFrom
-	const idBytes = new TextEncoder().encode(TRANSPORT_GREETING);
-	for (let i = 0; i < idBytes.length; i++) {
-		target.setUint8(o++, idBytes[i]);
-	}
-	target.setUint8(o++, HANDSHAKE_END);
-	
-	// Encode configuration: \x02{...}\x03
-	target.setUint8(o++, HANDSHAKE_START);
-	const configJson = JSON.stringify(fullConfig);
-	const configBytes = new TextEncoder().encode(configJson);
-	for (let i = 0; i < configBytes.length; i++) {
-		target.setUint8(o++, configBytes[i]);
-	}
-	target.setUint8(o++, HANDSHAKE_END);
-	
-	// Binary stream marker
-	target.setUint8(o++, BINARY_STREAM_START);
-	
-	return o - offset;
-}
 
-/**
- * Decode transport handshake from buffer
- *
- * @param {VirtualBuffer} buffer - Buffer containing handshake
- * @param {number} offset - Offset in buffer
- * @returns {Object|null} { config, bytesConsumed } or null if incomplete
- */
-export function decodeHandshake (buffer, offset = 0) {
-	if (!buffer || typeof buffer.getUint8 !== 'function') {
-		throw new TypeError('buffer must have DataView-compatible API (getUint8)');
-	}
-	if (!Number.isInteger(offset) || offset < 0) {
-		throw new RangeError('offset out of range');
-	}
-
-	const length = buffer.length || buffer.byteLength;
-	let o = offset;
-	
-	// Parse transport greeting
-	if (length < o + 2 || buffer.getUint8(o) !== HANDSHAKE_START) {
-		return null;  // Incomplete or invalid
-	}
-	o++;
-	
-	// Find end of greeting
-	let greetEnd = o;
-	while (greetEnd < length && buffer.getUint8(greetEnd) !== HANDSHAKE_END) {
-		greetEnd++;
-	}
-	if (greetEnd >= length) {
-		return null;  // Incomplete
-	}
-	
-	// Verify transport greeting (use VirtualBuffer.decode if available, otherwise slice)
-	const greetSlice = buffer.slice ? buffer.slice(o, greetEnd) : buffer;
-	const greet = greetSlice.decode ?
-		greetSlice.decode({ start: buffer.slice ? 0 : o, end: buffer.slice ? undefined : greetEnd }) :
-		new TextDecoder().decode(greetSlice);
-	if (greet !== TRANSPORT_GREETING) {
-		throw new Error(`Invalid transport greeting: ${greet}`);
-	}
-	o = greetEnd + 1;
-	
-	// Parse configuration
-	if (length < o + 2 || buffer.getUint8(o) !== HANDSHAKE_START) {
-		return null;  // Incomplete or invalid
-	}
-	o++;
-	
-	// Find end of configuration
-	let configEnd = o;
-	while (configEnd < length && buffer.getUint8(configEnd) !== HANDSHAKE_END) {
-		configEnd++;
-	}
-	if (configEnd >= length) {
-		return null;  // Incomplete
-	}
-	
-	// Parse configuration JSON (use VirtualBuffer.decode if available, otherwise slice)
-	const configSlice = buffer.slice ? buffer.slice(o, configEnd) : buffer;
-	const configJson = configSlice.decode ?
-		configSlice.decode({ start: buffer.slice ? 0 : o, end: buffer.slice ? undefined : configEnd }) :
-		new TextDecoder().decode(configSlice);
-	const config = JSON.parse(configJson);
-	o = configEnd + 1;
-	
-	// Verify binary stream marker
-	if (length < o + 1 || buffer.getUint8(o) !== BINARY_STREAM_START) {
-		return null;  // Incomplete or invalid
-	}
-	o++;
-	
-	return { config, bytesConsumed: o - offset };
+	// Text of handshake message (greeting and configuration only)
+	const handshakeText = GREET_CONFIG_PREFIX + JSON.stringify(fullConfig) + GREET_CONFIG_SUFFIX;
+	const { written } = target.encodeFrom(handshakeText, offset);
+	return written;
 }
 
 /**

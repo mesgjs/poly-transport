@@ -70,31 +70,22 @@ export class ChannelFlowControl {
 	}
 
 	/**
-	 * Get the maximum buffer bytes remote is willing to receive.
-	 * @returns {number} Max buffer bytes (0 = unlimited)
+	 * Get the available buffer space (bytes available to receive).
+	 * @returns {number} Available bytes to receive (Infinity if unlimited)
 	 */
-	get remoteMaxBufferBytes () {
-		return this.#remoteMaxBufferBytes;
-	}
-
-	/**
-	 * Get the current sending budget (bytes available to send).
-	 * Budget = remote max - in-flight bytes (or unlimited if remote max is 0)
-	 * @returns {number} Available bytes to send (Infinity if unlimited)
-	 */
-	get sendingBudget () {
-		if (this.#remoteMaxBufferBytes === 0) {
+	get bufferAvailable () {
+		if (this.#localMaxBufferBytes === 0) {
 			return Infinity;
 		}
-		return Math.max(0, this.#remoteMaxBufferBytes - this.#inFlightBytes);
+		return Math.max(0, this.#localMaxBufferBytes - this.#receivedBytes);
 	}
 
 	/**
-	 * Get the total bytes currently in flight.
-	 * @returns {number} Bytes in flight
+	 * Get the current buffer usage (bytes received but not consumed).
+	 * @returns {number} Bytes currently in receive buffer
 	 */
-	get inFlightBytes () {
-		return this.#inFlightBytes;
+	get bufferUsed () {
+		return this.#receivedBytes;
 	}
 
 	/**
@@ -105,123 +96,6 @@ export class ChannelFlowControl {
 	canSend (chunkBytes) {
 		const budget = this.sendingBudget;
 		return budget === Infinity || budget >= chunkBytes;
-	}
-
-	/**
-	 * Wait for sufficient budget to send the specified number of bytes.
-	 * Resolves immediately if sufficient budget is available.
-	 * @param {number} chunkBytes - Number of bytes to send (header + data)
-	 * @returns {Promise<void>} Resolves when budget is available
-	 */
-	async waitForBudget (chunkBytes) {
-		// If we can send now, resolve immediately
-		if (this.canSend(chunkBytes)) {
-			return;
-		}
-
-		// Otherwise, wait for budget to become available
-		// Note: TaskQueue ensures only one chunk waiting at a time per channel
-		return new Promise((resolve) => {
-			this.#waiter = { bytes: chunkBytes, resolve };
-		});
-	}
-
-	/**
-	 * Record a sent chunk and consume sending budget.
-	 * @param {number} chunkBytes - Number of bytes sent (header + data)
-	 * @returns {number} Sequence number assigned to this chunk
-	 */
-	recordSent (chunkBytes) {
-		const seq = this.#nextSendSeq++;
-		this.#inFlightChunks.set(seq, chunkBytes);
-		this.#inFlightBytes += chunkBytes;
-		return seq;
-	}
-
-	/**
-	 * Process an acknowledgment and restore sending budget.
-	 * ACKs use range-based encoding: base sequence + alternating include/skip ranges.
-	 * Each range value is 0-255, so large ranges are split into multiple entries.
-	 *
-	 * Validates:
-	 * - No duplicate ACKs (ACKing same sequence twice is ProtocolViolationError)
-	 * - No ACKs beyond assigned (ACKing sequence >= nextSendSeq is ProtocolViolationError)
-	 *
-	 * @param {number} baseSeq - Base sequence number
-	 * @param {number[]} ranges - Array of alternating include/skip quantities (each 0-255)
-	 *                            [include1, skip1, include2, skip2, ...]
-	 *                            Range count should be 0 or odd (end with include)
-	 * @returns {number} Number of bytes freed by this ACK
-	 * @throws {ProtocolViolationError} If duplicate ACK or ACK beyond assigned
-	 */
-	processAck (baseSeq, ranges) {
-		let bytesFreed = 0;
-
-		// Helper to process a single ACK'd sequence
-		const ackSequence = (seq) => {
-			// Validate ACK is not beyond assigned
-			if (seq >= this.#nextSendSeq) {
-				throw new ProtocolViolationError('PrematureAck', {
-					sequence: seq,
-					nextSendSeq: this.#nextSendSeq,
-					reason: 'ACK beyond assigned sequence',
-				});
-			}
-
-			const bytes = this.#inFlightChunks.get(seq);
-			if (bytes !== undefined) {
-				this.#inFlightChunks.delete(seq);
-				this.#inFlightBytes -= bytes;
-				bytesFreed += bytes;
-			} else {
-				// Duplicate ACK (already ACK'd)
-				throw new ProtocolViolationError('DuplicateAck', {
-					sequence: seq,
-					reason: 'Sequence already acknowledged',
-				});
-			}
-		};
-
-		ackSequence(baseSeq);
-		// Process alternating include/skip ranges, if present
-		let currentSeq = baseSeq;
-		for (let i = 0; i < ranges.length; i += 2) {
-			const [include, skip = 0] = ranges.slice(i, i + 2);
-			
-			// Include range: ACK these sequences
-			for (let j = 0; j < include; ++j) {
-				ackSequence(++currentSeq);
-			}
-			// Skip range: don't ACK these sequences
-			currentSeq += skip;
-		}
-
-		// If there's a waiter and sufficient budget, wake it
-		this.#checkWaiter();
-
-		return bytesFreed;
-	}
-
-	/**
-	 * Get statistics about flow control state.
-	 * @returns {object} Statistics object
-	 */
-	getStats () {
-		return {
-			localMaxBufferBytes: this.#localMaxBufferBytes,
-			nextExpectedSeq: this.#nextExpectedSeq,
-			receivedChunks: this.#receivedChunks.size,
-			receivedBytes: this.#receivedBytes,
-			bufferUsed: this.bufferUsed,
-			bufferAvailable: this.bufferAvailable,
-
-			remoteMaxBufferBytes: this.#remoteMaxBufferBytes,
-			nextSendSeq: this.#nextSendSeq,
-			inFlightChunks: this.#inFlightChunks.size,
-			inFlightBytes: this.#inFlightBytes,
-			sendingBudget: this.sendingBudget,
-			waiter: this.#waiter ? this.#waiter.bytes : null,
-		};
 	}
 
 	/**
@@ -240,88 +114,6 @@ export class ChannelFlowControl {
 				waiter.resolve();
 			}
 		}
-	}
-
-	/**
-	 * Get the maximum buffer bytes we're willing to receive.
-	 * @returns {number} Max buffer bytes (0 = unlimited)
-	 */
-	get localMaxBufferBytes () {
-		return this.#localMaxBufferBytes;
-	}
-
-	/**
-	 * Get the current buffer usage (bytes received but not consumed).
-	 * @returns {number} Bytes currently in receive buffer
-	 */
-	get bufferUsed () {
-		return this.#receivedBytes;
-	}
-
-	/**
-	 * Get the available buffer space (bytes available to receive).
-	 * @returns {number} Available bytes to receive (Infinity if unlimited)
-	 */
-	get bufferAvailable () {
-		if (this.#localMaxBufferBytes === 0) {
-			return Infinity;
-		}
-		return Math.max(0, this.#localMaxBufferBytes - this.#receivedBytes);
-	}
-
-	/**
-	 * Get the next expected sequence number.
-	 * @returns {number} Next expected sequence number
-	 */
-	get nextExpectedSeq () {
-		return this.#nextExpectedSeq;
-	}
-
-	/**
-	 * Record a received chunk and consume receive buffer space.
-	 * Validates sequence order and budget.
-	 *
-	 * @param {number} seq - Sequence number of received chunk
-	 * @param {number} chunkBytes - Number of bytes received (header + data)
-	 * @throws {ProtocolViolationError} If sequence is out of order or over budget
-	 */
-	recordReceived (seq, chunkBytes) {
-		// Validate sequence order
-		if (seq !== this.#nextExpectedSeq) {
-			throw new ProtocolViolationError('OutOfOrder', {
-				expected: this.#nextExpectedSeq,
-				received: seq,
-			});
-		}
-
-		// Validate budget
-		const available = this.bufferAvailable;
-		if (available !== Infinity && chunkBytes > available) {
-			throw new ProtocolViolationError('OverBudget', {
-				available,
-				requested: chunkBytes,
-			});
-		}
-
-		// Record the chunk (not yet consumed)
-		this.#receivedChunks.set(seq, { bytes: chunkBytes, consumed: false });
-		this.#receivedBytes += chunkBytes;
-		this.#nextExpectedSeq++;
-	}
-
-	/**
-	 * Mark a chunk as consumed (ready to ACK).
-	 * The chunk remains tracked until ACK is sent and clearAcked() is called.
-	 * @param {number} seq - Sequence number of consumed chunk
-	 * @returns {boolean} True if chunk was found and marked consumed
-	 */
-	recordConsumed (seq) {
-		const entry = this.#receivedChunks.get(seq);
-		if (entry !== undefined && !entry.consumed) {
-			entry.consumed = true;
-			return true;
-		}
-		return false;
 	}
 
 	/**
@@ -446,5 +238,213 @@ export class ChannelFlowControl {
 		}
 
 		return { baseSeq, ranges };
+	}
+
+	/**
+	 * Get statistics about flow control state.
+	 * @returns {object} Statistics object
+	 */
+	getStats () {
+		return {
+			localMaxBufferBytes: this.#localMaxBufferBytes,
+			nextExpectedSeq: this.#nextExpectedSeq,
+			receivedChunks: this.#receivedChunks.size,
+			receivedBytes: this.#receivedBytes,
+			bufferUsed: this.bufferUsed,
+			bufferAvailable: this.bufferAvailable,
+
+			remoteMaxBufferBytes: this.#remoteMaxBufferBytes,
+			nextSendSeq: this.#nextSendSeq,
+			inFlightChunks: this.#inFlightChunks.size,
+			inFlightBytes: this.#inFlightBytes,
+			sendingBudget: this.sendingBudget,
+			waiter: this.#waiter ? this.#waiter.bytes : null,
+		};
+	}
+
+	/**
+	 * Get the total bytes currently in flight.
+	 * @returns {number} Bytes in flight
+	 */
+	get inFlightBytes () {
+		return this.#inFlightBytes;
+	}
+
+	/**
+	 * Get the maximum buffer bytes we're willing to receive.
+	 * @returns {number} Max buffer bytes (0 = unlimited)
+	 */
+	get localMaxBufferBytes () {
+		return this.#localMaxBufferBytes;
+	}
+
+	/**
+	 * Get the next expected sequence number.
+	 * @returns {number} Next expected sequence number
+	 */
+	get nextExpectedSeq () {
+		return this.#nextExpectedSeq;
+	}
+
+	/**
+	 * Process an acknowledgment and restore sending budget.
+	 * ACKs use range-based encoding: base sequence + alternating include/skip ranges.
+	 * Each range value is 0-255, so large ranges are split into multiple entries.
+	 *
+	 * Validates:
+	 * - No duplicate ACKs (ACKing same sequence twice is ProtocolViolationError)
+	 * - No ACKs beyond assigned (ACKing sequence >= nextSendSeq is ProtocolViolationError)
+	 *
+	 * @param {number} baseSeq - Base sequence number
+	 * @param {number[]} ranges - Array of alternating include/skip quantities (each 0-255)
+	 *                            [include1, skip1, include2, skip2, ...]
+	 *                            Range count should be 0 or odd (end with include)
+	 * @returns {number} Number of bytes freed by this ACK
+	 * @throws {ProtocolViolationError} If duplicate ACK or ACK beyond assigned
+	 */
+	processAck (baseSeq, ranges) {
+		let bytesFreed = 0;
+
+		// Helper to process a single ACK'd sequence
+		const ackSequence = (seq) => {
+			// Validate ACK is not beyond assigned
+			if (seq >= this.#nextSendSeq) {
+				throw new ProtocolViolationError('PrematureAck', {
+					sequence: seq,
+					nextSendSeq: this.#nextSendSeq,
+					reason: 'ACK beyond assigned sequence',
+				});
+			}
+
+			const bytes = this.#inFlightChunks.get(seq);
+			if (bytes !== undefined) {
+				this.#inFlightChunks.delete(seq);
+				this.#inFlightBytes -= bytes;
+				bytesFreed += bytes;
+			} else {
+				// Duplicate ACK (already ACK'd)
+				throw new ProtocolViolationError('DuplicateAck', {
+					sequence: seq,
+					reason: 'Sequence already acknowledged',
+				});
+			}
+		};
+
+		ackSequence(baseSeq);
+		// Process alternating include/skip ranges, if present
+		let currentSeq = baseSeq;
+		for (let i = 0; i < ranges.length; i += 2) {
+			const [include, skip = 0] = ranges.slice(i, i + 2);
+			
+			// Include range: ACK these sequences
+			for (let j = 0; j < include; ++j) {
+				ackSequence(++currentSeq);
+			}
+			// Skip range: don't ACK these sequences
+			currentSeq += skip;
+		}
+
+		// If there's a waiter and sufficient budget, wake it
+		this.#checkWaiter();
+
+		return bytesFreed;
+	}
+
+	/**
+	 * Mark a chunk as consumed (ready to ACK).
+	 * The chunk remains tracked until ACK is sent and clearAcked() is called.
+	 * @param {number} seq - Sequence number of consumed chunk
+	 * @returns {boolean} True if chunk was found and marked consumed
+	 */
+	recordConsumed (seq) {
+		const entry = this.#receivedChunks.get(seq);
+		if (entry !== undefined && !entry.consumed) {
+			entry.consumed = true;
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Record a received chunk and consume receive buffer space.
+	 * Validates sequence order and budget.
+	 *
+	 * @param {number} seq - Sequence number of received chunk
+	 * @param {number} chunkBytes - Number of bytes received (header + data)
+	 * @throws {ProtocolViolationError} If sequence is out of order or over budget
+	 */
+	recordReceived (seq, chunkBytes) {
+		// Validate sequence order
+		if (seq !== this.#nextExpectedSeq) {
+			throw new ProtocolViolationError('OutOfOrder', {
+				expected: this.#nextExpectedSeq,
+				received: seq,
+			});
+		}
+
+		// Validate budget
+		const available = this.bufferAvailable;
+		if (available !== Infinity && chunkBytes > available) {
+			throw new ProtocolViolationError('OverBudget', {
+				available,
+				requested: chunkBytes,
+			});
+		}
+
+		// Record the chunk (not yet consumed)
+		this.#receivedChunks.set(seq, { bytes: chunkBytes, consumed: false });
+		this.#receivedBytes += chunkBytes;
+		this.#nextExpectedSeq++;
+	}
+
+	/**
+	 * Record a sent chunk and consume sending budget.
+	 * @param {number} chunkBytes - Number of bytes sent (header + data)
+	 * @returns {number} Sequence number assigned to this chunk
+	 */
+	recordSent (chunkBytes) {
+		const seq = this.#nextSendSeq++;
+		this.#inFlightChunks.set(seq, chunkBytes);
+		this.#inFlightBytes += chunkBytes;
+		return seq;
+	}
+
+	/**
+	 * Get the maximum buffer bytes remote is willing to receive.
+	 * @returns {number} Max buffer bytes (0 = unlimited)
+	 */
+	get remoteMaxBufferBytes () {
+		return this.#remoteMaxBufferBytes;
+	}
+
+	/**
+	 * Get the current sending budget (bytes available to send).
+	 * Budget = remote max - in-flight bytes (or unlimited if remote max is 0)
+	 * @returns {number} Available bytes to send (Infinity if unlimited)
+	 */
+	get sendingBudget () {
+		if (this.#remoteMaxBufferBytes === 0) {
+			return Infinity;
+		}
+		return Math.max(0, this.#remoteMaxBufferBytes - this.#inFlightBytes);
+	}
+
+	/**
+	 * Wait for sufficient budget to send the specified number of bytes.
+	 * Resolves immediately if sufficient budget is available.
+	 * @param {number} chunkBytes - Number of bytes to send (header + data)
+	 * @returns {Promise<void>} Resolves when budget is available
+	 */
+	async waitForBudget (chunkBytes) {
+		// If we can send now, resolve immediately
+		if (this.canSend(chunkBytes)) {
+			return;
+		}
+
+		// Otherwise, wait for budget to become available
+		// Note: TaskQueue ensures only one chunk waiting at a time per channel
+		return new Promise((resolve) => {
+			this.#waiter = { bytes: chunkBytes, resolve };
+		});
 	}
 }

@@ -1430,7 +1430,7 @@ The `channel.close({ discard })` method accepts a single parameter:
   - If false (the default), the reservation must wait until `requestedBytes + RESERVE_ACK_BYTES` are available (so that `RESERVE_ACK_BYTES` remain available in the ring for ACKs)
 - A protocol violation error results from a buggy or malicious remote transport, not local user action
   - A PVE should emit a `protocolViolation` event on the transport (or possibly the channel, depending on the error)
-  - It seems unlikely that a `ProtocolViolationError` would ever be needed
+  - ~~It seems unlikely that a `ProtocolViolationError` would ever be needed~~
 
 ## Updates & Clarifications 2026-01-15-B
 
@@ -1441,3 +1441,7 @@ The `channel.close({ discard })` method accepts a single parameter:
 - All other user-visible message-types must be accessed by name (string with map lookup)
 - To reduce confusion, always refer to the type used to control header parsing as the "header type" or "header-type id" and the type used to control data parsing and read-filtering as the "message type" or "message-type id"
 - A `ProtocolViolationError` MAY be used internally if it makes sense to do so (as part of flow that triggers emitting a `protocolViolation` event), but it should never be an error that user code is expected to catch or handle directly
+
+## Updates & Clarifications 2026-01-20-A
+
+- A revised transport input-process overview has been added as [transport-input-overview.md](transport-input-overview.md).

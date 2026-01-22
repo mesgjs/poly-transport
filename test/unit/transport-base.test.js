@@ -219,17 +219,6 @@ Deno.test('Transport - _registerChannel and getChannel', () => {
 	assertEquals(channels.get('test'), mockChannel);
 });
 
-Deno.test('Transport - _unregisterChannel', () => {
-	const transport = new MockTransport();
-	const mockChannel = { id: 'test', name: 'test' };
-	
-	transport._registerChannel('test', mockChannel);
-	assertEquals(transport.getChannel('test'), mockChannel);
-	
-	transport._unregisterChannel('test');
-	assertEquals(transport.getChannel('test'), undefined);
-});
-
 Deno.test('Transport - abstract methods throw if not implemented', async () => {
 	class IncompleteTransport extends Transport {}
 	const transport = new IncompleteTransport();

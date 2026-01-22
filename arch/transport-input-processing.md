@@ -1,12 +1,14 @@
 # Transport Input Processing Architecture
 
 **Status**: [DRAFT]
-**Date**: 2026-01-19, Updated 2026-01-20
-**Related**: [`message-decoding.md`](scenarios/message-decoding.md), [`simple-read.md`](scenarios/simple-read.md), [`virtual-buffer.esm.js`](../src/virtual-buffer.esm.js)
+**Date**: 2026-01-19, Updated 2026-01-20, 2026-01-21
+**Related**: [`transport-input-overview.md`](transport-input-overview.md), [`message-decoding.md`](scenarios/message-decoding.md), [`simple-read.md`](scenarios/simple-read.md), [`virtual-buffer.esm.js`](../src/virtual-buffer.esm.js)
 
 ## Overview
 
 This document describes the high-level architecture for processing incoming data in PolyTransport. The transport acts as a **lexical analyzer**, splitting the byte stream into tokens (headers + data), which are then passed to channels for processing.
+
+**See Also**: [`transport-input-overview.md`](transport-input-overview.md) provides a concise algorithmic overview of both handshake processing and byte-stream message processing.
 
 ## The Core Problem
 
@@ -111,15 +113,52 @@ This document describes the high-level architecture for processing incoming data
 
 **Key Insight**: Channels receive clean, independent buffers (no shared state with transport).
 
+## Processing Phases
+
+### Phase 1: Handshake Processing
+
+**Purpose**: Establish transport configuration and switch to byte-stream mode.
+
+**Algorithm**: See [`transport-input-overview.md`](transport-input-overview.md#handshake-processing) for detailed handshake algorithm.
+
+**Key Features**:
+- **Line-based processing**: Uses STX/ETX markers to distinguish transport content from out-of-band data
+- **Configuration exchange**: `\x02PolyTransport:{JSON}\x03\n` format
+- **Byte stream marker**: `\x02\x01\x03\n` signals switch to byte-stream mode
+- **Out-of-band data**: Non-transport content (console logs, exceptions) emitted as `outOfBandData` events
+
+**Implementation Notes**:
+- VirtualRWBuffer accumulates incoming bytes during handshake
+- Transport decodes lines and processes configuration
+- Handler (`#onRemoteConfig()`) validates config, determines role, initializes foundational channels
+- After handler completes, transport sends byte stream marker
+- When remote byte stream marker received, switch to byte-stream message processing
+
+### Phase 2: Byte-Stream Message Processing
+
+**Purpose**: Decode protocol messages and route to channels.
+
+**Algorithm**: See [`transport-input-overview.md`](transport-input-overview.md#byte-stream-message-processing) for concise algorithm.
+
+**Key Features**:
+- **Header decoding**: Transport decodes all message headers
+- **Data extraction**: Copy data to pool buffers (single copy per message)
+- **Channel routing**: Pass header objects + pool buffers to channels
+- **ACK routing**: ACKs routed to channels (channels manage sequence tracking)
+
 ## Data Flow
 
 ### High-Level Flow
 
 ```
-Byte Stream → Transport → VirtualRWBuffer → Protocol Decoder → Channels → Application
+Handshake Phase:
+  Byte Stream → Transport → VirtualRWBuffer → Line Decoder → Config Handler → Byte Stream Mode
+
+Byte-Stream Phase:
+  Byte Stream → Transport → VirtualRWBuffer → Protocol Decoder → Channels → Application
 ```
 
-### Detailed Flow
+### Detailed Flow (Byte-Stream Phase)
 
 ```
 1. Socket/Pipe → Transport.receive(64KB)
@@ -443,11 +482,13 @@ async read({ timeout, only } = {}) {
 
 ## Related Documents
 
+- [`transport-input-overview.md`](transport-input-overview.md) - Concise algorithmic overview (handshake + byte-stream)
 - [`virtual-buffer.esm.js`](../src/virtual-buffer.esm.js) - VirtualBuffer and VirtualRWBuffer implementation
 - [`message-decoding.md`](scenarios/message-decoding.md) - Protocol decoding scenarios
 - [`simple-read.md`](scenarios/simple-read.md) - Channel read flow
 - [`buffer-pool-lifecycle.md`](scenarios/buffer-pool-lifecycle.md) - Buffer pool management
 - [`virtual-buffer-operations.md`](scenarios/virtual-buffer-operations.md) - VirtualBuffer operations
+- [`handshake.md`](scenarios/handshake.md) - Detailed handshake scenario
 - [`requirements.md`](requirements.md) - Overall requirements (Update 2026-01-07-B)
 
 ## Summary

@@ -1,6 +1,12 @@
 // Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
 
 import { Eventable } from '@eventable';
+import {
+	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
+	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
+	decodeAckHeaderFrom, decodeChannelHeaderFrom, encAddlToTotal
+} from './protocol.esm.js';
+import { VirtualRWBuffer } from './virtual-buffer.esm.js';
 
 /**
  * Transport Base Class
@@ -11,29 +17,37 @@ import { Eventable } from '@eventable';
  */
 
 export class Transport extends Eventable {
+	#state; // Private state (sub-classes must have one also)
+
 	get EVEN_ROLE () { return 0; }
 	get ODD_ROLE () { return 1; }
-
-	#id = crypto.randomUUID();
-	#channels = new Map();
-	#channelDefaults = {
-		maxBufferBytes: 0,      // 0 = unlimited
-		maxChunkBytes: 0,       // 0 = transport limit
-		maxMessageBytes: 0,     // 0 = unlimited
-		lowBufferBytes: 0,      // 0 = no low-water mark
-	};
-	#started = false;
-	#stopped = false;
-	#logger = null;
 
 	/**
 	 * Create a new Transport instance
 	 * @param {Object} options - Transport options
 	 * @param {Object} options.logger - Logger instance (default: console)
+	 * @param {BufferPool} options.pool - Buffer pool
 	 */
 	constructor (options = {}) {
 		super();
-		this.#logger = options.logger || console;
+		this._setState({
+			channelDefaults: {
+				maxBufferBytes: 0,      // 0 = unlimited
+				maxChunkBytes: 0,       // 0 = transport limit
+				maxMessageBytes: 0,     // 0 = unlimited
+				lowBufferBytes: 1024,   // low-water mark
+			},
+			channels: new Map(),
+			id: crypto.randomUUID(),
+			inputBuffer: new VirtualRWBuffer(),
+			logger: options.logger || console,
+			logSymbol: Symbol('log'),
+			pool: options.pool,
+			readerTimer: null,
+			started: false,
+			stoppped: false,
+			tccSymbol: Symbol('TCC'),
+		});
 	}
 
 	/**
@@ -70,26 +84,144 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Set default options for new channel requests
-	 * @param {Object} options - Default channel options
-	 * @param {number} options.maxBufferBytes - Max buffer size (0 = unlimited)
-	 * @param {number} options.maxChunkBytes - Max chunk size (0 = transport limit)
-	 * @param {number} options.maxMessageBytes - Max message size (0 = unlimited)
-	 * @param {number} options.lowBufferBytes - Low-water mark for ACKs
+	 * Byte-stream transport reader task
+	 * Handles:
+	 * Line-based greeting + configuration and switch-to-byte-stream
+	 * Message-based ACK and channel messages
 	 */
-	setChannelDefaults (options = {}) {
-		if (options.maxBufferBytes !== undefined) {
-			this.#channelDefaults.maxBufferBytes = options.maxBufferBytes;
+	async #byteReader () {
+		const state = this.#state;
+		const input = state.inputBuffer;
+		const newLine = 10, stx = 2;
+		let firstConfig = true;
+		let offset = 0;
+
+		// Line-based config/handshake loop
+		while (!state.stopped) {
+			if (offset === input.length) {
+				await this.ensureBytes(offset + 1);
+			}
+
+			const nextByte = input.getUint8(offset);
+
+			if (nextByte === stx && offset > 0) {
+				const line = input.decode({ end: offset });
+				input.release(offset);
+				offset = 0;
+				await this._dispatchEvent('outOfBandData', { data: line });
+				continue;
+			}
+
+			if (nextByte === newLine) {
+				const line = input.decode({ end: offset });
+				input.release(offset);
+				offset = 0;
+
+				if (line === START_BYTE_STREAM) break;
+				if (line.startswith(GREET_CONFIG_PREFIX) && line.endsWith(GREET_CONFIG_SUFFIX) && firstConfig) {
+					try {
+						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
+						firstConfig = false;
+						await this.onRemoteConfig(config);
+					} catch (_e) { /**/ }
+				} else {
+					await this._dispatchEvent('outOfBandData', { data: line });
+				}
+				continue;
+			}
+
+			++offset;
 		}
-		if (options.maxChunkBytes !== undefined) {
-			this.#channelDefaults.maxChunkBytes = options.maxChunkBytes;
+
+		// Byte-stream-based message loop
+		while (!state.stopped) {
+			// Read a message header
+			if (input.length < 2) {
+				await this.ensureBytes(2);
+			}
+			const type = input.getUint8(0);
+			const encAddl = input.getUint8(1);
+			const totalHeaderSize = encAddlToTotal(encAddl);
+			if (input.length < totalHeaderSize) {
+				await this.ensureBytes(totalHeaderSize);
+			}
+
+			let header;
+			let data = null;
+
+			switch (type) {
+			case HDR_TYPE_ACK:
+				header = decodeAckHeaderFrom(input);
+				break;
+			case HDR_TYPE_CHAN_CONTROL:
+			case HDR_TYPE_CHAN_DATA:
+			{
+				header = decodeChannelHeaderFrom(input);
+				break;
+			}
+			default:
+			 	// TO DO: Replace/update this placeholder code
+				// Protocol violation: unknown header type
+				await this._dispatchEvent('protocolViolation', {});
+				continue;
+			}
+
+			input.release(totalHeaderSize, state.pool);
+			const dataSize = header.dataSize ?? 0;
+			if (dataSize > 0 && !state.stopped) {
+				if (dataSize > input.length) {
+					await this.ensureBytes(dataSize);
+				}
+				data = input.slice(0, dataSize).toPool(state.pool);
+				input.release(dataSize, state.pool);
+			}
+
+			if (state.stopped) break;
+
+			const channelId = header.channelId;
+			const channel = this.getChannel(channelId, state);
+
+			if (!channel) {
+			 	// TO DO: Replace/update this placeholder code
+				// Protocol violation: unknown channel id
+				await this._dispatchEvent('protocolViolation', {});
+				continue;
+			}
+
+			// Dispatch the message to the appropriate channel for processing
+			channel.receiveMessage(this, header, data);
 		}
-		if (options.maxMessageBytes !== undefined) {
-			this.#channelDefaults.maxMessageBytes = options.maxMessageBytes;
+	}
+
+	/**
+	 * Dispatch an event and await all handlers
+	 * @protected
+	 * @returns {Promise<void>}
+	 */
+	async _dispatchEvent (...spec) {
+		if (typeof spec[0] === 'string') {
+			// Eventable expects an event object with type property
+			const [type, detail] = spec;
+			await this.dispatchEvent({ type, detail });
+		} else if (typeof spec[0] === 'object') {
+			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
+			await this.dispatchEvent(spec[0]);
 		}
-		if (options.lowBufferBytes !== undefined) {
-			this.#channelDefaults.lowBufferBytes = options.lowBufferBytes;
+	}
+
+	/**
+	 * Get a channel by ID or name
+	 * @param {string|number|symbol} idOrName - Channel identifier or name
+	 * @param {Object|undefined} auth - Optional authentication token (private state)
+	 * @returns {Channel|undefined} The channel, or undefined if not found
+	 */
+	getChannel (idOrName, auth = undefined) {
+		const state = this.#state;
+		if (typeof idOrName === 'number' && auth !== state) {
+			// Public access by name or symbol only (not channel number)
+			return;
 		}
+		return state.channels.get(idOrName);
 	}
 
 	/**
@@ -97,7 +229,105 @@ export class Transport extends Eventable {
 	 * @returns {Object} Current channel defaults
 	 */
 	getChannelDefaults () {
-		return { ...this.#channelDefaults };
+		return { ...this.#state.channelDefaults };
+	}
+
+	/**
+	 * Return the transport ID (UUID)
+	 */
+	get id () { return this.#state.id; }
+
+	/**
+	 * Check if transport is started
+	 * @returns {boolean}
+	 */
+	get isStarted () {
+		return this.#state.started;
+	}
+
+	/**
+	 * Check if transport is stopped
+	 * @returns {boolean}
+	 */
+	get isStopped () {
+		return this.#state.stopped;
+	}
+
+	/**
+	 * Returns the log channel id (symbol)
+	 * Users only have access to the log channel if they have access to the transport object
+	 * (E.g. not JSMAWS applets post-bootstrap)
+	 */
+	get logChannelId () {
+		return this.#state.logSymbol;
+	}
+
+	/**
+	 * Get logger instance
+	 * @returns {Object}
+	 */
+	get logger () {
+		return this.#state.logger;
+	}
+
+	/**
+	 * Request a new channel
+	 * @param {string} Name - Channel name
+	 * @param {Object} options - Request options
+	 * @param {number} options.timeout - Timeout in milliseconds
+	 * @returns {Promise<Channel>} The requested channel
+	 */
+	async requestChannel (name, options = {}) {
+		const state = this.#state;
+		if (!state.started) {
+			throw new StateError('Transport not started');
+		}
+		if (state.stopped) {
+			throw new StateError('Transport is stopped');
+		}
+		// TO DO:
+		// Base class: Generate request header object
+		// Subclasses: Send req obj (worker) or encode + send (byte-streams)
+		throw new Error(`Transport.requestChannel is not yet implemented`);
+	}
+
+	/**
+	 * Set default options for new channel requests
+	 * @param {Object} options - Default channel options
+	 * @param {number} options.maxBufferBytes - Max buffer size (0 = unlimited)
+	 * @param {number} options.maxChunkBytes - Max chunk size (0 = transport limit)
+	 * @param {number} options.maxMessageBytes - Max message size (0 = unlimited)
+	 * @param {number} options.lowBufferBytes - Low-water mark for ACKs
+	 */
+	setChannelDefaults ({ maxBufferBytes, maxChunkBytes, maxMessageBytes, lowBufferBytes } = {}) {
+		const state = this.#state;
+		const defaults = state.channelDefaults;
+		if (Number.isInteger(maxBufferBytes) && maxBufferBytes >= 0) {
+			defaults.maxBufferBytes = maxBufferBytes;
+		}
+		if (Number.isInteger(maxChunkBytes) && maxChunkBytes >= 0) {
+			defaults.maxChunkBytes = maxChunkBytes;
+		}
+		if (Number.isInteger(maxMessageBytes) && maxMessageBytes >= 0) {
+			defaults.maxMessageBytes = maxMessageBytes;
+		}
+		if (Number.isInteger(lowBufferBytes) && lowBufferBytes > 0) {
+			defaults.lowBufferBytes = lowBufferBytes;
+		}
+	}
+
+	/**
+	 * Thread the private state up through sub-classes
+	 * Called from the base-class constructor
+	 * Every sub-class MUST implement this
+	 * @param {Object} state - The private state object
+	 */
+	_setState (state) {
+		if (!this.#state) {
+			this.#state = state;
+			// All sub-classes must pass the state up via super
+			// super._setState(state);
+		}
 	}
 
 	/**
@@ -105,19 +335,40 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>}
 	 */
 	async start () {
-		if (this.#stopped) {
+		const state = this.#state;
+		if (state.stopped) {
 			throw new StateError('Transport is stopped');
 		}
-		if (this.#started) {
+		if (state.started) {
 			throw new StateError('Transport already started');
 		}
 
-		this.#started = true;
-		await this._start();
+		state.started = true;
+		await this._start(state);
+
+		this._startReader();
 
 		// TO DO:
-		// * Handshake
-		// * Role determination
+		// * Send our local configuration
+		// * Start our reader task
+		//   * line-based config/handshake loop
+		//   * byte-stream-based message loop
+		// * Reader triggers `onRemoteConfig` upon receipt of remote configuration
+		//   * calculates operating "min" values
+		//   * activates foundational channels
+		//   * sends our start-byte-stream sequence to switch remote reader mode
+	}
+
+	/*
+	 * Start the reading task
+	 * This version starts the default byte-stream reader
+	 * Other (e.g. non-byte-stream) transports should override as required
+	 */
+	_startReader () {
+		const state = this.#state;
+		if (!state.readerTimer) {
+			state.readerTimer = setTimeout(() => this.#byteReader(), 0);
+		}
 	}
 
 	/**
@@ -128,7 +379,8 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>}
 	 */
 	async stop (options = {}) {
-		if (this.#stopped) {
+		const state = this.#state;
+		if (state.stopped) {
 			return;
 		}
 
@@ -139,10 +391,10 @@ export class Transport extends Eventable {
 
 		// Close all channels
 		const channelClosePromises = [];
-		for (const channel of this.#channels.values()) {
+		for (const channel of state.channels.values()) {
 			channelClosePromises.push(
 				channel.close({ discard }).catch(err => {
-					this.#logger.error('Error closing channel:', err);
+					state.logger.error('Error closing channel:', err);
 				})
 			);
 		}
@@ -164,73 +416,10 @@ export class Transport extends Eventable {
 		// Close the transport
 		await this._stop();
 
-		this.#stopped = true;
+		state.stopped = true;
 
 		// Emit stopped event
 		await this._dispatchEvent('stopped', {});
-	}
-
-	/**
-	 * Request a new channel
-	 * @param {string|number} idOrName - Channel identifier or name
-	 * @param {Object} options - Request options
-	 * @param {number} options.timeout - Timeout in milliseconds
-	 * @returns {Promise<Channel>} The requested channel
-	 */
-	async requestChannel (idOrName, options = {}) {
-		if (!this.#started) {
-			throw new StateError('Transport not started');
-		}
-		if (this.#stopped) {
-			throw new StateError('Transport is stopped');
-		}
-		throw new Error(`Transport.requestChannel is not yet implemented`);
-	}
-
-	/**
-	 * Get a channel by ID or name
-	 * @param {string|number} idOrName - Channel identifier or name
-	 * @returns {Channel|undefined} The channel, or undefined if not found
-	 */
-	getChannel (idOrName) {
-		return this.#channels.get(idOrName);
-	}
-
-	/**
-	 * Get all channels
-	 * @returns {Map<string|number, Channel>} Map of all channels
-	 */
-	get channels () {
-		return new Map(this.#channels);
-	}
-
-	/**
-	 * Return the transport ID (UUID)
-	 */
-	get id () { return this.#id; }
-
-	/**
-	 * Check if transport is started
-	 * @returns {boolean}
-	 */
-	get isStarted () {
-		return this.#started;
-	}
-
-	/**
-	 * Check if transport is stopped
-	 * @returns {boolean}
-	 */
-	get isStopped () {
-		return this.#stopped;
-	}
-
-	/**
-	 * Get logger instance
-	 * @returns {Object}
-	 */
-	get logger () {
-		return this.#logger;
 	}
 
 	/**
@@ -240,55 +429,11 @@ export class Transport extends Eventable {
 	 * @param {Channel} channel - The channel instance
 	 */
 	_registerChannel (idOrName, channel) {
-		this.#channels.set(idOrName, channel);
-	}
-
-	/**
-	 * Unregister a channel
-	 * @protected
-	 * @param {string|number} idOrName - Channel identifier or name
-	 */
-	_unregisterChannel (idOrName) {
-		this.#channels.delete(idOrName);
-	}
-
-	/**
-	 * Dispatch an event and await all handlers
-	 * @protected
-	 * @returns {Promise<void>}
-	 */
-	async _dispatchEvent (...spec) {
-		if (typeof spec[0] === 'string') {
-			// Eventable expects an event object with type property
-			const [type, detail] = spec;
-			await this.dispatchEvent({ type, detail });
-		} else if (typeof spec[0] === 'object') {
-			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclass of AppAsyncEvent)
-			await this.dispatchEvent(spec[0]);
-		}
+		const state = this.#state;
+		state.channels.set(idOrName, channel);
 	}
 
 	// Abstract methods to be implemented by subclasses
-
-	/**
-	 * Start the transport (subclass implementation)
-	 * @protected
-	 * @abstract
-	 * @returns {Promise<void>}
-	 */
-	async _start () {
-		throw new Error('Transport._start() must be implemented by subclass');
-	}
-
-	/**
-	 * Stop the transport (subclass implementation)
-	 * @protected
-	 * @abstract
-	 * @returns {Promise<void>}
-	 */
-	async _stop () {
-		throw new Error('Transport._stop() must be implemented by subclass');
-	}
 
 	/**
 	 * Send a message (subclass implementation)
@@ -299,17 +444,32 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>}
 	 */
 	async _sendMessage (channelId, message) {
-		throw new Error('_sendMessage() must be implemented by subclass');
+		// TO DO:
+		// Should (almost certainly) be a public method (called by channel)
+		// Should (probably) accept (headerObject, data)
+		// Base should probably implement byte-stream-style encode + send
+		// Worker subclass can override to use postMessage
+		throw new Error('transport._sendMessage() must be implemented by subclass');
 	}
 
 	/**
-	 * Handle incoming message (subclass implementation)
+	 * Start the transport (subclass implementation)
 	 * @protected
 	 * @abstract
-	 * @param {Object} message - Incoming message
+	 * @returns {Promise<void>}
 	 */
-	_handleIncomingMessage (message) {
-		throw new Error('_handleIncomingMessage() must be implemented by subclass');
+	async _start () {
+		throw new Error('transport._start() must be implemented by subclass');
+	}
+
+	/**
+	 * Stop the transport (subclass implementation)
+	 * @protected
+	 * @abstract
+	 * @returns {Promise<void>}
+	 */
+	async _stop () {
+		throw new Error('transport._stop() must be implemented by subclass');
 	}
 }
 

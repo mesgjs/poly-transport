@@ -28,20 +28,29 @@ This scenario documents the handshake sequence from both the initiating and rece
 
 ## Handshake Format
 
-The handshake consists of three parts (requirements.md:400-404):
+The handshake is a **multi-step exchange** consisting of two lines transmitted in line-based mode with STX/ETX markers (requirements.md:400-404, transport-input-overview.md:22-25):
 
 ```
-\x02PolyTransport\x03          (15 bytes: STX + identifier + ETX)
-\x02{"transportId":"...",...}\x03  (variable: STX + JSON config + ETX)
-\x01                           (1 byte: SOH - switch to binary stream)
+\x02PolyTransport:{JSON}\x03\n     (STX + greeting + colon + JSON config + ETX + newline)
+\x02\x01\x03\n                     (STX + SOH + ETX + newline - switch to byte stream)
 ```
 
 **Example** (simplified config):
 ```
-02 50 6F 6C 79 54 72 61 6E 73 70 6F 72 74 03  (\x02PolyTransport\x03)
-02 7B 22 74 72 61 6E 73 70 6F 72 74 49 64 22 3A 22 ... 7D 03  (\x02{"transportId":"...",...}\x03)
-01  (\x01)
+02 50 6F 6C 79 54 72 61 6E 73 70 6F 72 74 3A 7B 22 74 72 61 6E 73 70 6F 72 74 49 64 22 3A 22 ... 7D 03 0A
+(\x02PolyTransport:{"transportId":"...",...}\x03\n)
+
+02 01 03 0A
+(\x02\x01\x03\n)
 ```
+
+**Key Features** (transport-input-overview.md:19-25):
+- **Line-based mode**: Each part ends with newline (0x0A)
+- **STX/ETX markers**: Distinguish transport content from out-of-band data
+- **Greeting includes colon**: `PolyTransport:` followed immediately by JSON config
+- **Byte stream marker wrapped**: `\x02\x01\x03\n` (not bare `\x01`)
+- **Out-of-band data handling**: Lines without STX prefix or without ETX suffix are emitted as `outOfBandData` events
+- **Multi-step exchange**: Config line sent/received first, then role determination and foundational channel initialization, then byte stream marker sent/received
 
 **Configuration Fields** (requirements.md:406-413):
 - `transportId` (string, **required**) - Transport UUID for role determination (bidi-chan-even-odd-update.md:31-33)
@@ -57,7 +66,11 @@ The handshake consists of three parts (requirements.md:400-404):
 
 ## Step-by-Step Sequence
 
-### Phase 1: Handshake Transmission
+**Overview**: The handshake is a coordinated exchange where both sides send their config, process the remote config (calculating operating values and initializing channels), send their byte stream marker, and finally receive the remote byte stream marker.
+
+**Key Insight**: There is ONE line-based reader loop that processes both the remote config AND the remote byte stream marker. When the config is received, the reader calls a handler that completes local setup and sends our byte stream marker, then returns to the reader loop.
+
+### Phase 1: Send Local Configuration
 
 #### Step 1: Generate Transport ID (if not provided)
 
@@ -107,23 +120,23 @@ const config = {
 - Version 1 is current protocol version
 - Optional fields only included if explicitly set
 
-#### Step 3: Reserve Ring Buffer Space (Byte-Stream Transports Only)
+#### Step 3: Reserve Ring Buffer Space for Config Line (Byte-Stream Transports Only)
 
 **Actor**: Transport → OutputRingBuffer
 
-**Action**: Reserve space for handshake encoding.
+**Action**: Reserve space for greeting + config line encoding.
 
 ```javascript
-// Calculate handshake size (conservative estimate)
+// Calculate config line size (conservative estimate)
 const configJson = JSON.stringify(config);
-const handshakeSize = TRANSPORT_GREETING.length + 2 + configJson.length + 2 + 1;  // Greeting + config + marker
+const configLineSize = 1 + 15 + configJson.length + 1 + 1;  // STX + "PolyTransport:" + JSON + ETX + newline
 
 // Reserve space with exact: true (handshake is ACK-class message)
 // ACK-class messages bypass RESERVE_ACK_BYTES requirement
-const reservation = this.#outputRing.reserve(handshakeSize, { exact: true });
+const reservation = this.#outputRing.reserve(configLineSize, { exact: true });
 if (!reservation) {
 	// Wait for space (should be rare - ring is empty at start)
-	reservation = await this.#outputRing.reserveAsync(handshakeSize, { exact: true });
+	reservation = await this.#outputRing.reserveAsync(configLineSize, { exact: true });
 }
 ```
 
@@ -132,7 +145,7 @@ if (!reservation) {
 - Reservation object (VirtualRWBuffer) created
 
 **Notes**:
-- Handshake is first message, ring should be empty
+- Config line is first message, ring should be empty
 - If ring full (shouldn't happen), wait asynchronously
 - **`exact: true`** - Handshake is ACK-class (fire-and-forget, no transport budget)
 - ACK-class messages don't consume transport budget (no ACK-on-ACK)
@@ -140,52 +153,48 @@ if (!reservation) {
 
 **Architectural Reference**: [`arch/scenarios/ack-generation-processing.md`](ack-generation-processing.md) - ACK messages use ring buffer only
 
-#### Step 4: Encode Handshake Into Reservation
+#### Step 4: Encode Config Line Into Reservation
 
 **Actor**: Protocol → VirtualRWBuffer
 
-**Action**: Encode handshake directly into ring buffer reservation.
+**Action**: Encode greeting + config line directly into ring buffer reservation.
 
 ```javascript
-// Protocol.encodeHandshakeInto(target, offset, config)
-const bytesWritten = Protocol.encodeHandshakeInto(reservation, 0, config);
+// Protocol.encodeGreetingConfigInto(target, offset, config)
+const bytesWritten = Protocol.encodeGreetingConfigInto(reservation, 0, config);
 ```
 
 **Encoding Steps** (Protocol layer):
 
-1. **Transport Greeting** (15 bytes):
+1. **Greeting + Config Line** (variable length):
    ```javascript
    let o = 0; // Current write offset
    target.setUint8(o++, 0x02);  // STX
-   // Write "PolyTransport" greeting (13 bytes)
-   const { written: greetBytes } = target.encodeFrom('PolyTransport', o);
+   
+   // Write "PolyTransport:" greeting (15 bytes)
+   const { written: greetBytes } = target.encodeFrom('PolyTransport:', o);
    o += greetBytes;
-   target.setUint8(o++, 0x03);  // ETX
-   ```
-
-2. **Configuration JSON** (variable length):
-   ```javascript
-   target.setUint8(o++, 0x02);  // STX
+   
+   // Write JSON config immediately after colon
    const configJson = JSON.stringify(config);
    const { written: configBytes } = target.encodeFrom(configJson, o);
    o += configBytes;
+   
    target.setUint8(o++, 0x03);  // ETX
-   ```
-
-3. **Binary Stream Marker** (1 byte):
-   ```javascript
-   target.setUint8(o++, 0x01);  // SOH
+   target.setUint8(o++, 0x0A);  // Newline
    const bytesWritten = o;
    ```
 
 **State Changes**:
 - VirtualRWBuffer: Data written to underlying ring buffer segments
-- `bytesWritten` = actual handshake size
+- `bytesWritten` = actual config line size
 
 **Notes**:
 - Zero-copy encoding directly into ring buffer
 - No intermediate buffer allocation
 - Actual size may differ from estimate (shrink if needed)
+- Protocol constant: `GREET_CONFIG_PREFIX = '\x02PolyTransport:'`
+- Protocol constant: `GREET_CONFIG_SUFFIX = '\x03\n'`
 
 #### Step 5: Shrink Reservation (If Over-Allocated)
 
@@ -194,14 +203,14 @@ const bytesWritten = Protocol.encodeHandshakeInto(reservation, 0, config);
 **Action**: Release unused space if actual size < reserved size.
 
 ```javascript
-if (bytesWritten < handshakeSize) {
+if (bytesWritten < configLineSize) {
 	reservation.shrink(bytesWritten);
 	this.#outputRing.shrinkReservation(reservation, bytesWritten);
 }
 ```
 
 **State Changes**:
-- OutputRingBuffer: `#reserved` decreased by (handshakeSize - bytesWritten)
+- OutputRingBuffer: `#reserved` decreased by (configLineSize - bytesWritten)
 - VirtualRWBuffer: `length` updated to `bytesWritten`
 
 **Notes**:
@@ -212,7 +221,7 @@ if (bytesWritten < handshakeSize) {
 
 **Actor**: Transport → OutputRingBuffer
 
-**Action**: Mark handshake as ready to send.
+**Action**: Mark config line as ready to send.
 
 ```javascript
 this.#outputRing.commit(reservation);
@@ -221,13 +230,13 @@ this.#outputRing.commit(reservation);
 **State Changes**:
 - OutputRingBuffer: `#reserved` decreased by `bytesWritten`, `#count` increased by `bytesWritten`
 - `#writeHead` advanced by `bytesWritten` (with wrap-around)
-- Handshake now in "available" region
+- Config line now in "available" region
 
 **Notes**:
-- Handshake is now visible to `getBuffers()`
+- Config line is now visible to `getBuffers()`
 - Ready for transmission
 
-#### Step 7: Send Handshake
+#### Step 7: Send Config Line
 
 **Actor**: Transport → Underlying Connection
 
@@ -256,7 +265,7 @@ for (const buffer of buffers) {
 
 **Actor**: Transport → OutputRingBuffer
 
-**Action**: Mark handshake as sent and reclaim space.
+**Action**: Mark config line as sent and reclaim space.
 
 ```javascript
 this.#outputRing.consume(bytesWritten);
@@ -271,7 +280,7 @@ this.#outputRing.consume(bytesWritten);
 - Zero-after-write security (prevents leaking handshake data)
 - Ring buffer space reclaimed immediately
 
-### Phase 2: Handshake Reception
+### Phase 2: Configuration Reception
 
 #### Step 9: Initialize Input Accumulation Buffer
 
@@ -289,159 +298,95 @@ this.#inputBuffer = new VirtualRWBuffer();
 
 **Notes**:
 - VirtualRWBuffer accumulates data from multiple reads
-- Supports incremental decoding (arbitrary read boundaries)
+- Supports incremental line-based decoding (arbitrary read boundaries)
 - No pinning or migration complexity (simplified architecture)
 
-**Architectural Reference**: [`arch/transport-input-processing.md`](../transport-input-processing.md) - VirtualRWBuffer for input accumulation
+**Architectural Reference**: [`arch/transport-input-overview.md`](../transport-input-overview.md) - Handshake algorithm
 
-#### Step 10: Read and Accumulate Handshake Data
+#### Step 10: Process Handshake Lines (Line-Based Mode)
 
 **Actor**: Transport ← Underlying Connection
 
-**Action**: Read incoming data into reader-supplied buffers and append to accumulation buffer until SOH marker found.
+**Action**: Read incoming data and process line-by-line until binary stream marker found.
 
 ```javascript
-// Loop until SOH (switch-to-binary-stream) marker found
-let sohFound = false;
-while (!sohFound) {
-	// Read from connection into reader-supplied buffer
-	// Reader determines buffer size (not fixed 1KB)
-	const { value: buffer, done } = await this.#reader.read();
-	
-	if (done) {
-		throw new Error('Connection closed during handshake');
+// Handshake processing loop (line-based mode)
+let offset = 0;  // Read head position
+let handshakeComplete = false;
+let configReceived = false;
+
+while (!handshakeComplete) {
+	// Step 2: If at end of buffer, wait for more input
+	if (offset >= this.#inputBuffer.length) {
+		this.#ensureBytes(offset + 1);
 	}
 	
-	// Check if SOH marker (0x01) is present in newly read buffer
-	// SOH marks end of handshake and start of binary stream
-	for (let i = 0; i < buffer.length; i++) {
-		if (buffer[i] === 0x01) {
-			sohFound = true;
+	const currentByte = this.#inputBuffer.getUint8(offset);
+	
+	// Step 3: STX at non-zero offset = out-of-band data before STX
+	if (currentByte === 0x02 && offset > 0) {
+		const line = this.#inputBuffer.decode({ start: 0, end: offset });
+		this.#inputBuffer.release(offset);
+		offset = 0;
+		this.emit('outOfBandData', { data: line });
+		continue;
+	}
+	
+	// Step 4: Newline = end of line
+	if (currentByte === 0x0A) {
+		const line = this.#inputBuffer.decode({ start: 0, end: offset + 1 });
+		this.#inputBuffer.release(offset + 1);
+		offset = 0;
+		
+		// Check if binary stream marker line
+		if (line === '\x02\x01\x03\n') {
+			handshakeComplete = true;
 			break;
 		}
+		
+		// Check if transport greeting + config line
+		if (line.startsWith('\x02PolyTransport:') && line.endsWith('\x03\n') && !configReceived) {
+			// Extract JSON config (between colon and ETX)
+			const configJson = line.substring(16, line.length - 2);  // Skip "\x02PolyTransport:" and "\x03\n"
+			this.#remoteConfig = JSON.parse(configJson);
+			configReceived = true;
+		} else {
+			// Out-of-band data
+			this.emit('outOfBandData', { data: line });
+		}
+		continue;
 	}
 	
-	// Append entire reader-supplied buffer to accumulation buffer
-	this.#inputBuffer.append(buffer);
-	
-	// If SOH found, we have complete handshake (or more)
-	if (sohFound) break;
+	// Step 5: Advance read head
+	offset++;
 }
 ```
 
 **State Changes**:
-- Data read from connection
-- VirtualRWBuffer: Reader-supplied buffers appended, length increased
-- Loop continues until SOH marker found in newly read buffer
+- Data read from connection and appended to VirtualRWBuffer
+- Lines processed incrementally (out-of-band data emitted, config parsed)
+- Loop continues until binary stream marker line found
 
 **Notes**:
-- **Reader-supplied buffers**: Not fixed size (e.g., 1KB), reader determines size
-- **Scan only new buffer**: Check for SOH in newly read buffer (not all accumulated data)
-- **Accumulate entire buffers**: Append complete reader-supplied buffers (minimize copies)
-- **SOH marker**: Signals end of handshake, start of binary stream
-- **Forward-looking**: No assumptions about handshake size (supports future extensions)
-- **BYOB not required**: Works with default readers (not all readers support BYOB)
+- **Line-based processing**: Handshake uses line-oriented algorithm (transport-input-overview.md:27-51)
+- **Out-of-band data handling**: Lines without STX or without proper format are emitted as events
+- **STX/ETX markers**: Distinguish transport content from out-of-band data
+- **Greeting + config in one line**: `\x02PolyTransport:{JSON}\x03\n`
+- **Binary stream marker**: `\x02\x01\x03\n` signals switch to byte-stream mode
+- **Forward-looking**: No fixed buffer size assumptions (supports future extensions)
 - **Zero-copy**: VirtualRWBuffer references reader-supplied buffers directly
 
-**Architectural Reference**: [`arch/transport-input-processing.md:66-78`](../transport-input-processing.md:66) - VirtualRWBuffer operations
+**Architectural Reference**: [`arch/transport-input-overview.md:27-51`](../transport-input-overview.md:27) - Handshake algorithm
 
-#### Step 11: Decode Handshake (Incremental)
+#### Step 11: Validate Remote Configuration
 
-**Actor**: Protocol ← VirtualRWBuffer
+**Actor**: Transport
 
-**Action**: Parse handshake from accumulation buffer (may require multiple reads).
-
-```javascript
-// Attempt to decode handshake
-const result = Protocol.decodeHandshake(this.#inputBuffer);
-
-if (result === null) {
-	// Incomplete handshake, need more data
-	// Loop back to Step 10 (read more data)
-	return;
-}
-
-const { config, bytesConsumed } = result;
-```
-
-**Decoding Steps** (Protocol layer):
-
-1. **Verify Transport Identifier**:
-   ```javascript
-   // Check STX marker
-   if (buffer.getUint8(0) !== 0x02) return null;
-   
-   // Find ETX marker
-   let greetEnd = 1;
-   while (greetEnd < buffer.length && buffer.getUint8(greetEnd) !== 0x03) greetEnd++;
-   if (greetEnd >= buffer.length) return null;  // Incomplete
-   
-   // Decode greeting
-   const greet = buffer.decode({ start: 1, end: greetEnd });
-   if (greet !== 'PolyTransport') {
-   	throw new Error(`Invalid transport greeting: ${greet}`);
-   }
-   ```
-
-2. **Parse Configuration JSON**:
-   ```javascript
-   // Check STX marker
-   let o = greetEnd + 1;
-   if (o >= buffer.length || buffer.getUint8(o) !== 0x02) return null;
-   o++;
-   
-   // Find ETX marker
-   let configEnd = o;
-   while (configEnd < buffer.length && buffer.getUint8(configEnd) !== 0x03) configEnd++;
-   if (configEnd >= buffer.length) return null;  // Incomplete
-   
-   // Decode JSON
-   const configJson = buffer.decode({ start: o, end: configEnd });
-   const config = JSON.parse(configJson);
-   ```
-
-3. **Verify Binary Stream Marker**:
-   ```javascript
-   o = configEnd + 1;
-   if (o >= buffer.length || buffer.getUint8(o) !== 0x01) return null;  // Incomplete or invalid
-   o++;
-   
-   return { config, bytesConsumed: o };
-   ```
-
-**State Changes**:
-- Remote configuration parsed and validated
-- `bytesConsumed` = handshake size
-
-**Notes**:
-- Returns `null` if handshake incomplete (need more data)
-- Throws error if identifier invalid
-- Zero-copy decoding via VirtualBuffer
-- May require multiple read-append-decode cycles
-
-#### Step 12: Release Consumed Handshake Bytes
-
-**Actor**: Transport → VirtualRWBuffer
-
-**Action**: Remove consumed handshake bytes from accumulation buffer.
+**Action**: Verify remote config is compatible (no separate decoding step needed - already parsed in Step 10).
 
 ```javascript
-// Release consumed bytes (handshake complete)
-this.#inputBuffer.release(bytesConsumed);
-```
-
-**State Changes**:
-- VirtualRWBuffer: Consumed segments removed, length decreased
-- Any remaining data (post-handshake) stays in buffer for message processing
-
-**Notes**:
-- Frees memory from consumed segments
-- Remaining data (if any) preserved for binary message stream
-- VirtualRWBuffer automatically manages segment lifecycle
-
-**Architectural Reference**: [`arch/transport-input-processing.md:77`](../transport-input-processing.md:77) - `release()` method
-
-#### Step 13: Validate Remote Configuration
+// Config already parsed in Step 10, now validate
+const config = this.#remoteConfig;
 
 **Actor**: Transport
 
@@ -472,7 +417,7 @@ this.#remoteTransportId = config.transportId;
 - `transportId` is **required** for role determination
 - Optional fields (c2cMaxBuffer, etc.) stored for later use
 
-#### Step 13.5: Calculate Operating Configuration Values
+#### Step 12: Calculate Operating Configuration Values
 
 **Actor**: Transport
 
