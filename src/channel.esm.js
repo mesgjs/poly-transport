@@ -5,6 +5,7 @@
  */
 
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
+import { HDR_TYPE_CHAN_CONTROL, TCC_CTLM_MESG_TYPE_REG_REQ } from './protocol.esm.js';
 import { StateError, TimeoutError } from './transport/base.esm.js';
 import { TaskQueue } from '@task-queue';
 
@@ -19,34 +20,83 @@ export class Channel {
 
 	#state;
 
-	constructor ({ id, name, transport, transportToken, localMaxBufferBytes, remoteMaxBufferBytes }) {
+	/**
+	 * Channel constructor
+	 * @param {Object} config - Channel configuration
+	 * @param {number} config.id - Initial numeric channel id
+	 * @param {string} config.name - Channel name
+	 * @param {Transport} config.transport - The associated transport
+	 * @param {symbol} config.token - Unique channel auth token
+	 * @param {number} config.localLimit - Local buffer limit
+	 * @param {number} config.remoteLimit - Remote buffer limit
+	 */
+	constructor ({ id, name, transport, token, localLimit, remoteLimit }) {
 		this._setState({
 			allReader: {
 				waiting: false
 			},
-			discard: false,
-			filteredReaders: new Map(),
-			flowControl: new ChannelFlowControl(localMaxBufferBytes, remoteMaxBufferBytes),
+			controlData: null, // Accumulated control-message data (VirtualBuffer or string[])
+			discard: false, // Discard input when closing
+			disconnected: false, // Connection lost
+			filteredReaders: new Map(), // Map<type, {waiting: boolean, resolve}>
+			flowControl: new ChannelFlowControl(localLimit, remoteLimit),
 			ids: [id],
 			name,
-			messageTypes: new Map(),
+			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
 			receivedMessages: new Set(),
 			state: Channel.STATE_OPEN,
 			transport,
-			transportToken,
+			token,
 			writerQueue: new TaskQueue(),
 		});
 	}
 
 	/**
-	 * Register a new message-type string
-	 * @param {string} type - The new message-type
+	 * Register one or more message types
+	 * @param {string[]} rawTypes - The requested message-types
 	 */
-	async addMessageType (type) {
-		if (typeof type !== 'string' || type === '') {
-			throw new TypeError('addMessageType requires non-empty string type');
+	async addMessageTypes (rawTypes) {
+		const types = Array.isArray(rawTypes) && rawTypes.filter((type) => typeof type === string && type !== '');
+		if (!types?.length) {
+			return Promise.resolve();
 		}
-		// TO DO: IMPLEMENT
+		const state = this.#state, { messageTypes } = state;
+		const newTypes = [], promises = [];
+
+		// Check the current status of each type
+		for (const type of types) {
+			let entry = messageTypes.get(type);
+			// Ignore types that already have assigned ids
+			if (Number.isInteger(entry?.ids[0])) continue;
+
+			// Wait on existing request if already pending
+			if (entry?.promise) {
+				promises.push(entry.promise);
+				continue;
+			}
+
+			// Handle first-time requests
+			newTypes.push(type);
+			entry = { ids: [], type };
+			const promise = entry.promise = new Promise((...r) => [entry.resolve, entry.reject] = r);
+			promises.push(promise);
+		}
+
+		if (newTypes.length) {
+			// Send message requesting remote registration of new types
+			const { transport, token } = state;
+			const data = JSON.stringify({
+				request: newTypes
+			});
+			await transport.sendMessage(token, {
+				channelId: state.ids[0],
+				eom: true,
+				messageType: TCC_CTLM_MESG_TYPE_REG_REQ[0],
+				type: HDR_TYPE_CHAN_CONTROL,
+			}, data);
+		}
+
+		return Promise.all(promises);
 	}
 
 	/**
@@ -54,7 +104,10 @@ export class Channel {
 	 * @param {Object} options
 	 * @param {boolean} options.discard - Discard incoming data
 	 */
-	async close ({ discard = false } = {}) {
+	async close ({ discard = false, disconnected = false } = {}) {
+		const state = this.#state;
+		if (discard) state.discard = true;
+		if (disconnected) state.disconnected = true;
 		// TO DO: IMPLEMENT
 	}
 
@@ -74,8 +127,20 @@ export class Channel {
 	}
 
 	/**
+	 * Return the message-type ids and name for a message type by name or id
+	 * @param {string|number} type - The message type
+	 * @returns {number|undefined} The message-type id
+	 */
+	getMessageType (type) {
+		const state = this.#state, { messageTypes } = state;;
+		const entry = messageTypes.get(type);
+		const { ids, name } = entry;
+		return { ids, name };
+	}
+
+	/**
 	 * Return normalized message-type filter set
-	 * @param {undefined|number|string|Array|Set} spec - ID specification 
+	 * @param {undefined|number|string|Array|Set} spec - ID specification
 	 * @returns {IdSet}
 	 */
 	_getTypeIdSet (spec) {
@@ -134,7 +199,7 @@ export class Channel {
 
 	/**
 	 * Return the channel even and/or odd ids
-	 * The idsRW form takes a transport auth token and provides direct, raw access for id updates
+	 * The idsRW form takes a channel auth token and provides direct, raw access for id updates
 	 */
 	get ids () {
 		const state = this.#state;
@@ -142,7 +207,7 @@ export class Channel {
 	}
 	idsRW (token) {
 		const state = this.#state;
-		return (token && (token === state.transportToken) && state.ids);
+		return (token && (token === state.token) && state.ids);
 	}
 
 	/**
@@ -156,10 +221,10 @@ export class Channel {
 	/**
 	 * Read a message from the channel, possibly filtering for one or more specific message
 	 * types, waiting if necessary for a suitable match
-	 * @param {Object} options 
+	 * @param {Object} options
 	 * @param {undefined|number|string|Array|Set} options.only - Message-type(s) of reader(s) to check
 	 * @param {number|undefined} options.timeout - Maximum time to wait (in msec)
-	 * @returns 
+	 * @returns
 	 */
 	async read ({ only, timeout } = {}) {
 		const idSet = this._getTypeIdSet(only);
@@ -208,7 +273,7 @@ export class Channel {
 	 * If there are no conflicting readers, return a matching message (if any) now
 	 * @param {Object} options
 	 * @param {Object} options.only
-	 * @returns 
+	 * @returns
 	 */
 	readSync ({ only } = {}) {
 		const idSet = this._getTypeIdSet(only);
@@ -220,8 +285,8 @@ export class Channel {
 
 	/**
 	 * Post-validation common-code for reading a message
-	 * @param {*} idSet 
-	 * @returns 
+	 * @param {*} idSet
+	 * @returns
 	 */
 	#readSync (idSet) {
 		const state = this.#state;
@@ -294,15 +359,15 @@ export class Channel {
 		const flow = state.flowControl;
 		const { baseSequence, ranges } = header;
 		const freed = flow.processAck(baseSequence, ranges);
-		const { transport, transportToken: token } = state;
+		const { transport, token } = state;
 		// TO DO: FINISH IMPLEMENTATION
 		// transport.someMethod(token, freed);
 	}
 
 	/**
 	 * Process a channel control-message from the remote
-	 * @param {Object} header 
-	 * @param {*} data 
+	 * @param {Object} header
+	 * @param {*} data
 	 */
 	#receiveControlMessage (header, data) {
 		const { messageType } = header;
@@ -345,7 +410,7 @@ export class Channel {
 	 */
 	receiveMessage (token, header, data) {
 		const state = this.#state;
-		if (!token || token !== state.transportToken) {
+		if (!token || token !== state.token) {
 			throw new Error('Unauthorized receiveMessage');
 		}
 
@@ -372,10 +437,10 @@ export class Channel {
 	}
 
 	/**
-	 * 
+	 *
 	 * @param {number|string} type - The message type
-	 * @param {*} source 
-	 * @param {*} param2 
+	 * @param {*} source
+	 * @param {*} options
 	 */
 	async write (type, source, { byteLength, eom = true, timeout } = {}) {
 		// TO DO: IMPLEMENT

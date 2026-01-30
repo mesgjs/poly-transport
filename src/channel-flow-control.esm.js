@@ -12,16 +12,14 @@ export { ProtocolViolationError };
 
 /**
  * ChannelFlowControl manages inbound and outbound data flow for a channel.
- * Note: It is not transport-flow-control-aware. Channel operations are
- * responsible for coordinating that.
  *
  * For inbound traffic, it tracks received chunks, validates sequence order
  * and budget, and generates ACK information for sending to remote.
  *
  * Key Features:
- * - Tracks received chunks (received but not consumed)
- * - Validates sequence order (out-of-order is ProtocolViolationError)
- * - Validates budget (over-budget is ProtocolViolationError)
+ * - Tracks received chunks (received but not processed)
+ * - Validates sequence order (out-of-order is protocol violation)
+ * - Validates budget (over-budget is protocol violation)
  * - Generates range-based ACK information
  * - Budget includes ALL channel message headers (control and data)
  *
@@ -38,158 +36,150 @@ export { ProtocolViolationError };
  */
 export class ChannelFlowControl {
 	// Private inbound state
-	#localMaxBufferBytes;   // Max buffer bytes we're willing to receive
-	#nextExpectedSeq;       // Next expected sequence number
-	#receivedChunks;        // Map<seq, {bytes, consumed}> from receipt to ACK queued
-	#receivedBytes;         // Total bytes received but not yet ACK'd
+	#ackable;      // Number of ACKable *read* sequence numbers
+	#nextReadSeq;  // Sequence number expected to be received next
+	#read;         // Total bytes received remaining to be locally ACK'd
+	#readAckInfo;  // Map<seq, {bytes, processed}> from receipt to ACK queued
+	#readLimit;    // Max read (local buffer) limit
 
 	// Private outbound state
-	#remoteMaxBufferBytes;  // Max buffer bytes remote is willing to receive
-	#nextSendSeq;           // Next sequence number to assign
-	#inFlightChunks;        // Map<seq, bytes> of sent but not ACK'd chunks
-	#inFlightBytes;         // Total bytes in flight
-	#waiter;                // Single { bytes, resolve } for waiting sender (TaskQueue ensures serialization)
+	#nextWriteSeq; // Sequence number to use on next send
+	#writeAckInfo; // Map<seq, {bytes}> of sent but not ACK'd chunks
+	#writeLimit;   // Max buffer bytes remote is willing to receive
+	#writer;       // { bytes, resolve } for TaskQueue-serialized waiting writer
+	#written;      // Total bytes sent remaining to be remotely ACK'd
 
 	/**
 	 * Create a new FlowControl instance.
 	 *
-	 * @param {number} localMaxBufferBytes - Max buffer bytes we're willing to receive (0 = unlimited)
-	 * @param {number} remoteMaxBufferBytes - Max buffer bytes remote is willing to receive (0 = unlimited)
+	 * @param {number} readLimit - Max buffer bytes we're willing to receive (0 = unlimited)
+	 * @param {number} writeLimit - Max buffer bytes remote is willing to receive (0 = unlimited)
 	 */
-	constructor (localMaxBufferBytes, remoteMaxBufferBytes) {
-		this.#localMaxBufferBytes = localMaxBufferBytes;
-		this.#nextExpectedSeq = 1;  // Sequence numbers start at 1
-		this.#receivedChunks = new Map();
-		this.#receivedBytes = 0;
+	constructor (readLimit, writeLimit) {
+		this.#ackable = 0;
+		this.#nextReadSeq = 1;  // Sequence numbers start at 1
+		this.#read = 0;
+		this.#readAckInfo = new Map();
+		this.#readLimit = readLimit;
 		
-		this.#remoteMaxBufferBytes = remoteMaxBufferBytes;
-		this.#nextSendSeq = 1;  // Sequence numbers start at 1
-		this.#inFlightChunks = new Map();
-		this.#inFlightBytes = 0;
-		this.#waiter = null;
+		this.#nextWriteSeq = 1;  // Sequence numbers start at 1
+		this.#writeAckInfo = new Map();
+		this.#writeLimit = writeLimit;
+		this.#writer = null;
+		this.#written = 0;
 	}
 
 	/**
-	 * Get the available buffer space (bytes available to receive).
-	 * @returns {number} Available bytes to receive (Infinity if unlimited)
+	 * Return count of ACKable sequences
 	 */
-	get bufferAvailable () {
-		if (this.#localMaxBufferBytes === 0) {
-			return Infinity;
-		}
-		return Math.max(0, this.#localMaxBufferBytes - this.#receivedBytes);
+	get ackable () {
+		return this.#ackable;
 	}
 
 	/**
-	 * Get the current buffer usage (bytes received but not consumed).
-	 * @returns {number} Bytes currently in receive buffer
-	 */
-	get bufferUsed () {
-		return this.#receivedBytes;
-	}
-
-	/**
-	 * Check if we can send the specified number of bytes.
-	 * @param {number} chunkBytes - Number of bytes to send (header + data)
-	 * @returns {boolean} True if sufficient budget available
-	 */
-	canSend (chunkBytes) {
-		const budget = this.sendingBudget;
-		return budget === Infinity || budget >= chunkBytes;
-	}
-
-	/**
-	 * Check for waiter and wake up if sufficient budget is now available.
-	 * Note: TaskQueue ensures only one chunk waiting at a time per channel.
-	 * @private
-	 */
-	#checkWaiter () {
-		// Check if there's a waiter and if budget is now sufficient
-		if (this.#waiter) {
-			const budget = this.sendingBudget;
-			if (budget === Infinity || budget >= this.#waiter.bytes) {
-				// Wake up the waiter
-				const waiter = this.#waiter;
-				this.#waiter = null;
-				waiter.resolve();
-			}
-		}
-	}
-
-	/**
-	 * Clear ACK'd chunks from tracking.
-	 * Should be called after ACK is sent to remote.
-	 * @param {number} baseSeq - Base sequence number from ACK
+	 * Common code to clear ACK'd sequences from tracking.
+	 * @param {number} base - Base sequence number from ACK
 	 * @param {number[]} ranges - Ranges from ACK
-	 * @returns {number} Number of bytes freed
+	 * @param {Map<seq, {bytes}} seqMap - The sequence map from which to clear ACKS
+	 * @param {number|undefined} nextSeq - The next sequence number
+	 * @returns {{acks: number, bytes: number, duplicate: number, premature: number}} Number of: ACKs, ACK'd bytes, duplicate sequences, and premature sequences
 	 */
-	clearAcked (baseSeq, ranges) {
-		let bytesFreed = 0;
+	#clearAckInfo (base, ranges, seqMap, nextSeq) {
+		let acks = 0, bytes = 0, duplicate = 0, premature = 0;
 
 		// Helper to clear a single ACK'd sequence
 		const clearSequence = (seq) => {
-			const entry = this.#receivedChunks.get(seq);
-			if (entry !== undefined) {
-				this.#receivedChunks.delete(seq);
-				this.#receivedBytes -= entry.bytes;
-				bytesFreed += entry.bytes;
+			if (typeof nextSeq === 'number' && seq >= nextSeq) {
+				++premature;
+				return;
+			}
+			const info = seqMap.get(seq);
+			if (info) {
+				seqMap.delete(seq);
+				++acks;
+				bytes += info.bytes;
+			} else {
+				++duplicate;
 			}
 		};
 
-		clearSequence(baseSeq); // Always!
-		// Process include + skip ranges, if any
-		let currentSeq = baseSeq;
+		clearSequence(base); // Always!
+		// Process additional + skip ranges, if any
+		let current = base;
 		for (let i = 0; i < ranges.length; i += 2) {
-			const [include, skip = 0] = ranges.slice(i, i + 2);
+			const [additional, skip = 0] = ranges.slice(i, i + 2);
 
-			// Include range: clear these sequences
-			for (let j = 0; j < include; j++) {
-				clearSequence(++currentSeq);
+			// Additional range: clear these sequences
+			for (let j = 0; j < additional; j++) {
+				clearSequence(++current);
 			}
 			// Skip range: don't clear these sequences
-			currentSeq += skip;
+			current += skip;
 		}
 
-		return bytesFreed;
+		return { acks, bytes, duplicate, premature };
+	}
+
+	/**
+	 * Clear read info and recover read budget for processed sequences
+	 * @param {number} base
+	 * @param {number[]} ranges
+	 * @returns {{ acks, bytes, duplicate, premature }}
+	 */
+	clearReadAckInfo (base, ranges) {
+		const result = this.#clearAckInfo(base, ranges, this.#readAckInfo, this.#nextReadSeq);
+		this.#ackable -= result.acks;
+		this.#read -= result.bytes;
+		return result;
+	}
+
+	/**
+	 * Clear write info for ACKs received from the remote and recover write budget
+	 * @param {*} base
+	 * @param {*} ranges
+	 * @returns {{ acks, bytes, duplicate, premature }}
+	 */
+	clearWriteAckInfo (base, ranges) {
+		const result = this.#clearAckInfo(base, ranges, this.#writeAckInfo, this.#nextWriteSeq);
+		this.#written -= result.bytes;
+		return result;
 	}
 
 	/**
 	 * Get acknowledgment information for sending to remote.
-	 * Returns base sequence and ranges for all CONSUMED chunks only.
-	 * Large include/skip counts (>255) are split into multiple range entries.
-	 * Enforces max 255 total ranges (include + skip, including 0-continuations).
+	 * Returns base sequence and up to 255 ranges (additional + skip,
+	 * including 0-continuations) for processed chunks.
+	 * Large additional/skip counts (>255) are split into multiple range entries.
 	 *
-	 * Note: Sequences are guaranteed to be in order (recordReceived enforces this).
-	 * No sorting needed.
+	 * Note: Sequences are guaranteed to be in order (`received` enforces this).
 	 *
-	 * @returns {{ baseSeq: number, ranges: number[] } | null} ACK info or null if nothing to ACK
+	 * @returns {{ base: number, ranges: number[] } | null} ACK info or null if nothing to ACK
 	 */
 	getAckInfo () {
 		// Filter for consumed chunks only (no sorting needed - already in order)
-		const consumedSeqs = [];
-		for (const [seq, entry] of this.#receivedChunks) {
-			if (entry.consumed) {
-				consumedSeqs.push(seq);
+		const processed = [];
+		for (const [seq, info] of this.#readAckInfo) {
+			if (info.processed) {
+				processed.push(seq);
 			}
 		}
 
-		if (consumedSeqs.length === 0) {
+		if (processed.length === 0) {
 			return null;
 		}
 
-		const baseSeq = consumedSeqs[0];
+		const base = processed[0];
 
 		// If only one sequence, return simple ACK
-		if (consumedSeqs.length === 1) {
-			return { baseSeq, ranges: [] };
+		if (processed.length === 1) {
+			return { base, ranges: [] };
 		}
 
 		// Build range-based ACK with proper splitting for values >255
-		const ranges = [];
+		const ranges = [], MAX_RANGES = 255;
 		let rangeCount = 0;  // Track total ranges (must not exceed 255)
-		const MAX_RANGES = 255;
 
-		// Helper to add a count (include or skip), splitting if >255
+		// Helper to add a count (additional or skip), splitting if >255
 		// Returns false if we hit the range limit
 		const addCount = (count) => {
 			while (count > 255) {
@@ -208,36 +198,36 @@ export class ChannelFlowControl {
 			return true;
 		};
 
-		let currentSeq = baseSeq + 1;  // Start after base
-		let includeCount = 0; // Only base so far
+		let currentSeq = base + 1;  // Start after base
+		let additional = 0; // Only base so far
 
-		for (let i = 1; i < consumedSeqs.length; i++) {
-			const seq = consumedSeqs[i];
+		for (let i = 1; i < processed.length; i++) {
+			const seq = processed[i];
 			const gap = seq - currentSeq;
 
 			if (gap === 0) {
 				// Consecutive sequence
-				includeCount++;
+				additional++;
 			} else {
-				// Gap detected - flush include, add skip, start new include
-				if (!addCount(includeCount)) {
+				// Gap detected - flush additional, add skip, start new additional
+				if (!addCount(additional)) {
 					break;  // Hit range limit
 				}
 				if (!addCount(gap)) {
 					break;  // Hit range limit
 				}
-				includeCount = 1;
+				additional = 1;
 			}
 
 			currentSeq = seq + 1;
 		}
 
-		// Add final include count
-		if (includeCount > 0) {
-			addCount(includeCount);
+		// Add final additional count
+		if (additional > 0) {
+			addCount(additional);
 		}
 
-		return { baseSeq, ranges };
+		return { base, ranges };
 	}
 
 	/**
@@ -246,205 +236,151 @@ export class ChannelFlowControl {
 	 */
 	getStats () {
 		return {
-			localMaxBufferBytes: this.#localMaxBufferBytes,
-			nextExpectedSeq: this.#nextExpectedSeq,
-			receivedChunks: this.#receivedChunks.size,
-			receivedBytes: this.#receivedBytes,
-			bufferUsed: this.bufferUsed,
-			bufferAvailable: this.bufferAvailable,
+			nextReadSeq: this.#nextReadSeq,
+			read: this.#read,
+			readAckInfo: this.#readAckInfo.size,
+			readBudget: this.readBudget,
+			readLimit: this.#readLimit,
 
-			remoteMaxBufferBytes: this.#remoteMaxBufferBytes,
-			nextSendSeq: this.#nextSendSeq,
-			inFlightChunks: this.#inFlightChunks.size,
-			inFlightBytes: this.#inFlightBytes,
-			sendingBudget: this.sendingBudget,
-			waiter: this.#waiter ? this.#waiter.bytes : null,
+			nextWriteSeq: this.#nextWriteSeq,
+			writeAckInfo: this.#writeAckInfo.size,
+			writeBudget: this.writeBudget,
+			writeLimit: this.#writeLimit,
+			written: this.#written,
+			writer: this.#writer ? this.#writer.bytes : null,
 		};
 	}
 
 	/**
-	 * Get the total bytes currently in flight.
-	 * @returns {number} Bytes in flight
-	 */
-	get inFlightBytes () {
-		return this.#inFlightBytes;
-	}
-
-	/**
-	 * Get the maximum buffer bytes we're willing to receive.
-	 * @returns {number} Max buffer bytes (0 = unlimited)
-	 */
-	get localMaxBufferBytes () {
-		return this.#localMaxBufferBytes;
-	}
-
-	/**
-	 * Get the next expected sequence number.
-	 * @returns {number} Next expected sequence number
-	 */
-	get nextExpectedSeq () {
-		return this.#nextExpectedSeq;
-	}
-
-	/**
-	 * Process an acknowledgment and restore sending budget.
-	 * ACKs use range-based encoding: base sequence + alternating include/skip ranges.
-	 * Each range value is 0-255, so large ranges are split into multiple entries.
-	 *
-	 * Validates:
-	 * - No duplicate ACKs (ACKing same sequence twice is ProtocolViolationError)
-	 * - No ACKs beyond assigned (ACKing sequence >= nextSendSeq is ProtocolViolationError)
-	 *
-	 * @param {number} baseSeq - Base sequence number
-	 * @param {number[]} ranges - Array of alternating include/skip quantities (each 0-255)
-	 *                            [include1, skip1, include2, skip2, ...]
-	 *                            Range count should be 0 or odd (end with include)
-	 * @returns {number} Number of bytes freed by this ACK
-	 * @throws {ProtocolViolationError} If duplicate ACK or ACK beyond assigned
-	 */
-	processAck (baseSeq, ranges) {
-		let bytesFreed = 0;
-
-		// Helper to process a single ACK'd sequence
-		const ackSequence = (seq) => {
-			// Validate ACK is not beyond assigned
-			if (seq >= this.#nextSendSeq) {
-				throw new ProtocolViolationError('PrematureAck', {
-					sequence: seq,
-					nextSendSeq: this.#nextSendSeq,
-					reason: 'ACK beyond assigned sequence',
-				});
-			}
-
-			const bytes = this.#inFlightChunks.get(seq);
-			if (bytes !== undefined) {
-				this.#inFlightChunks.delete(seq);
-				this.#inFlightBytes -= bytes;
-				bytesFreed += bytes;
-			} else {
-				// Duplicate ACK (already ACK'd)
-				throw new ProtocolViolationError('DuplicateAck', {
-					sequence: seq,
-					reason: 'Sequence already acknowledged',
-				});
-			}
-		};
-
-		ackSequence(baseSeq);
-		// Process alternating include/skip ranges, if present
-		let currentSeq = baseSeq;
-		for (let i = 0; i < ranges.length; i += 2) {
-			const [include, skip = 0] = ranges.slice(i, i + 2);
-			
-			// Include range: ACK these sequences
-			for (let j = 0; j < include; ++j) {
-				ackSequence(++currentSeq);
-			}
-			// Skip range: don't ACK these sequences
-			currentSeq += skip;
-		}
-
-		// If there's a waiter and sufficient budget, wake it
-		this.#checkWaiter();
-
-		return bytesFreed;
-	}
-
-	/**
-	 * Mark a chunk as consumed (ready to ACK).
+	 * Mark a read sequence processed (ready to ACK).
 	 * The chunk remains tracked until ACK is sent and clearAcked() is called.
 	 * @param {number} seq - Sequence number of consumed chunk
 	 * @returns {boolean} True if chunk was found and marked consumed
 	 */
-	recordConsumed (seq) {
-		const entry = this.#receivedChunks.get(seq);
-		if (entry !== undefined && !entry.consumed) {
-			entry.consumed = true;
+	markProcessed (seq) {
+		const entry = this.#readAckInfo.get(seq);
+		if (entry !== undefined && !entry.processed) {
+			entry.processed = true;
 			return true;
 		}
 		return false;
 	}
 
 	/**
-	 * Record a received chunk and consume receive buffer space.
+	 * Get the next expected read sequence number.
+	 * @returns {number} Next expected read sequence number
+	 */
+	get nextReadSeq () {
+		return this.#nextReadSeq;
+	}
+
+	/**
+	 * Get the next write sequence number.
+	 * @returns {number} Next write sequence number
+	 */
+	get nextWriteSeq () {
+		return this.#nextWriteSeq;
+	}
+
+	/**
+	 * Get the read budget (negative if over budget, Infinity if unlimited)
+	 * @returns {number} Available budget in bytes
+	 */
+	get readBudget () {
+		if (this.#readLimit === 0) return Infinity;
+		return this.#readLimit - this.#read;
+	}
+
+	/**
+	 * Get the maximum buffer bytes we're willing to receive.
+	 * @returns {number} Max buffer bytes (0 = unlimited)
+	 */
+	get readLimit () {
+		return this.#readLimit;
+	}
+
+	/**
+	 * Record a received sequence and track bytes received.
 	 * Validates sequence order and budget.
 	 *
 	 * @param {number} seq - Sequence number of received chunk
-	 * @param {number} chunkBytes - Number of bytes received (header + data)
+	 * @param {number} bytes - Number of bytes received
 	 * @throws {ProtocolViolationError} If sequence is out of order or over budget
 	 */
-	recordReceived (seq, chunkBytes) {
+	received (seq, bytes) {
 		// Validate sequence order
-		if (seq !== this.#nextExpectedSeq) {
-			throw new ProtocolViolationError('OutOfOrder', {
-				expected: this.#nextExpectedSeq,
+		if (seq !== this.#nextReadSeq) {
+			throw new ProtocolViolationError('Sequence out of order', {
+				expected: this.#nextReadSeq,
 				received: seq,
 			});
 		}
 
 		// Validate budget
-		const available = this.bufferAvailable;
-		if (available !== Infinity && chunkBytes > available) {
-			throw new ProtocolViolationError('OverBudget', {
+		const available = this.readBudget;
+		if (bytes > available) {
+			throw new ProtocolViolationError('Over budget', {
 				available,
-				requested: chunkBytes,
+				requested: bytes,
 			});
 		}
 
 		// Record the chunk (not yet consumed)
-		this.#receivedChunks.set(seq, { bytes: chunkBytes, consumed: false });
-		this.#receivedBytes += chunkBytes;
-		this.#nextExpectedSeq++;
+		this.#readAckInfo.set(seq, { bytes, processed: false });
+		++this.#ackable;
+		this.#read += bytes;
+		++this.#nextReadSeq;
 	}
-
 	/**
-	 * Record a sent chunk and consume sending budget.
-	 * @param {number} chunkBytes - Number of bytes sent (header + data)
-	 * @returns {number} Sequence number assigned to this chunk
+	 * Record sent bytes, attributed to the next sequence number
+	 * @param {number} bytes - The number of bytes in the chunk
 	 */
-	recordSent (chunkBytes) {
-		const seq = this.#nextSendSeq++;
-		this.#inFlightChunks.set(seq, chunkBytes);
-		this.#inFlightBytes += chunkBytes;
-		return seq;
+	sent (bytes) {
+		const seq = this.#nextWriteSeq++;
+		this.#writeAckInfo.set(seq, { bytes });
 	}
 
 	/**
 	 * Get the maximum buffer bytes remote is willing to receive.
 	 * @returns {number} Max buffer bytes (0 = unlimited)
 	 */
-	get remoteMaxBufferBytes () {
-		return this.#remoteMaxBufferBytes;
-	}
-
-	/**
-	 * Get the current sending budget (bytes available to send).
-	 * Budget = remote max - in-flight bytes (or unlimited if remote max is 0)
-	 * @returns {number} Available bytes to send (Infinity if unlimited)
-	 */
-	get sendingBudget () {
-		if (this.#remoteMaxBufferBytes === 0) {
-			return Infinity;
-		}
-		return Math.max(0, this.#remoteMaxBufferBytes - this.#inFlightBytes);
+	get writeLimit () {
+		return this.#writeLimit;
 	}
 
 	/**
 	 * Wait for sufficient budget to send the specified number of bytes.
 	 * Resolves immediately if sufficient budget is available.
-	 * @param {number} chunkBytes - Number of bytes to send (header + data)
+	 * @param {number} bytes - Total number of bytes we want to send (header (for byte-streams) + data)
 	 * @returns {Promise<void>} Resolves when budget is available
 	 */
-	async waitForBudget (chunkBytes) {
+	async writable (bytes) {
 		// If we can send now, resolve immediately
-		if (this.canSend(chunkBytes)) {
+		if (this.writeBudget > bytes) {
 			return;
 		}
 
 		// Otherwise, wait for budget to become available
 		// Note: TaskQueue ensures only one chunk waiting at a time per channel
 		return new Promise((resolve) => {
-			this.#waiter = { bytes: chunkBytes, resolve };
+			this.#writer = { bytes, resolve };
 		});
+	}
+
+	/**
+	 * Get the write budget (Infinity if unlimited)
+	 * @returns {number} Available budget in bytes
+	 */
+	get writeBudget () {
+		if (this.#writeLimit === 0) return Infinity;
+		return this.#writeLimit - this.#written;
+	}
+
+	/**
+	 * Get the total bytes currently in flight.
+	 * @returns {number} Bytes in flight
+	 */
+	get written () {
+		return this.#written;
 	}
 }

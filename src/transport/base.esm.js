@@ -1,12 +1,10 @@
-// Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
+/*
+ * Transport Base Class
+ *
+ * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
+ */
 
 import { Eventable } from '@eventable';
-import {
-	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
-	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
-	decodeAckHeaderFrom, decodeChannelHeaderFrom, encAddlToTotal
-} from './protocol.esm.js';
-import { VirtualRWBuffer } from './virtual-buffer.esm.js';
 
 /**
  * Transport Base Class
@@ -34,16 +32,15 @@ export class Transport extends Eventable {
 			channelDefaults: {
 				maxBufferBytes: 0,      // 0 = unlimited
 				maxChunkBytes: 0,       // 0 = transport limit
-				maxMessageBytes: 0,     // 0 = unlimited
 				lowBufferBytes: 1024,   // low-water mark
 			},
-			channels: new Map(),
+			channels: new Map(), // ids / name / token -> channel
+			channelTokens: new Map(), // token <-> channel
 			id: crypto.randomUUID(),
-			inputBuffer: new VirtualRWBuffer(),
 			logger: options.logger || console,
 			logSymbol: Symbol('log'),
+			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
 			pool: options.pool,
-			readerTimer: null,
 			started: false,
 			stoppped: false,
 			tccSymbol: Symbol('TCC'),
@@ -81,116 +78,6 @@ export class Transport extends Eventable {
 			ids[1] = id; // New id is larger: append
 		}
 		return true;
-	}
-
-	/**
-	 * Byte-stream transport reader task
-	 * Handles:
-	 * Line-based greeting + configuration and switch-to-byte-stream
-	 * Message-based ACK and channel messages
-	 */
-	async #byteReader () {
-		const state = this.#state;
-		const input = state.inputBuffer;
-		const newLine = 10, stx = 2;
-		let firstConfig = true;
-		let offset = 0;
-
-		// Line-based config/handshake loop
-		while (!state.stopped) {
-			if (offset === input.length) {
-				await this.ensureBytes(offset + 1);
-			}
-
-			const nextByte = input.getUint8(offset);
-
-			if (nextByte === stx && offset > 0) {
-				const line = input.decode({ end: offset });
-				input.release(offset);
-				offset = 0;
-				await this._dispatchEvent('outOfBandData', { data: line });
-				continue;
-			}
-
-			if (nextByte === newLine) {
-				const line = input.decode({ end: offset });
-				input.release(offset);
-				offset = 0;
-
-				if (line === START_BYTE_STREAM) break;
-				if (line.startswith(GREET_CONFIG_PREFIX) && line.endsWith(GREET_CONFIG_SUFFIX) && firstConfig) {
-					try {
-						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
-						firstConfig = false;
-						await this.onRemoteConfig(config);
-					} catch (_e) { /**/ }
-				} else {
-					await this._dispatchEvent('outOfBandData', { data: line });
-				}
-				continue;
-			}
-
-			++offset;
-		}
-
-		// Byte-stream-based message loop
-		while (!state.stopped) {
-			// Read a message header
-			if (input.length < 2) {
-				await this.ensureBytes(2);
-			}
-			const type = input.getUint8(0);
-			const encAddl = input.getUint8(1);
-			const totalHeaderSize = encAddlToTotal(encAddl);
-			if (input.length < totalHeaderSize) {
-				await this.ensureBytes(totalHeaderSize);
-			}
-
-			let header;
-			let data = null;
-
-			switch (type) {
-			case HDR_TYPE_ACK:
-				header = decodeAckHeaderFrom(input);
-				break;
-			case HDR_TYPE_CHAN_CONTROL:
-			case HDR_TYPE_CHAN_DATA:
-			{
-				header = decodeChannelHeaderFrom(input);
-				break;
-			}
-			default:
-			 	// TO DO: Replace/update this placeholder code
-				// Protocol violation: unknown header type
-				await this._dispatchEvent('protocolViolation', {});
-				continue;
-			}
-
-			input.release(totalHeaderSize, state.pool);
-			const dataSize = header.dataSize ?? 0;
-			if (dataSize > 0 && !state.stopped) {
-				if (dataSize > input.length) {
-					await this.ensureBytes(dataSize);
-				}
-				data = input.slice(0, dataSize).toPool(state.pool);
-				input.release(dataSize, state.pool);
-			}
-
-			if (state.stopped) break;
-
-			const channelId = header.channelId;
-			const channel = this.getChannel(channelId, state);
-
-			if (!channel) {
-			 	// TO DO: Replace/update this placeholder code
-				// Protocol violation: unknown channel id
-				await this._dispatchEvent('protocolViolation', {});
-				continue;
-			}
-
-			// Dispatch the message to the appropriate channel for processing
-			channel.receiveMessage(this, header, data);
-		}
 	}
 
 	/**
@@ -271,6 +158,14 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Return transport-level maxChunkBytes
+	 */
+	get maxChunkBytes () {
+		const state = this.#state;
+		return state.maxChunkBytes;
+	}
+
+	/**
 	 * Request a new channel
 	 * @param {string} Name - Channel name
 	 * @param {Object} options - Request options
@@ -308,9 +203,6 @@ export class Transport extends Eventable {
 		if (Number.isInteger(maxChunkBytes) && maxChunkBytes >= 0) {
 			defaults.maxChunkBytes = maxChunkBytes;
 		}
-		if (Number.isInteger(maxMessageBytes) && maxMessageBytes >= 0) {
-			defaults.maxMessageBytes = maxMessageBytes;
-		}
 		if (Number.isInteger(lowBufferBytes) && lowBufferBytes > 0) {
 			defaults.lowBufferBytes = lowBufferBytes;
 		}
@@ -346,8 +238,6 @@ export class Transport extends Eventable {
 		state.started = true;
 		await this._start(state);
 
-		this._startReader();
-
 		// TO DO:
 		// * Send our local configuration
 		// * Start our reader task
@@ -357,18 +247,6 @@ export class Transport extends Eventable {
 		//   * calculates operating "min" values
 		//   * activates foundational channels
 		//   * sends our start-byte-stream sequence to switch remote reader mode
-	}
-
-	/*
-	 * Start the reading task
-	 * This version starts the default byte-stream reader
-	 * Other (e.g. non-byte-stream) transports should override as required
-	 */
-	_startReader () {
-		const state = this.#state;
-		if (!state.readerTimer) {
-			state.readerTimer = setTimeout(() => this.#byteReader(), 0);
-		}
 	}
 
 	/**
@@ -439,37 +317,27 @@ export class Transport extends Eventable {
 	 * Send a message (subclass implementation)
 	 * @protected
 	 * @abstract
-	 * @param {number} channelId - Channel ID
-	 * @param {Object} message - Message to send
-	 * @returns {Promise<void>}
 	 */
-	async _sendMessage (channelId, message) {
-		// TO DO:
-		// Should (almost certainly) be a public method (called by channel)
-		// Should (probably) accept (headerObject, data)
-		// Base should probably implement byte-stream-style encode + send
-		// Worker subclass can override to use postMessage
-		throw new Error('transport._sendMessage() must be implemented by subclass');
+	sendMessage () {
+		throw new Error('transport.sendMessage implementation is missing');
 	}
 
 	/**
 	 * Start the transport (subclass implementation)
 	 * @protected
 	 * @abstract
-	 * @returns {Promise<void>}
 	 */
-	async _start () {
-		throw new Error('transport._start() must be implemented by subclass');
+	_start () {
+		throw new Error('transport._start implementation is missing');
 	}
 
 	/**
 	 * Stop the transport (subclass implementation)
 	 * @protected
 	 * @abstract
-	 * @returns {Promise<void>}
 	 */
-	async _stop () {
-		throw new Error('transport._stop() must be implemented by subclass');
+	_stop () {
+		throw new Error('transport._stop implementation is missing');
 	}
 }
 

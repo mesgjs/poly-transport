@@ -1,13 +1,5 @@
 /*
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
- *
- * OutputRingBuffer - Circular buffer for streaming output with zero-copy writing
- *
- * Simplified architecture (Update 2026-01-07-B):
- * - Output-only ring buffer (no input ring, no pinning, no migration)
- * - Reserve → commit → getBuffers → consume lifecycle
- * - Zero-after-write security (prevents data leakage)
- * - Integration with VirtualRWBuffer for zero-copy writing
  */
 
 import { VirtualRWBuffer } from './virtual-buffer.esm.js';
@@ -16,23 +8,24 @@ import { VirtualRWBuffer } from './virtual-buffer.esm.js';
  * OutputRingBuffer - Circular buffer for streaming output
  *
  * Lifecycle:
+ * - Content assembly
  * 1. reserve(length) - Reserve space for writing (returns VirtualRWBuffer or null)
- * 2. shrink(newLength) - Shrink the reservation if some space was unused
- * 3. commit() - Mark data as ready to send
- * 4. getBuffers(length) - Get actual Uint8Array buffers for writing (may be 1 or 2 if wrapped)
- * 5. consume(length) - Consume sent data and zero the space
- *
- * Security: Zero-after-write prevents leaking bytes from previous iterations
+ * 2. commit() - Mark data as ready to send
+ * - Content transmission
+ * 3. await sendable() - Commited bytes are available to send
+ * 4. getBuffers(committed) - Get actual Uint8Array buffers for writing (may be 1 or 2 if wrapped)
+ * 5. release(written) - Zero and release sent bytes
  */
 export class OutputRingBuffer {
-	#buffer; // Ring buffer Uint8Array
+	#buffer;      // Ring buffer Uint8Array
 	#size;
-	#writeHead; // Where adding to the ring
-	#readHead; // Where sending from the ring
-	#count; // Commited, ready-to-send bytes
-	#reserved; // Reserved bytes
+	#writeHead;   // Where adding to the ring
+	#readHead;    // Where sending from the ring
+	#committed;   // Commited, ready-to-send bytes
+	#reserved;    // Reserved bytes
 	#reservation; // VirtualRWBuffer for reserved bytes
 	#stats;
+	#waiter;      // Waiter waiting to send
 
 	/**
 	 * Create a new OutputRingBuffer
@@ -48,32 +41,34 @@ export class OutputRingBuffer {
 		this.#size = size;
 		this.#writeHead = 0;
 		this.#readHead = 0;
-		this.#count = 0;
+		this.#committed = 0;
 		this.#reserved = 0;
 		this.#reservation = null;
 		this.#stats = {
-			reservations: 0,
-			commits: 0,
-			bufferGets: 0,
-			consumes: 0,
-			wraps: 0,
-			bytesReserved: 0,
 			bytesCommitted: 0,
-			bytesProvided: 0,
-			bytesConsumed: 0
+			bytesGotten: 0,
+			bytesReleased: 0,
+			bytesReserved: 0,
+			commits: 0,
+			getBuffers: 0,
+			releases: 0,
+			reservations: 0,
+			wraps: 0,
 		};
+		this.#waiter = null;
 	}
 
 	/**
-	 * Get bytes available to read (committed but not yet consumed)
+	 * Get number of bytes of available free space
+	 * Callers should not be checking availability mid-reservation.
+	 * More precisely, this is the number of uncommitted bytes.
 	 */
 	get available () {
-		return this.#count;
+		return this.#size - this.#committed;
 	}
 
 	/**
 	 * Commit the reservation, making it available to send
-	 * @param {VirtualRWBuffer} reservation - The reservation to commit
 	 */
 	commit () {
 		const reservation = this.#reservation;
@@ -83,11 +78,14 @@ export class OutputRingBuffer {
 			throw new Error('Reservation not active');
 		}
 
-		// Advance writeHead, move from reserved to committed
-		const length = this.#reserved;
+		/*
+		 * Advance writeHead, move from reserved to committed
+		 * The reservation can be shortened, but never lengthened
+		 */
+		const length = Math.min(reservation.length, this.#reserved);
 		this.#writeHead = (this.#writeHead + length) % this.#size;
 		this.#reserved = 0;
-		this.#count += length;
+		this.#committed += length;
 
 		// Clear reservation metadata and pending reservation
 		if (typeof reservation.clear === 'function') {
@@ -98,56 +96,36 @@ export class OutputRingBuffer {
 
 		++this.#stats.commits;
 		this.#stats.bytesCommitted += length;
+
+		// If there's committed content and a monitor waiting on bytes to send, wake it up
+		if (this.#committed > 0 && this.#waiter) {
+			const waiter = this.#waiter;
+			this.#waiter = null;
+			waiter.resolve(this.#committed);
+		}
 	}
 
 	/**
-	 * Consume data after it has been sent (zero the space for security)
-	 * @param {number} length - Number of bytes to consume
+	 * Get number of bytes committed and ready to send
 	 */
-	consume (length) {
-		if (length < 1) {
-			throw new RangeError('Consume length must be at least 1 byte');
-		}
-
-		if (length > this.available) {
-			throw new RangeError(`Cannot consume ${length} bytes - only ${this.available} available`);
-		}
-
-		// Zero the consumed space (security: prevent data leakage)
-		const spaceToEnd = this.#size - this.#readHead;
-
-		if (spaceToEnd >= length) {
-			// Consumed region fits before end of buffer
-			this.#buffer.fill(0, this.#readHead, this.#readHead + length);
-		} else {
-			// Consumed region splits around wrap-around
-			const firstPart = spaceToEnd;
-			const secondPart = length - firstPart;
-			this.#buffer.fill(0, this.#readHead, this.#size);
-			this.#buffer.fill(0, 0, secondPart);
-		}
-
-		// Advance readHead and decrease count
-		this.#readHead = (this.#readHead + length) % this.#size;
-		this.#count -= length;
-
-		++this.#stats.consumes;
-		this.#stats.bytesConsumed += length;
+	get committed () {
+		return this.#committed;
 	}
 
 	/**
 	 * Get actual buffer(s) for writing committed data
-	 * Returns 1 or 2 Uint8Array views depending on whether data wraps around
+	 * Returns (0,) 1, or 2 Uint8Array views depending on whether data wraps around
 	 * @param {number} length - Number of bytes to get buffers for
-	 * @returns {Uint8Array[]} - Array of 1 or 2 Uint8Array views
+	 * @returns {Uint8Array[]} - Array of Uint8Array views
 	 */
-	getBuffers (length) {
+	getBuffers (length = this.#committed) {
 		if (length < 1) {
-			throw new RangeError('Buffer length must be at least 1 byte');
+			return [];
 		}
 
-		if (length > this.available) {
-			throw new RangeError(`Cannot get buffers for ${length} bytes - only ${this.available} available`);
+		const committed = this.#committed;
+		if (length > committed) {
+			throw new RangeError(`Cannot get buffers for ${length} bytes - only ${committed} available`);
 		}
 
 		// Check if data splits around wrap-around
@@ -165,8 +143,8 @@ export class OutputRingBuffer {
 			buffers.push(new Uint8Array(this.#buffer.buffer, 0, secondPart));
 		}
 
-		++this.#stats.bufferGets;
-		this.#stats.bytesProvided += length;
+		++this.#stats.getBuffers;
+		this.#stats.bytesGotten += length;
 
 		return buffers;
 	}
@@ -178,14 +156,50 @@ export class OutputRingBuffer {
 	getStats () {
 		return {
 			...this.#stats,
-			size: this.#size,
 			available: this.available,
-			space: this.space,
-			writeHead: this.#writeHead,
+			committed: this.#committed,
 			readHead: this.#readHead,
-			count: this.#count,
 			reserved: this.#reserved,
+			size: this.#size,
+			writeHead: this.#writeHead,
 		};
+	}
+
+	/**
+	 * Release committed bytes at the read head after sending
+	 * (zeroing the space for security)
+	 * @param {number} length - Number of bytes to release
+	 */
+	release (length) {
+		if (length < 1) {
+			throw new RangeError('Release length must be at least 1 byte');
+		}
+
+		const committed = this.committed;
+		if (length > committed) {
+			throw new RangeError(`Cannot release ${length} bytes - only ${committed} available`);
+		}
+
+		// Zero the consumed space (security: prevent data leakage)
+		const spaceToEnd = this.#size - this.#readHead;
+
+		if (spaceToEnd >= length) {
+			// Consumed region fits before end of buffer
+			this.#buffer.fill(0, this.#readHead, this.#readHead + length);
+		} else {
+			// Consumed region splits around wrap-around
+			const firstPart = spaceToEnd;
+			const secondPart = length - firstPart;
+			this.#buffer.fill(0, this.#readHead, this.#size);
+			this.#buffer.fill(0, 0, secondPart);
+		}
+
+		// Advance read head and reduce committed bytes
+		this.#readHead = (this.#readHead + length) % this.#size;
+		this.#committed -= length;
+
+		++this.#stats.releases;
+		this.#stats.bytesReleased += length;
 	}
 
 	/**
@@ -232,12 +246,8 @@ export class OutputRingBuffer {
 			++this.#stats.wraps;
 		}
 
-		const onShrink = (_buffer, newLength) => {
-			this.shrink(newLength);
-		};
-
 		// Create VirtualRWBuffer for the reservation
-		const buffer = new VirtualRWBuffer(undefined, { onShrink });
+		const buffer = new VirtualRWBuffer();
 		for (const seg of segments) {
 			const view = new Uint8Array(seg.buffer, seg.offset, seg.length);
 			buffer.append(view);
@@ -253,31 +263,15 @@ export class OutputRingBuffer {
 	}
 
 	/**
-	 * Shrink the reservation (called via VirtualRWBuffer onShrink event)
-	 * @param {number} newLength - The new length
+	 * Wait until there are committed bytes to send
 	 */
-	shrink (newLength) {
-		const reservation = this.#reservation;
-		if (newLength === 0) {
-			// shrink(0) -> cancel reservation
-			if (typeof reservation?.clear === 'function') {
-				// Clear reservation buffer to prevent further use
-				reservation.clear();
-			}
-			this.#reserved = 0;
-			this.#reservation = null;
-			return;
+	async sendable () {
+		if (this.#committed > 0) return;
+		if (!this.#waiter) {
+			const waiter = this.#waiter = {};
+			waiter.promise = new Promise((...r) => [waiter.resolve, waiter.reject] = r);
 		}
-
-		if (newLength < 0) {
-			throw new RangeError('New length must be non-negative');
-		}
-
-		if (newLength > this.#reserved) {
-			throw new RangeError('Cannot grow a reservation, only shrink');
-		}
-
-		this.#reserved = newLength;
+		return this.#waiter.promise;
 	}
 
 	/**
@@ -287,10 +281,10 @@ export class OutputRingBuffer {
 		return this.#size;
 	}
 
-	/**
-	 * Get bytes available to write (not yet reserved)
-	 */
-	get space () {
-		return this.#size - this.#count - this.#reserved;
+	// Basic cleanup on shutdown (e.g. for testing)
+	stop () {
+		if (this.#waiter) {
+			this.#waiter.reject(new Error('Stopping'));
+		}
 	}
 }

@@ -1,12 +1,15 @@
 /**
  * VirtualBuffer - Zero-copy buffer management with views into underlying storage
- * 
+ *
  * Wraps Uint8Array or ring buffer segments to support slicing without copying.
  *
  * @copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
-// File-scoped WeakMap for secure private state storage
+/*
+ * File-scoped WeakMap for secure private state storage
+ * Allows protected copying across instances
+ */
 const privateState = new WeakMap();
 
 export class VirtualBuffer {
@@ -19,7 +22,7 @@ export class VirtualBuffer {
 	 * @param {number} length - Length (only used if source is Uint8Array)
 	 */
 	constructor (source, { offset = 0, length = undefined } = {}) {
-		this.#state = {};
+		this._setState({});
 		privateState.set(this, this.#state);
 		this.clear();
 
@@ -173,6 +176,18 @@ export class VirtualBuffer {
 	 */
 	get segmentCount () {
 		return this.#state.segments.length;
+	}
+
+	/**
+	 * Thread the private state
+	 * All sub-classes MUST implment this
+	 * @param {Object} state
+	 */
+	_setState (state) {
+		if (!this.#state) {
+			this.#state = state;
+			// super._setState(state);
+		}
 	}
 
 	/**
@@ -389,19 +404,6 @@ export class VirtualRWBuffer extends VirtualBuffer {
 	#state;
 
 	/**
-	 * @param {*} source - Initial contents
-	 * @param {Object} options 
-	 * @param {Function} options.onShrink - A shrink-event callback
-	 */
-	constructor (source, options = {}) {
-		super(source, options);
-		const state = this.#state = privateState.get(this);
-		if (options.onShrink) {
-			state.onShrink = options.onShrink;
-		}
-	}
-
-	/**
 	 * Append data to this virtual buffer (overrides parent to enforce security)
 	 * @param {Uint8Array|VirtualRWBuffer|Array<{buffer: Uint8Array, offset: number, length: number}>} source
 	 * @param {number} offset - Starting offset (only used if source is Uint8Array)
@@ -423,9 +425,9 @@ export class VirtualRWBuffer extends VirtualBuffer {
 	 * @returns {{read: number, written: number}} UTF-16 code units read and bytes written
 	 */
 	encodeFrom (str, offset = 0, label = 'utf-8') {
-		const state = this.#state;
-		if (offset < 0 || offset >= state.length) {
-			throw new RangeError(`Offset ${offset} is out of range [0, ${this.length})`);
+		const state = this.#state, length = state.length;
+		if (offset < 0 || offset >= length) {
+			throw new RangeError(`Offset ${offset} is out of range [0, ${length})`);
 		}
 
 		if (label !== 'utf-8') {
@@ -435,8 +437,8 @@ export class VirtualRWBuffer extends VirtualBuffer {
 		const encoder = new TextEncoder();
 		const segments = state.segments;
 		
-		let totalRead = 0;
-		let totalWritten = 0;
+		let read = 0;
+		let written = 0;
 		let remainingOffset = offset;
 		let strOffset = 0;
 
@@ -465,8 +467,8 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			// Encode as much as fits
 			const result = encoder.encodeInto(str.slice(strOffset), targetView);
 			
-			totalRead += result.read;
-			totalWritten += result.written;
+			read += result.read;
+			written += result.written;
 			strOffset += result.read;
 			remainingOffset = 0;
 
@@ -475,7 +477,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			}
 		}
 
-		return { read: totalRead, written: totalWritten };
+		return { read, written };
 	}
 
 	/**
@@ -636,6 +638,17 @@ export class VirtualRWBuffer extends VirtualBuffer {
 	}
 
 	/**
+	 * Thread the private state
+	 * @param {Object} state
+	 */
+	_setState (state) {
+		if (!this.#state) {
+			this.#state = state;
+			super._setState(state);
+		}
+	}
+
+	/**
 	 * Shrink this buffer to a new length (releases over-allocated space)
 	 * @param {number} newLength - New length (must be <= current length)
 	 */
@@ -683,11 +696,6 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 		// Invalidate segment cache
 		state.cachedSegIndex = -1;
-
-		// Can be used to e.g. update ring reservations
-		if (state.onShrink) {
-			state.onShrink.call(undefined, this, newLength);
-		}
 	}
 
 	//

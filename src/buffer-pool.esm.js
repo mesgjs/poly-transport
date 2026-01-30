@@ -10,13 +10,13 @@
 
 /**
  * BufferPool manages reusable ArrayBuffers organized by size classes.
- * 
+ *
  * Features:
  * - Size classes: 1KB, 4KB, 16KB, 64KB (configurable)
  * - Per-size-class low/high water mark management
  * - Worker support for buffer transfer via postMessage
  * - Buffers are zeroed when released (not when allocated) per requirements.md:850
- * 
+ *
  * @example
  * const pool = new BufferPool({
  *   sizeClasses: [1024, 4096, 16384, 65536],
@@ -27,7 +27,7 @@
  *     65536: { low: 1, high: 5 }   // Override for 64KB buffers
  *   }
  * });
- * 
+ *
  * const buffer = pool.acquire(4096);
  * // ... use buffer ...
  * pool.release(buffer);
@@ -44,7 +44,7 @@ export class BufferPool {
 
 	/**
 	 * Create a new BufferPool.
-	 * 
+	 *
 	 * @param {Object} options - Configuration options
 	 * @param {number[]} [options.sizeClasses=[1024, 4096, 16384, 65536]] - Buffer size classes
 	 * @param {number} [options.lowWaterMark=2] - Default low water mark
@@ -93,7 +93,7 @@ export class BufferPool {
 	/**
 	 * Get the appropriate size class for a requested size.
 	 * Returns the smallest size class that can accommodate the request.
-	 * 
+	 *
 	 * @param {number} requestedSize - Requested buffer size in bytes
 	 * @returns {number|null} Size class or null if too large
 	 */
@@ -108,7 +108,7 @@ export class BufferPool {
 
 	/**
 	 * Ensure pool has at least lowWaterMark buffers.
-	 * 
+	 *
 	 * @param {number} size - Size class
 	 * @param {boolean} sync - True (do it now) or false (schedule for later)
 	 */
@@ -196,7 +196,7 @@ export class BufferPool {
 
 	/**
 	 * Scrub dirty buffers to top off, then release excess buffers above high water mark.
-	 * 
+	 *
 	 * @param {number} size - Size class
 	 * @param {boolean} sync - True (do it now) or false (schedule for later)
 	 */
@@ -235,7 +235,7 @@ export class BufferPool {
 
 	/**
 	 * Zero a buffer's contents.
-	 * 
+	 *
 	 * @param {ArrayBuffer} buffer - Buffer to zero
 	 */
 	#zeroBuffer (buffer) {
@@ -245,7 +245,7 @@ export class BufferPool {
 
 	/**
 	 * Acquire a (single) buffer from the pool.
-	 * 
+	 *
 	 * @param {number} requestedSize - Requested buffer size in bytes
 	 * @returns {ArrayBuffer|null} Buffer or null if size exceeds largest class
 	 */
@@ -300,7 +300,7 @@ export class BufferPool {
 	/**
 	 * Release a buffer to the dirty pool.
 	 * Buffer will be zeroed before returning to the main pool (requirements.md:850).
-	 * 
+	 *
 	 * @param {ArrayBuffer} buffer - Buffer to release
 	 * @returns {boolean} True if released, false if not a recognized size class
 	 */
@@ -324,7 +324,7 @@ export class BufferPool {
 
 	/**
 	 * Receive buffers from another thread
-	 * 
+	 *
 	 * @param {number} size - Size class
 	 * @param {ArrayBuffer[]} buffers - Buffers received
 	 */
@@ -349,7 +349,7 @@ export class BufferPool {
 
 	/**
 	 * Get pool statistics.
-	 * 
+	 *
 	 * @returns {Object} Statistics object with counts per size class
 	 */
 	getStats () {
@@ -380,7 +380,7 @@ export class BufferPool {
 
 	/**
 	 * Get current pool sizes.
-	 * 
+	 *
 	 * @returns {Object} Map of size class to available buffer count
 	 */
 	getPoolSizes () {
@@ -394,7 +394,7 @@ export class BufferPool {
 
 	/**
 	 * Get water marks for a size class.
-	 * 
+	 *
 	 * @param {number} size - Size class
 	 * @returns {Object|null} { low, high } or null if invalid size
 	 */
@@ -414,7 +414,7 @@ export class BufferPool {
 
 	/**
 	 * Get size classes.
-	 * 
+	 *
 	 * @returns {number[]} Array of size classes
 	 */
 	get sizeClasses () {
@@ -423,7 +423,7 @@ export class BufferPool {
 
 	/**
 	 * Check if running in worker context.
-	 * 
+	 *
 	 * @returns {boolean} True if worker
 	 */
 	get isWorker () {
