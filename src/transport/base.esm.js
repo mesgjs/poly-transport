@@ -88,7 +88,7 @@ export class Transport extends Eventable {
 	async _dispatchEvent (...spec) {
 		if (typeof spec[0] === 'string') {
 			// Eventable expects an event object with type property
-			const [type, detail] = spec;
+			const [type, detail = null] = spec;
 			await this.dispatchEvent({ type, detail });
 		} else if (typeof spec[0] === 'object') {
 			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
@@ -97,18 +97,15 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Get a channel by ID or name
-	 * @param {string|number|symbol} idOrName - Channel identifier or name
-	 * @param {Object|undefined} auth - Optional authentication token (private state)
+	 * Get an existing channel by name or symbol (public interface)
+	 * @param {string|symbol} name - Channel name
 	 * @returns {Channel|undefined} The channel, or undefined if not found
 	 */
-	getChannel (idOrName, auth = undefined) {
-		const state = this.#state;
-		if (typeof idOrName === 'number' && auth !== state) {
-			// Public access by name or symbol only (not channel number)
-			return;
+	getChannel (name) {
+		if (typeof name === 'string' || typeof name === 'symbol') {
+			// NOTE: Public access by numeric id is NOT permitted
+			return state.channels.get(name);
 		}
-		return state.channels.get(idOrName);
 	}
 
 	/**

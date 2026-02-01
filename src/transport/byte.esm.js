@@ -4,14 +4,15 @@
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
+import { Channel } from '../channel.esm.js';
+import { OutputRingBuffer } from '../output-ring-bffer.esm.js';
+import { Transport } from './base.esm.js';
+import { VirtualRWBuffer } from '../virtual-buffer.esm.js';
 import {
 	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
 	decodeAckHeaderFrom, decodeChannelHeaderFrom, encAddlToTotal
 } from '../protocol.esm.js';
-import { OutputRingBuffer } from '../output-ring-bffer.esm.js';
-import { Transport } from './base.esm.js';
-import { VirtualRWBuffer } from '../virtual-buffer.esm.js';
 
 export class ByteTransport extends Transport {
 	#state; // Constructor-threaded private state
@@ -121,8 +122,7 @@ export class ByteTransport extends Transport {
 
 			if (state.stopped) break;
 
-			const channelId = header.channelId;
-			const channel = this.getChannel(channelId, state);
+			const channelId = header.channelId, channel = state.channels.get(channelId);
 
 			if (!channel) {
 				await this._dispatchEvent('protocolViolation', {
@@ -135,7 +135,8 @@ export class ByteTransport extends Transport {
 			}
 
 			// Dispatch the message to the appropriate channel for processing
-			channel.receiveMessage(this, header, data);
+			const token = state.channelTokens.get(channel);
+			channel.receiveMessage(token, header, data);
 		}
 	}
 
@@ -185,7 +186,7 @@ export class ByteTransport extends Transport {
 	 */
 	async scheduleWrite (state, now = false) {
 		if (state !== this.#state) {
-			throw new Error('Unauthorized sendBytes');
+			throw new Error('Unauthorized scheduleWrite');
 		}
 		const { autoWriteBytes: bytes, autoWriteType: time, outputBuffer: buffer } = state;
 		const committed = buffer.committed;
@@ -207,7 +208,7 @@ export class ByteTransport extends Transport {
 			}
 		} else if (Number.isInteger(time) && !state.writeTimer) {
 			// Send when we've waited the maximum batching time
-			state.writeTimer = setTimeout(() => this.sendBytes(state, true), time);
+			state.writeTimer = setTimeout(() => this.scheduleWrite(state, true), time);
 		}
 	}
 
@@ -257,8 +258,9 @@ export class ByteTransport extends Transport {
 	/**
 	 * Sub-classes must override this method to actually get the output buffer(s) and write the bytes
 	 * @abstract
+	 * @param {Object} _state - Private state (used for authentication)
 	 */
-	writeBytes (_state) {
+	/* async */ writeBytes (_state) {
 		throw new Error('byteTransport.writeBytes implementation is missing')
 	}
 }

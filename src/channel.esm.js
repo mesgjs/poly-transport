@@ -7,11 +7,10 @@
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
 import { HDR_TYPE_CHAN_CONTROL, TCC_CTLM_MESG_TYPE_REG_REQ } from './protocol.esm.js';
 import { StateError, TimeoutError } from './transport/base.esm.js';
+import { AppAsyncEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
 
-const noop = () => {};
-
-export class Channel {
+export class Channel extends Eventable {
 	get STATE_OPEN () { return 0; }
 	get STATE_CLOSING () { return 1; }
 	get STATE_LOCAL_CLOSING () { return 2; }
@@ -35,7 +34,8 @@ export class Channel {
 			allReader: {
 				waiting: false
 			},
-			controlData: null, // Accumulated control-message data (VirtualBuffer or string[])
+			controlMessages: [], // Accumulated control-message chunks
+			dataMessages: new Set(),
 			discard: false, // Discard input when closing
 			disconnected: false, // Connection lost
 			filteredReaders: new Map(), // Map<type, {waiting: boolean, resolve}>
@@ -43,7 +43,6 @@ export class Channel {
 			ids: [id],
 			name,
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
-			receivedMessages: new Set(),
 			state: Channel.STATE_OPEN,
 			transport,
 			token,
@@ -75,11 +74,12 @@ export class Channel {
 				continue;
 			}
 
-			// Handle first-time requests
+			// Register first-time requests
 			newTypes.push(type);
 			entry = { ids: [], type };
 			const promise = entry.promise = new Promise((...r) => [entry.resolve, entry.reject] = r);
 			promises.push(promise);
+			messageTypes.set(type, entry);
 		}
 
 		if (newTypes.length) {
@@ -104,17 +104,32 @@ export class Channel {
 	 * @param {Object} options
 	 * @param {boolean} options.discard - Discard incoming data
 	 */
-	async close ({ discard = false, disconnected = false } = {}) {
+	async close ({ discard = false } = {}) {
 		const state = this.#state;
 		if (discard) state.discard = true;
-		if (disconnected) state.disconnected = true;
 		// TO DO: IMPLEMENT
 	}
 
 	/**
-	 * Find a waiting reader for a message-type
+	 * Dispatch an event and await all handlers
+	 * @protected
+	 * @returns {Promise<void>}
+	 */
+	async _dispatchEvent (...spec) {
+		if (typeof spec[0] === 'string') {
+			// Eventable expects an event object with type property
+			const [type, detail = null] = spec;
+			await this.dispatchEvent({ type, detail });
+		} else if (typeof spec[0] === 'object') {
+			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
+			await this.dispatchEvent(spec[0]);
+		}
+	}
+
+	/**
+	 * Find a waiting reader for a specific (i.e. received) message-type
 	 * @param {number} type - The message-type id
-	 * @returns {Object|undefined}
+	 * @returns {{waiting: boolean, resolve}|undefined}
 	 */
 	#findReader (type) {
 		const state = this.#state;
@@ -140,11 +155,12 @@ export class Channel {
 
 	/**
 	 * Return normalized message-type filter set
-	 * @param {undefined|number|string|Array|Set} spec - ID specification
-	 * @returns {IdSet}
+	 * @param {undefined|null|number|string|Array|Set} spec - ID specification
+	 * @returns {IdSet|null}
 	 */
 	_getTypeIdSet (spec) {
-		if (spec instanceof IdSet) return spec; // Already normalized
+		if (spec instanceof IdSet || spec === null) return spec; // Already normalized
+		if (spec === undefined) return null;
 		const state = this.#state;
 		const types = state.messageTypes;
 		const ids = new IdSet();
@@ -172,14 +188,14 @@ export class Channel {
 
 	/**
 	 * Determine if the channel has a conflicting reader
-	 * @param {undefined|number|string|Array|Set} only - Message-type(s) of reader(s) to check
+	 * @param {undefined|null|number|string|Array|Set} only - Message-type(s) of reader(s) to check
 	 * @returns {boolean}
 	 */
-	hasReader (only = undefined) {
+	hasReader (only = null) {
 		const state = this.#state;
 		const idSet = this._getTypeIdSet(only);
 
-		if (!idSet.length) {
+		if (!idSet) {
 			// Unfiltered - check for *any* readers
 			if (state.allReader.waiting) return true;
 			for (const entry of state.filteredReaders.values()) {
@@ -219,7 +235,36 @@ export class Channel {
 	}
 
 	/**
-	 * Read a message from the channel, possibly filtering for one or more specific message
+	 * Handle remote message-type registration request
+	 * @param {Object} request - The registration request object
+	 * request: {
+	 *   request: [ type1, type2, ... ]
+	 * }
+	 */
+	async #onMesgTypeRegRequest (request) {
+		// TO DO:
+		// Emit event for each message-type
+		// Accept (with current or generated id) each not-default-prevented event
+		// Reject types that were default-prevented
+		// Send response with results
+	}
+
+	/**
+	 * Handle remote response to local message-type registration request
+	 * @param {Object} response - The registration response object
+	 * response: {
+	 *   accept: { type1: id1, type2: id2, ... },
+	 *   reject: [ type3, type4, ... ],
+	 * }
+	 */
+	#onMesgTypeRegResponse (response) {
+		// TO DO:
+		// Add ids for accepted message-types
+		// Resolve waiters
+	}
+
+	/**
+	 * Read a data message from the channel, possibly filtering for one or more specific message
 	 * types, waiting if necessary for a suitable match
 	 * @param {Object} options
 	 * @param {undefined|number|string|Array|Set} options.only - Message-type(s) of reader(s) to check
@@ -248,7 +293,7 @@ export class Channel {
 
 		// Register reader for specific or any/all types, as appropriate
 		const state = this.#state;
-		if (!idSet.length) {
+		if (!idSet) {
 			state.allReader = reader;
 		} else {
 			const readers = state.filteredReaders;
@@ -285,19 +330,19 @@ export class Channel {
 
 	/**
 	 * Post-validation common-code for reading a message
-	 * @param {*} idSet
+	 * @param {IdSet} idSet - Set of message types to consider
 	 * @returns
 	 */
 	#readSync (idSet) {
 		const state = this.#state;
 		let message = null;
 
-		if (!idSet.size) {
+		if (!idSet) {
 			// No filter - select the first message, if any
-			message = state.receivedMessages.values().next().value;
+			message = state.dataMessages.values().next().value;
 		} else {
 			// Select the first message matching the filter, if any
-			for (const current of state.receivedMessages) {
+			for (const current of state.dataMessages) {
 				if (idSet.has(current.header.messageType)) {
 					message = current;
 					break;
@@ -306,14 +351,18 @@ export class Channel {
 		}
 
 		// Done if no matching messages
-		if (message === null) return null;
+		if (!message) return null;
 
-		state.receivedMessages.delete(message);
+		state.dataMessages.delete(message);
 
 		const { eom, dataSize, sequence, messageType: typeId } = message.header;
 		const typeEntry = state.messageTypes.get(typeId);
 		const messageType = typeEntry?.name || typeId;
 		const result = {
+			data: null,
+			done: () => {
+				state.flowControl.markProcessed(sequence);
+			},
 			header: {
 				eom,
 				dataSize,
@@ -332,18 +381,10 @@ export class Channel {
 			}
 		};
 
-		if (message.data) {
-			/*
-			 * Message with data
-			 * Attach the data; the user must signal when done
-			 */
+		if (typeof message.data === 'string') {
+			result.data = message.data;
+		} else if (message.data && dataSize > 0) {
 			result.data = new VirtualBuffer(message.data);
-			result.done = () => {
-				state.flowControl.recordConsumed(sequence);
-			};
-		} else {
-			// No data; user (or `.process`) can still call done, but there's nothing to do
-			result.done = noop;
 		}
 
 		Object.freeze(result.header);
@@ -352,16 +393,28 @@ export class Channel {
 	}
 
 	/**
-	 * Process an ACK-message from the remote
+	 * Process remote ACK for locally-sent messages
 	 */
-	#receiveAckMessage (header) {
-		const state = this.#state;
-		const flow = state.flowControl;
+	async #receiveAckMessage (header) {
+		const state = this.#state, { flowControl } = state;
 		const { baseSequence, ranges } = header;
-		const freed = flow.processAck(baseSequence, ranges);
-		const { transport, token } = state;
-		// TO DO: FINISH IMPLEMENTATION
-		// transport.someMethod(token, freed);
+		const result = flowControl.clearWriteAckInfo(baseSequence, ranges);
+		if (result.duplicate) {
+			// Emit PVE for result.duplicate duplicate ACKs
+			const event = new AppAsyncEvent('protocolViolation', { cancelable: true, detail: { duplicateAcks: result.duplicate }});
+			await this._dispatchEvent(event);
+			if (!event.defaultPrevented) {
+				await this.close({ discard: true });
+			}
+		}
+		if (result.premature) {
+			// Emit PVE for result.premature premature ACKS
+			const event = new AppAsyncEvent('protocolViolation', { cancelable: true, detail: { prematureAcks: result.premature }});
+			await this._dispatchEvent(event);
+			if (!event.defaultPrevented) {
+				await this.close({ discard: true });
+			}
+		}
 	}
 
 	/**
@@ -370,16 +423,58 @@ export class Channel {
 	 * @param {*} data
 	 */
 	#receiveControlMessage (header, data) {
-		const { messageType } = header;
+		const { dataSize, eom, headerSize, messageType, sequenceId } = header;
 		switch (messageType) {
-		case TCC_CTLM_MESG_TYPE_REG_REQ: // Message-type registration request
+		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
 			break;
-		case TCC_CTLM_MESG_TYPE_REG_RESP: // Message-type registration response
+		case TCC_CTLM_MESG_TYPE_REG_RESP[0]: // Message-type registration response
 			break;
 		default:
 			throw new ProtocolViolationError('Unknown channel-control message-type', { messageType });
 		}
-		// TO DO: FINISH IMPLEMENTATION
+
+		const state = this.#state, { controlMessages: messages, flowControl } = state;
+
+		/*
+		 * Accumulate control-message chunks until EOM.
+		 * We can't detect an incomplete message if it's followed by another
+		 * of the same type, but we can if the message-type changes.
+		 */
+		if (messages.length && messages[0][0].messageType !== messageType) {
+			throw new ProtocolViolationError('Incomplete channel-control message', { messageType: messages[0][0].messageType });
+		}
+		flowControl.received(sequenceId, headerSize + dataSize);
+		messages.push([header, data]);
+		if (!header.eom) return;
+
+		/*
+		 * Message-type registration requests and responses both require JSON-parsed text.
+		 * Collect any chunked string or buffer data, decoding the latter.
+		 */
+		const jsonText = messages.reduce((acc, [_, data]) => {
+			if (typeof data === 'string') { // string chunks
+				acc ||= [];
+				acc.push(data);
+			}
+			return acc;
+		}, null)?.join('') ??
+		messages.reduce((acc, [_, data]) => {
+			if (typeof data === 'object' && data !== null) { // buffer chunks
+				acc ||= new VirtualBuffer();
+				acc.append(data);
+			}
+			return acc;
+		}, null)?.decode();
+		const parsed = jsonText && JSON.parse(jsonText);
+
+		switch (messageType) {
+		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
+			this.#onMesgTypeRegRequest(parsed);
+			break;
+		case TCC_CTLM_MESG_TYPE_REG_RESP[0]: // Message-type registration response
+			this.#onMesgTypeRegResponse(parsed);
+			break;
+		}
 	}
 
 	/**

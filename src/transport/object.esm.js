@@ -4,8 +4,9 @@
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
-import { HDR_TYPE_ACK, PROTOCOL } from '../protocol.esm.js';
+import { Channel } from '../channel.esm.js';
 import { Transport } from './base.esm.js';
+import { HDR_TYPE_ACK, PROTOCOL } from '../protocol.esm.js';
 
 export class ObjectTransport extends Transport {
 	#state;
