@@ -14,7 +14,6 @@
  * Features:
  * - Size classes: 1KB, 4KB, 16KB, 64KB (configurable)
  * - Per-size-class low/high water mark management
- * - Worker support for buffer transfer via postMessage
  * - Buffers are zeroed when released (not when allocated) per requirements.md:850
  *
  * @example
@@ -35,7 +34,6 @@
 export class BufferPool {
 	#groups = new Map();// Map<size, Object>
 	#sizeClasses;     // number[] - sorted size classes
-	#isWorker;        // boolean - true if in worker context
 	#requestCallback; // function - callback to request buffers from main thread
 	#returnCallback;  // function - callback to return buffers to main thread
 	#stopped = false;
@@ -50,9 +48,6 @@ export class BufferPool {
 	 * @param {number} [options.lowWaterMark=2] - Default low water mark
 	 * @param {number} [options.highWaterMark=10] - Default high water mark
 	 * @param {Object} [options.waterMarks={}] - Per-size-class overrides: { size: { low, high } }
-	 * @param {boolean} [options.isWorker=false] - True if running in worker context
-	 * @param {Function} [options.requestCallback] - Callback to request buffers from main thread
-	 * @param {Function} [options.returnCallback] - Callback to return buffers to main thread
 	 */
 	constructor (options = {}) {
 		// Default size classes: 1KB, 4KB, 16KB, 64KB
@@ -62,10 +57,6 @@ export class BufferPool {
 		const defaultLow = options.lowWaterMark ?? 2;
 		const defaultHigh = options.highWaterMark ?? 10;
 		const overrides = options.waterMarks || {};
-
-		this.#isWorker = options.isWorker ?? false;
-		this.#requestCallback = options.requestCallback;
-		this.#returnCallback = options.returnCallback;
 
 		// Initialize pools, water marks, and stats for each size class
 		for (const size of this.#sizeClasses) {
@@ -126,21 +117,16 @@ export class BufferPool {
 		const needed = marks.low - cleanPool.length;
 
 		if (needed > 0) {
-			if (this.#isWorker && this.#requestCallback) {
-				// Request buffers from main thread
-				this.#requestCallback(size, needed);
-			} else {
-				for (let i = 0; i < needed; i++) {
-					if (dirtyPool.length > 0) {
-						// Clean a dirty buffer and reuse it
-						const buffer = dirtyPool.pop();
-						this.#zeroBuffer(buffer);
-						cleanPool.push(buffer);
-					} else {
-						// Allocate directly
-						cleanPool.push(new ArrayBuffer(size));
-						++stats.allocated;
-					}
+			for (let i = 0; i < needed; i++) {
+				if (dirtyPool.length > 0) {
+					// Clean a dirty buffer and reuse it
+					const buffer = dirtyPool.pop();
+					this.#zeroBuffer(buffer);
+					cleanPool.push(buffer);
+				} else {
+					// Allocate directly
+					cleanPool.push(new ArrayBuffer(size));
+					++stats.allocated;
 				}
 			}
 		}
@@ -209,15 +195,7 @@ export class BufferPool {
 
 		const group = this.#groups.get(size);
 		const { cleanPool, dirtyPool, marks, stats } = group;
-		const release = (pool, excess, high = 0) => {
-			const toRelease = pool.splice(high, excess);
-			if (this.#isWorker && this.#returnCallback) {
-				// Return (assumed dirty) buffers to main thread
-				this.#returnCallback(size, toRelease);
-				stats.transferred += toRelease.length;
-			}
-			// In the main thread, excess buffers are just dropped and GC'd
-		};
+		const release = (pool, excess, high = 0) => pool.splice(high, excess);
 
 		// Top-off the clean pool up to the high-water mark by scrubbing dirty buffers
 		while (cleanPool.length < marks.high && dirtyPool.length > 0) {
@@ -323,31 +301,6 @@ export class BufferPool {
 	}
 
 	/**
-	 * Receive buffers from another thread
-	 *
-	 * @param {number} size - Size class
-	 * @param {ArrayBuffer[]} buffers - Buffers received
-	 */
-	receiveBuffers (size, buffers) {
-		if (!this.#isWorker) {
-			throw new Error('receiveBuffers can only be called in worker context');
-		}
-
-		const group = this.#groups.get(size);
-		if (!group) {
-			throw new Error(`Invalid size class: ${size}`);
-		}
-		if (this.#isWorker) {
-			// Clean buffers from main thread
-			group.cleanPool.push(...buffers);
-		} else {
-			// Dirty buffers from worker threads
-			group.dirtyPool.push(...buffers);
-		}
-		group.stats.transferred += buffers.length;
-	}
-
-	/**
 	 * Get pool statistics.
 	 *
 	 * @returns {Object} Statistics object with counts per size class
@@ -355,7 +308,6 @@ export class BufferPool {
 	getStats () {
 		const stats = {
 			sizeClasses: [...this.#sizeClasses],
-			isWorker: this.#isWorker,
 			pools: {}
 		};
 
@@ -419,14 +371,5 @@ export class BufferPool {
 	 */
 	get sizeClasses () {
 		return [...this.#sizeClasses];
-	}
-
-	/**
-	 * Check if running in worker context.
-	 *
-	 * @returns {boolean} True if worker
-	 */
-	get isWorker () {
-		return this.#isWorker;
 	}
 }

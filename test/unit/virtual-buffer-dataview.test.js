@@ -368,15 +368,15 @@ Deno.test('Security - VirtualRWBuffer.append accepts VirtualRWBuffer', () => {
 	assertEquals(Array.from(rwBuf1.toUint8Array()), [1, 2, 3, 4, 5, 6]);
 });
 
-Deno.test('Security - VirtualRWBuffer.set rejects VirtualBuffer', () => {
+Deno.test('Security - VirtualRWBuffer.set accepts VirtualBuffer', () => {
 	const rwBuf = new VirtualRWBuffer(new Uint8Array([0, 0, 0]));
 	const roBuf = new VirtualBuffer(new Uint8Array([1, 2, 3]));
 	
-	assertThrows(
-		() => rwBuf.set(roBuf),
-		TypeError,
-		'Source must be Uint8Array or VirtualRWBuffer'
-	);
+	// This should work - set now accepts any VirtualBuffer
+	const written = rwBuf.set(roBuf);
+	
+	assertEquals(written, 3);
+	assertEquals(Array.from(rwBuf.toUint8Array()), [1, 2, 3]);
 });
 
 Deno.test('Security - VirtualRWBuffer.set accepts VirtualRWBuffer', () => {

@@ -27,8 +27,8 @@ import {
 	C2C_MESG_INFO,
 	C2C_MESG_WARN,
 	C2C_MESG_ERROR,
-	MIN_CHANNEL_ID,
-	MIN_MESG_TYPE_ID,
+	MIN_CHANNEL_ID, // Missing coverage
+	MIN_MESG_TYPE_ID, // Missing coverage
 	// Helper functions
 	totalToEncAddl,
 	addlToEncAddl,
@@ -39,8 +39,6 @@ import {
 	// Encoding functions
 	encodeAckHeaderInto,
 	encodeChannelHeaderInto,
-	encodeAckHeader,
-	encodeChannelHeader,
 	encodeHandshakeInto,
 	// Decoding functions
 	decodeHeaderSizeFromPrefix,
@@ -48,6 +46,34 @@ import {
 	decodeChannelHeaderFrom
 } from '../../src/protocol.esm.js';
 import { VirtualBuffer, VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
+
+/**
+ * Allocating wrapper for ACK header encoding testing
+ *
+ * @param {Object} fields - { channelId, baseSequence, flags=0, ranges=[] }
+ * @returns {Uint8Array} Encoded ACK header
+ */
+function encodeAckHeader (fields) {
+	const ranges = fields?.ranges || [];
+	const buffer = new Uint8Array(ackHeaderSize(ranges.length));
+	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+	encodeAckHeaderInto(view, 0, fields);
+	return buffer;
+}
+
+/**
+ * Allocating wrapper for channel header encoding testing
+ *
+ * @param {number} type - HDR_TYPE_CHAN_CONTROL or HDR_TYPE_CHAN_DATA
+ * @param {Object} fields - { dataSize=0, flags=0, channelId, sequence, messageType }
+ * @returns {Uint8Array} Encoded channel header
+ */
+function encodeChannelHeader (type, fields) {
+	const buffer = new Uint8Array(MAX_DATA_HEADER_BYTES);
+	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+	encodeChannelHeaderInto(view, 0, type, fields);
+	return buffer;
+}
 
 // ============================================================================
 // Constants Tests

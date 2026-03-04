@@ -103,20 +103,6 @@ export function channelHeaderSize () {
 }
 
 /**
- * Allocating wrapper for ACK header encoding (for testing)
- *
- * @param {Object} fields - { channelId, baseSequence, flags=0, ranges=[] }
- * @returns {Uint8Array} Encoded ACK header
- */
-export function encodeAckHeader (fields) {
-	const ranges = fields?.ranges || [];
-	const buffer = new Uint8Array(ackHeaderSize(ranges.length));
-	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-	encodeAckHeaderInto(view, 0, fields);
-	return buffer;
-}
-
-/**
  * Encode ACK header directly into target buffer
  *
  * Format (requirements.md:442-456, Update 2026-01-08-A):
@@ -174,20 +160,6 @@ export function encodeAckHeaderInto (target, offset, fields) {
 
 	// Zero-pad requirement is handled by ArrayBuffer constructor or zero-on-release strategy
 	return headerSize;
-}
-
-/**
- * Allocating wrapper for channel header encoding (for testing)
- *
- * @param {number} type - HDR_TYPE_CHAN_CONTROL or HDR_TYPE_CHAN_DATA
- * @param {Object} fields - { dataSize=0, flags=0, channelId, sequence, messageType }
- * @returns {Uint8Array} Encoded channel header
- */
-export function encodeChannelHeader (type, fields) {
-	const buffer = new Uint8Array(MAX_DATA_HEADER_BYTES);
-	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-	encodeChannelHeaderInto(view, 0, type, fields);
-	return buffer;
 }
 
 /**

@@ -17,16 +17,16 @@ This scenario documents how ID jitter occurs, how it's detected, and how the sys
 ## Preconditions
 
 - Both transports have completed handshake and role determination
-- Transport A has EVEN_ROLE (assigns even IDs: 2, 4, 6, 8, ...)
-- Transport B has ODD_ROLE (assigns odd IDs: 3, 5, 7, 9, ...)
+- Transport A has ROLE_EVEN (assigns even IDs: 2, 4, 6, 8, ...)
+- Transport B has ROLE_ODD (assigns odd IDs: 3, 5, 7, 9, ...)
 - Both transports want to establish a channel named "data-sync"
 - Neither transport has previously registered this channel name
 - Both transports have `newChannelRequest` event handlers that call `event.accept()`
 
 ## Actors
 
-- **Transport A** (EVEN_ROLE) - Initiates channel request and accepts incoming request
-- **Transport B** (ODD_ROLE) - Initiates channel request and accepts incoming request
+- **Transport A** (ROLE_EVEN) - Initiates channel request and accepts incoming request
+- **Transport B** (ROLE_ODD) - Initiates channel request and accepts incoming request
 - **Channel** - Bidirectional channel object with ID array
 - **Protocol** - Encodes/decodes channel request/response messages
 - **OutputRingBuffer** - Write ring for outgoing messages
@@ -92,7 +92,7 @@ This scenario documents how ID jitter occurs, how it's detected, and how the sys
   - Fires `newChannelRequest` event
   - Event handler calls `event.accept()`
 - **State Change**:
-  - **Assigns next even ID**: `4` (Transport A has EVEN_ROLE)
+  - **Assigns next even ID**: `4` (Transport A has ROLE_EVEN)
   - Creates channel object with ID array: `[4]`
   - Registers channel in active channels map: `{ 'data-sync' => channel }`
   - Encodes `chanResp` message (TCC data message, type 2):
@@ -120,7 +120,7 @@ This scenario documents how ID jitter occurs, how it's detected, and how the sys
   - Fires `newChannelRequest` event
   - Event handler calls `event.accept()`
 - **State Change**:
-  - **Assigns next odd ID**: `5` (Transport B has ODD_ROLE)
+  - **Assigns next odd ID**: `5` (Transport B has ROLE_ODD)
   - Creates channel object with ID array: `[5]`
   - Registers channel in active channels map: `{ 'data-sync' => channel }`
   - Encodes `chanResp` message (TCC data message, type 2):
@@ -149,7 +149,7 @@ This scenario documents how ID jitter occurs, how it's detected, and how the sys
   - Looks up channel by name "data-sync"
   - Channel already active (created in step 2a when accepting B's request)
   - Current ID array: `[4]`
-  - Validates ID parity: 5 is odd, Transport B has ODD_ROLE ✓
+  - Validates ID parity: 5 is odd, Transport B has ROLE_ODD ✓
   - Checks for duplicate: 5 not in array ✓
   - **No pending request** (already resolved in step 2a after acceptance written to ring)
 - **State Change**:
@@ -165,7 +165,7 @@ This scenario documents how ID jitter occurs, how it's detected, and how the sys
   - Looks up channel by name "data-sync"
   - Channel already active (created in step 2b when accepting A's request)
   - Current ID array: `[5]`
-  - Validates ID parity: 4 is even, Transport A has EVEN_ROLE ✓
+  - Validates ID parity: 4 is even, Transport A has ROLE_EVEN ✓
   - Checks for duplicate: 4 not in array ✓
   - **No pending request** (already resolved in step 2b after acceptance written to ring)
 - **State Change**:
@@ -187,7 +187,7 @@ This scenario documents how ID jitter occurs, how it's detected, and how the sys
 ## ID Jitter Timeline
 
 ```
-Time  Transport A (EVEN_ROLE)           Transport B (ODD_ROLE)
+Time  Transport A (ROLE_EVEN)           Transport B (ROLE_ODD)
 ----  ------------------------------    ------------------------------
 T0    requestChannel('data-sync')       requestChannel('data-sync')
       No ID exists → send request       No ID exists → send request
@@ -275,7 +275,7 @@ T2    ← Receives chanResp(id=5)         (idle)
 **Scenario**: Transport receives acceptance with (different) ID of same parity as already assigned
 
 **Example**:
-- Transport A (EVEN_ROLE) has ID array `[4]`
+- Transport A (ROLE_EVEN) has ID array `[4]`
 - Receives `chanResp` with id=6 (even)
 - This is a protocol violation (acceptor should never assign duplicate parity)
 
@@ -324,7 +324,7 @@ T2    ← Receives chanResp(id=5)         (idle)
 
 ## Related Scenarios
 
-- [`role-determination.md`](role-determination.md) - How EVEN_ROLE vs ODD_ROLE is determined
+- [`role-determination.md`](role-determination.md) - How ROLE_EVEN vs ROLE_ODD is determined
 - [`channel-request.md`](channel-request.md) - Channel request process
 - [`channel-acceptance.md`](channel-acceptance.md) - Channel acceptance process
 - [`message-type-registration.md`](message-type-registration.md) - Similar jitter for message types

@@ -16,7 +16,7 @@ This scenario describes the complete process of creating and starting a PolyTran
 
 ## Architectural Note
 
-**IMPORTANT**: This scenario reflects the **bidirectional channel model** (2026-01-12 update). All channels are now bidirectional, with transport role (EVEN_ROLE vs ODD_ROLE) determining ID assignment. See [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md) for details.
+**IMPORTANT**: This scenario reflects the **bidirectional channel model** (2026-01-12 update). All channels are now bidirectional, with transport role (ROLE_EVEN vs ROLE_ODD) determining ID assignment. See [`arch/bidi-chan-even-odd-update.md`](../bidi-chan-even-odd-update.md) for details.
 
 ## Actors
 
@@ -70,7 +70,7 @@ this.#transportId = crypto.randomUUID();
 // Example: "550e8400-e29b-41d4-a716-446655440000"
 ```
 
-**Purpose**: Transport UUID is used to determine transport role (EVEN_ROLE vs ODD_ROLE) after handshake exchange. The transport with the lexicographically lower UUID gets EVEN_ROLE, which assigns even channel/message-type IDs.
+**Purpose**: Transport UUID is used to determine transport role (ROLE_EVEN vs ROLE_ODD) after handshake exchange. The transport with the lexicographically lower UUID gets ROLE_EVEN, which assigns even channel/message-type IDs.
 
 **State Changes**:
 - `#transportId` set to UUID string
@@ -314,23 +314,23 @@ this.bufferPool.release(buffer);
 
 #### 7d. Determine Transport Role
 
-**Action**: Compare transport UUIDs to determine EVEN_ROLE vs ODD_ROLE
+**Action**: Compare transport UUIDs to determine ROLE_EVEN vs ROLE_ODD
 **Responsible**: Transport Implementation
 **Requirements Reference**: [`arch/bidi-chan-even-odd-update.md:31-33`](../bidi-chan-even-odd-update.md:31)
 
 ```javascript
 // Constants (defined in transport module)
-const EVEN_ROLE = 0;
-const ODD_ROLE = 1;
+const ROLE_EVEN = 0;
+const ROLE_ODD = 1;
 
 // Compare local and remote transport IDs lexicographically
 if (this.#transportId < remoteConfig.transportId) {
-  this.#transportRole = EVEN_ROLE;
+  this.#transportRole = ROLE_EVEN;
   this.#nextChannelId = Math.max(256, this.minChannelId);
   // Ensure even starting ID
   if (this.#nextChannelId % 2 !== 0) this.#nextChannelId++;
 } else if (this.#transportId > remoteConfig.transportId) {
-  this.#transportRole = ODD_ROLE;
+  this.#transportRole = ROLE_ODD;
   this.#nextChannelId = Math.max(256, this.minChannelId);
   // Ensure odd starting ID
   if (this.#nextChannelId % 2 === 0) this.#nextChannelId++;
@@ -340,13 +340,13 @@ if (this.#transportId < remoteConfig.transportId) {
 ```
 
 **State Changes**:
-- `#transportRole` set to `EVEN_ROLE` (0) or `ODD_ROLE` (1)
+- `#transportRole` set to `ROLE_EVEN` (0) or `ROLE_ODD` (1)
 - `#nextChannelId` initialized to first even/odd ID >= minChannelId
 - `#nextMessageTypeId` initialized similarly (per-channel, not set here)
 
 **Key Insight**:
-- EVEN_ROLE assigns even IDs (0, 2, 4, 6, ...)
-- ODD_ROLE assigns odd IDs (1, 3, 5, 7, ...)
+- ROLE_EVEN assigns even IDs (0, 2, 4, 6, ...)
+- ROLE_ODD assigns odd IDs (1, 3, 5, 7, ...)
 - This prevents ID collisions during simultaneous channel/message-type requests
 - See [`role-determination.md`](role-determination.md) for detailed scenario
 
@@ -468,7 +468,7 @@ Input Stream → Buffer Pool → Protocol.decodeHeader() → Message Router
 ## Postconditions
 
 - Transport is in `started` state (`#started === true`)
-- Transport UUID generated and transport role determined (EVEN_ROLE or ODD_ROLE)
+- Transport UUID generated and transport role determined (ROLE_EVEN or ROLE_ODD)
 - Buffer pool and output ring buffer are initialized and ready
 - Transport budget management initialized (TransportFlowControl + TaskQueue)
 - Transport is ready to accept channel requests
@@ -569,7 +569,7 @@ Input Stream → Buffer Pool → Protocol.decodeHeader() → Message Router
 
 7. **Console Interception Timing**: Application sets up console/exception interception before starting transport, with ability to check if C2C is active via `PolyTransport.LOG_CHANNEL` symbol.
 
-8. **Transport Role Determination**: Transport UUID comparison determines EVEN_ROLE vs ODD_ROLE, which controls ID assignment parity.
+8. **Transport Role Determination**: Transport UUID comparison determines ROLE_EVEN vs ROLE_ODD, which controls ID assignment parity.
 
 9. **Symbol-Based Channel Access**: Users access C2C via `PolyTransport.LOG_CHANNEL` symbol (not numeric ID 1). TCC is internal-only via `XP_CTRL_CHANNEL` symbol.
 

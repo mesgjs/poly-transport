@@ -5,18 +5,22 @@
  */
 
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
-import { HDR_TYPE_CHAN_CONTROL, TCC_CTLM_MESG_TYPE_REG_REQ } from './protocol.esm.js';
 import { StateError, TimeoutError } from './transport/base.esm.js';
+import {
+	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, MAX_DATA_HEADER_BYTES, TCC_CTLM_MESG_TYPE_REG_REQ
+} from './protocol.esm.js';
 import { AppAsyncEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
+import { VirtualBuffer } from './virtual-buffer.esm.js';
 
 export class Channel extends Eventable {
-	get STATE_OPEN () { return 0; }
-	get STATE_CLOSING () { return 1; }
-	get STATE_LOCAL_CLOSING () { return 2; }
-	get STATE_REMOTE_CLOSING () { return 3; }
-	get STATE_CLOSED () { return 4; }
+	static get STATE_OPEN () { return 'open'; }
+	static get STATE_CLOSING () { return 'closing'; }
+	static get STATE_LOCAL_CLOSING () { return 'localClosing'; }
+	static get STATE_REMOTE_CLOSING () { return 'remoteClosing'; }
+	static get STATE_CLOSED () { return 'closed'; }
 
+	#stateSubs = new Set();
 	#state;
 
 	/**
@@ -29,25 +33,26 @@ export class Channel extends Eventable {
 	 * @param {number} config.localLimit - Local buffer limit
 	 * @param {number} config.remoteLimit - Remote buffer limit
 	 */
-	constructor ({ id, name, transport, token, localLimit, remoteLimit }) {
-		this._setState({
+	constructor ({ id, name, transport, token, localLimit, remoteLimit, maxDataBytes }) {
+		this.#state = {
 			allReader: {
 				waiting: false
 			},
 			controlMessages: [], // Accumulated control-message chunks
 			dataMessages: new Set(),
 			discard: false, // Discard input when closing
-			disconnected: false, // Connection lost
 			filteredReaders: new Map(), // Map<type, {waiting: boolean, resolve}>
 			flowControl: new ChannelFlowControl(localLimit, remoteLimit),
 			ids: [id],
-			name,
+			maxDataBytes,
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
+			name,
 			state: Channel.STATE_OPEN,
 			transport,
 			token,
 			writerQueue: new TaskQueue(),
-		});
+		};
+		this._subState(this.#stateSubs);
 	}
 
 	/**
@@ -115,14 +120,14 @@ export class Channel extends Eventable {
 	 * @protected
 	 * @returns {Promise<void>}
 	 */
-	async _dispatchEvent (...spec) {
+	async dispatchEvent (...spec) {
 		if (typeof spec[0] === 'string') {
 			// Eventable expects an event object with type property
 			const [type, detail = null] = spec;
-			await this.dispatchEvent({ type, detail });
+			await super.dispatchEvent({ type, detail });
 		} else if (typeof spec[0] === 'object') {
 			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
-			await this.dispatchEvent(spec[0]);
+			await super.dispatchEvent(spec[0]);
 		}
 	}
 
@@ -151,6 +156,16 @@ export class Channel extends Eventable {
 		const entry = messageTypes.get(type);
 		const { ids, name } = entry;
 		return { ids, name };
+	}
+
+	_getState () {
+		const state = this.#state, subs = this.#stateSubs;
+		try {
+			for (const sub of subs) {
+				sub(state);
+				subs.delete(sub);
+			}
+		} catch (_) { /**/ }
 	}
 
 	/**
@@ -230,8 +245,7 @@ export class Channel extends Eventable {
 	 * Return the channel name
 	 */
 	get name () {
-		const state = this.#state;
-		return state.name;
+		return this.#state.name;
 	}
 
 	/**
@@ -261,6 +275,31 @@ export class Channel extends Eventable {
 		// TO DO:
 		// Add ids for accepted message-types
 		// Resolve waiters
+	}
+
+	/**
+	 * Parse JSON from an array of message chunks
+	 * @param {{header, data:(string|VirtualBuffer)}[]} messages 
+	 * @returns {Object}
+	 */
+	#parseMessageJSON (messages) {
+		// Collect any chunked string or buffer data, decoding the latter.
+		const jsonText = messages.reduce((acc, [_, data]) => {
+			if (typeof data === 'string') { // string chunks
+				acc ||= [];
+				acc.push(data);
+			}
+			return acc;
+		}, null)?.join('') ??
+		messages.reduce((acc, [_, data]) => {
+			if (typeof data === 'object' && data !== null) { // buffer chunks
+				acc ||= new VirtualBuffer();
+				acc.append(data);
+			}
+			return acc;
+		}, null)?.decode();
+		const parsed = jsonText && JSON.parse(jsonText);
+		return parsed;
 	}
 
 	/**
@@ -402,7 +441,7 @@ export class Channel extends Eventable {
 		if (result.duplicate) {
 			// Emit PVE for result.duplicate duplicate ACKs
 			const event = new AppAsyncEvent('protocolViolation', { cancelable: true, detail: { duplicateAcks: result.duplicate }});
-			await this._dispatchEvent(event);
+			await this.dispatchEvent(event);
 			if (!event.defaultPrevented) {
 				await this.close({ discard: true });
 			}
@@ -410,7 +449,7 @@ export class Channel extends Eventable {
 		if (result.premature) {
 			// Emit PVE for result.premature premature ACKS
 			const event = new AppAsyncEvent('protocolViolation', { cancelable: true, detail: { prematureAcks: result.premature }});
-			await this._dispatchEvent(event);
+			await this.dispatchEvent(event);
 			if (!event.defaultPrevented) {
 				await this.close({ discard: true });
 			}
@@ -445,27 +484,12 @@ export class Channel extends Eventable {
 		}
 		flowControl.received(sequenceId, headerSize + dataSize);
 		messages.push([header, data]);
-		if (!header.eom) return;
+		if (!eom) return;
 
 		/*
 		 * Message-type registration requests and responses both require JSON-parsed text.
-		 * Collect any chunked string or buffer data, decoding the latter.
 		 */
-		const jsonText = messages.reduce((acc, [_, data]) => {
-			if (typeof data === 'string') { // string chunks
-				acc ||= [];
-				acc.push(data);
-			}
-			return acc;
-		}, null)?.join('') ??
-		messages.reduce((acc, [_, data]) => {
-			if (typeof data === 'object' && data !== null) { // buffer chunks
-				acc ||= new VirtualBuffer();
-				acc.append(data);
-			}
-			return acc;
-		}, null)?.decode();
-		const parsed = jsonText && JSON.parse(jsonText);
+		const parsed = this.#parseMessageJSON(messages);
 
 		switch (messageType) {
 		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
@@ -523,26 +547,117 @@ export class Channel extends Eventable {
 		}
 	}
 
-	// Implement in every sub-class to thread the state
-	_setState (state) {
-		if (!this.#state) {
-			this.#state = state;
-			// super._setState(state);
+	// Implement in every sub-class to subscribe to state
+	_subState () { }
+
+	/**
+	 * Write a message (in one or more chunks) to the channel
+	 * @param {number|string} type - The message type
+	 * @param {string|function|Uint8Array|VirtualBuffer} source
+	 * @param {Object} options
+	 * @param {number} options.byteLength - Data size (for function source)
+	 * @param {boolean} options.eom=true - Last chunk of message
+	 * @param {Object} options.options - Additional options
+	 */
+	/* async */ write (type, source, options = {}) {
+		const state = this.#state;
+		if (typeof type === 'string') {
+			const { messageTypes } = state;
+			const info = messageTypes.get(type);
+			if (info?.ids.length) {
+				type = info.ids[0];
+			} else {
+				throw new RangeError(`Unknown message type "${type}" for channel.write`);
+			}
+		}
+		const { transport } = state;
+		if (typeof source === 'string') {
+			if (transport.needsEncodedText) {
+				return this.#writeEncodedText(type, source, options);
+			}
+			return this.#writeRawText(type, source, options);
+		}
+		if (typeof source === 'function' || source instanceof Uint8Array || source instanceof VirtualBuffer) {
+			return this.#writeBuffer(type, source, options);
 		}
 	}
 
 	/**
-	 *
-	 * @param {number|string} type - The message type
-	 * @param {*} source
-	 * @param {*} options
+	 * Write buffer-(or function)-sourced data
+	 * @param {number} type - The message-type id
+	 * @param {function|Uint8Array|VirtualBuffer} source - The data source
+	 * @param {Object} options 
 	 */
-	async write (type, source, { byteLength, eom = true, timeout } = {}) {
-		// TO DO: IMPLEMENT
+	async #writeBuffer (type, source, options) {
+		const state = this.#state;
+		const { flowControl, maxDataBytes, writerQueue, transport, token } = state;
+		const { eom } = options;
+		const fnSrc = typeof source === 'function';
+		if (source instanceof Uint8Array) {
+			// Normalize source to VirtualBuffer
+			source = new VirtualBuffer(source);
+		}
+		let offset = 0, remaining = fnSrc ? options.byteLength : source.length;
+		if (!Number.isInteger(remaining) || remaining < 1) remaining = 0;
+		while (true) {
+			// Process the next chunk of data
+			const dataSize = Math.min(remaining, maxDataBytes);
+			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
+			const bufferLoader = fnSrc ? (buffer) => source(offset, dataSize, buffer) : (buffer) => source.slice(offset, offset + dataSize).toUint8Array(buffer);
+			await writerQueue.add(async () => {
+				await flowControl.writable(totalSize); // Wait for channel sending budget
+				const sequenceId = flowControl.nextWriteSeq;
+				const header = { dataSize, flags, sequenceId, messageType: type };
+				await transport.sendByteMessage(token, header, bufferLoader);
+				flowControl.sent(totalSize);
+			});
+			offset += dataSize;
+			remaining -= dataSize;
+			if (remaining <= 0) break;
+		}
+	}
+
+	/**
+	 * Write UTF-8-encoded text
+	 * @param {number} type - The message-type id
+	 * @param {string} source - The (UTF-16) string data
+	 * @param {Object} options 
+	 */
+	async #writeEncodedText (type, source, options) {}
+
+	/**
+	 * Write raw text
+	 * @param {number} type - The message-type id
+	 * @param {string} source - The (UTF-16) string data
+	 * @param {Object} options 
+	 */
+	async #writeRawText (type, source, options) {
+		const state = this.#state;
+		const { flowControl, maxDataBytes, writerQueue, transport, token } = state;
+		const { eom } = options;
+		const maxDataChars = maxDataBytes >>> 1;
+		let offset = 0, remaining = source.length;
+		while (true) {
+			// Process the next chunk of text
+			const dataLen = Math.min(remaining, maxDataChars), dataSize = dataLen < 1;
+			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			const data = (!offset && dataLen === remaining) ? source : source.slice(offset, offset + dataLen);
+			await writerQueue.add(async () => {
+				await flowControl.writable(totalSize); // Wait for channel sending budget (in *bytes*)
+				const sequenceId = flowControl.nextWriteSeq;
+				const header = { dataSize, flags, sequenceId, messageType: type };
+				await transport.sendTextMessage(token, header, data);
+				flowControl.sent(totalSize);
+			});
+			offset += dataLen;
+			remaining -= dataLen;
+			if (remaining <= 0) break;
+		}
 	}
 }
 
 /*
- * IdSet - A custom Set used to indicate that a list of message types have already been normalized
+ * IdSet - Private sub-class indicating a Set of message-type IDs that have already been normalized
  */
 class IdSet extends Set {}

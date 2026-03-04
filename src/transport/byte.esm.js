@@ -1,6 +1,13 @@
 /*
  * Byte-Stream-Based Transport Class
  *
+ * Features (input):
+ * - Buffer-byte-stream-to-message
+ * Features (output):
+ * - Ring-buffer management
+ * - String-to-bytes text encoding
+ * - Write-scheduling/batching
+ *
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
@@ -16,14 +23,15 @@ import {
 
 export class ByteTransport extends Transport {
 	#state; // Constructor-threaded private state
+	#autoWriteBytes;
+	#autoWriteTime;
 
 	constructor (options = {}) {
 		super(options);
+		this._getState();
 		const state = this.#state;
-		Object.assign(state, {
-			autoWriteBytes: options.autoWriteBytes ?? 16 * 1024,
-			autoWriteTime: options.autoWriteTime ?? 5, // msec
-		});
+		this.#autoWriteBytes = options.autoWriteBytes ?? 16 * 1024;
+		this.#autoWriteTime = options.autoWriteTime ?? 5; // msec
 	}
 
 	/**
@@ -51,7 +59,7 @@ export class ByteTransport extends Transport {
 				const line = input.decode({ end: offset });
 				input.release(offset);
 				offset = 0;
-				await this._dispatchEvent('outOfBandData', { data: line });
+				await this.dispatchEvent('outOfBandData', { data: line });
 				continue;
 			}
 
@@ -65,10 +73,10 @@ export class ByteTransport extends Transport {
 					try {
 						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
 						firstConfig = false;
-						await this.onRemoteConfig(config);
+						await this.onRemoteConfig(state, config);
 					} catch (_e) { /**/ }
 				} else {
-					await this._dispatchEvent('outOfBandData', { data: line });
+					await this.dispatchEvent('outOfBandData', { data: line });
 				}
 				continue;
 			}
@@ -101,7 +109,7 @@ export class ByteTransport extends Transport {
 				header = decodeChannelHeaderFrom(input);
 				break;
 			default:
-				await this._dispatchEvent('protocolViolation', {
+				await this.dispatchEvent('protocolViolation', {
 					type: 'unknownHeaderType',
 					description: `Unknown header type ${type}`,
 					headerType: type,
@@ -120,23 +128,7 @@ export class ByteTransport extends Transport {
 				input.release(dataSize, state.pool);
 			}
 
-			if (state.stopped) break;
-
-			const channelId = header.channelId, channel = state.channels.get(channelId);
-
-			if (!channel) {
-				await this._dispatchEvent('protocolViolation', {
-					type: 'unknownChannelId',
-					description: 'Unknown channel ID',
-					channelId
-				});
-				await this.stop();
-				continue;
-			}
-
-			// Dispatch the message to the appropriate channel for processing
-			const token = state.channelTokens.get(channel);
-			channel.receiveMessage(token, header, data);
+			this.receiveMessage(state, header, data);
 		}
 	}
 
@@ -224,24 +216,9 @@ export class ByteTransport extends Transport {
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
 			throw new Error('Unauthorized sendMessage');
 		}
-	}
-
-	/**
-	 * Thread and extend the private state
-	 * @param {Object} state - The private state
-	 */
-	_setState (state) {
-		if (!this.#state) {
-			this.#state = state;
-			super._setState(state);
-			Object.assign(state, {
-				inputBuffer: new VirtualRWBuffer(),
-				outputBuffer: new OutputRingBuffer(),
-				readerTimer: null,
-				readWaiter: null,
-				writing: false,
-			});
-		}
+		// TO DO:
+		// Encode data
+		// writeBytes
 	}
 
 	/**
@@ -253,6 +230,15 @@ export class ByteTransport extends Transport {
 			throw new Error('Unauthorized _start');
 		}
 		state.readerTimer = setTimeout(() => this.#byteReader(), 0);
+	}
+
+	/**
+	 * Subscribe to private state
+	 * @param {Set} subs - Subscribers Set
+	 */
+	_subState (subs) {
+		super._subState(subs);
+		subs.add((s) => this.#state ||= s); // Set #state once
 	}
 
 	/**

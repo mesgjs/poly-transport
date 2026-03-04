@@ -1445,3 +1445,20 @@ The `channel.close({ discard })` method accepts a single parameter:
 ## Updates & Clarifications 2026-01-20-A
 
 - A revised transport input-process overview has been added as [transport-input-overview.md](transport-input-overview.md).
+
+## Updates & Clarifications 2026-03-01-A
+
+- Each thread is responsible for allocating and releasing its own buffers
+  - Low and high water-mark conditions should be handled locally in-thread (i.e. no transfers to/from main thread for this)
+  - Buffers **CAN** transfer between threads due to normal messaging (becoming part of the receiving thread's dirty pool after a reader has completed processing)
+- "Transport budget" should only mean "room available in the ring buffer" for byte-stream transports
+  - This budget is restored when the ring buffer is written (there's no ACK-based restoration)
+  - (Prevents misbehaving channels (that write but never read) from blocking *other* channels)
+  - Object-stream transports should send messages synchronously (no ring availability considerations)
+  - FIFO ordering remains for both channel budget and ring-buffer access
+- Chunking needs to be performed at the channel level (not the transport level), as each chunk requires channel budget
+- Channel should check `transport.needsTextEncoding` to determine if string data needs to be encoded (will typically be true for byte-stream transports, false for object-stream)
+  - Data size for strings = length * 2 (due to JS UTF-16 encoding)
+- Channel write timeout applies to getting the *first chunk* to the ring buffer (byte-stream) or sent (object-stream)
+  - Once the first chunk is sent, remaining chunks *MUST* be sent without any further timeout consideration (there's no protocol provision for partial messages)
+- Some "scenario" files may be out-of-date at this point; these should be analyzed and flagged as appropriate

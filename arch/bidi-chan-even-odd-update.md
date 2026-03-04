@@ -30,7 +30,7 @@ NOTE: This update constitutes a radical shift in both design and implementation.
 
 - Each transport must assign itself a transport id using `crypto.randomUUID()`
 - Each transport must announce its transport id as part of the transport connection handshake
-- The transport with the lexicographically lower id must assign itself the "EVEN_ROLE" transport role, while the transport with the lexcicographically higher id must assign itself the "ODD_ROLE" transport role
+- The transport with the lexicographically lower id must assign itself the "ROLE_EVEN" transport role, while the transport with the lexcicographically higher id must assign itself the "ROLE_ODD" transport role
 - Channels will always be bidirectional, inherently supporting in-channel request/response-style communications
 - Each channel or message-type may have zero, one, or two associated ids
   - These should be stored in a two-element array in ascending numeric order
@@ -38,8 +38,8 @@ NOTE: This update constitutes a radical shift in both design and implementation.
   - When a receiving transport "B" accepts a request from a sending transport "A":
     - If "B" already has an id registered for the resource, it returns the first one in the acceptance reply to transport "A"
     - Otherwise, "B" assigns its next sequential resource id (by type) and returns that in the acceptance reply to transport "A"
-  - `EVEN_ROLE` transports assign sequential *even* resource ids (without regard to received odd ids)
-  - `ODD_ROLE` transports assign sequential *odd* resource ids (without regard to received even ids)
+  - `ROLE_EVEN` transports assign sequential *even* resource ids (without regard to received odd ids)
+  - `ROLE_ODD` transports assign sequential *odd* resource ids (without regard to received even ids)
 - When a transport receives an acceptance, it adds the remotely-assigned id to the (named) resource
   - (Unless it already has an id of the same type (even or odd), in which case it is a protocol violation)
 - When a transport receives a rejection, no (additional) id is assigned

@@ -19,8 +19,8 @@ This scenario documents how a transport requests a new bidirectional channel fro
 - All channels are bidirectional (unidirectional concept removed)
 - Channel requests use TCC data messages (not control messages)
 - **Only the accepting transport assigns channel IDs**
-- EVEN_ROLE transports assign even channel IDs
-- ODD_ROLE transports assign odd channel IDs
+- ROLE_EVEN transports assign even channel IDs
+- ROLE_ODD transports assign odd channel IDs
 - Channel IDs stored in two-element array in ascending order: `[]` → `[id]` → `[id1, id2]`
 - First (lowest) ID used for sending
 - ID jitter possible during simultaneous requests (settles automatically)
@@ -32,7 +32,7 @@ This scenario documents how a transport requests a new bidirectional channel fro
 ## Preconditions
 
 - Transport is started ([`transport-initialization.md`](transport-initialization.md))
-- Transport role determined (EVEN_ROLE or ODD_ROLE) via UUID comparison
+- Transport role determined (ROLE_EVEN or ROLE_ODD) via UUID comparison
 - TCC channel (channel 0) is open and operational
 - Remote transport has at least one `newChannelRequest` event handler registered
 - If channel exists, it must not be in `closing` state
@@ -672,8 +672,8 @@ const channel = #channels.get(nameOrId);
 **Scenario**: Both transports request same named channel simultaneously
 
 **Flow**:
-1. Transport A (EVEN_ROLE) requests "primary"
-2. Transport B (ODD_ROLE) requests "primary"
+1. Transport A (ROLE_EVEN) requests "primary"
+2. Transport B (ROLE_ODD) requests "primary"
 3. Transport A accepts B's request, assigns ID 256 (even)
 4. Transport B accepts A's request, assigns ID 257 (odd)
 5. Both transports receive responses

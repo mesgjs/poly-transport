@@ -31,7 +31,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Configuring channel defaults
 - Starting the transport
 - Initial handshake with transport ID exchange
-- Role determination (EVEN_ROLE vs ODD_ROLE)
+- Role determination (ROLE_EVEN vs ROLE_ODD)
 - TCC and C2C channel initialization (both bidirectional)
 - Module responsibilities: Transport base, specific transport implementations
 
@@ -222,7 +222,7 @@ Scenarios are organized by functional area and complexity. The order below repre
 - Transport ID exchange (crypto.randomUUID())
 - Configuration exchange (c2cEnabled, minChannelId, minMessageTypeId, version)
 - Operating value calculation (max of local and remote minChannelId/minMessageTypeId)
-- Role determination (EVEN_ROLE vs ODD_ROLE based on UUID comparison)
+- Role determination (ROLE_EVEN vs ROLE_ODD based on UUID comparison)
 - Protocol version negotiation (version 1)
 - Switching to binary stream (SOH marker)
 - VirtualRWBuffer accumulation for input (reader-supplied buffers up to SOH)

@@ -7,7 +7,7 @@ The transport handshake is the initial protocol exchange that establishes a Poly
 The handshake accomplishes three critical tasks:
 1. **Transport identification** - Verify both sides are speaking PolyTransport protocol
 2. **Configuration exchange** - Share transport settings (C2C enabled, version, transport ID)
-3. **Role determination** - Establish EVEN_ROLE vs ODD_ROLE for channel/message-type ID assignment
+3. **Role determination** - Establish ROLE_EVEN vs ROLE_ODD for channel/message-type ID assignment
 
 This scenario documents the handshake sequence from both the initiating and receiving perspectives.
 
@@ -90,7 +90,7 @@ if (!this.#transportId) {
 
 **Notes**:
 - Transport ID must be unique per transport instance
-- Used for deterministic role assignment (EVEN_ROLE vs ODD_ROLE)
+- Used for deterministic role assignment (ROLE_EVEN vs ROLE_ODD)
 - Persists for lifetime of transport
 - **Required** in handshake configuration (not optional)
 
@@ -455,20 +455,20 @@ this.#operatingMinMessageTypeId = Math.max(
 
 **Actor**: Transport
 
-**Action**: Compare transport IDs to assign EVEN_ROLE or ODD_ROLE.
+**Action**: Compare transport IDs to assign ROLE_EVEN or ROLE_ODD.
 
 ```javascript
 // Compare transport IDs lexicographically
 if (this.#transportId < this.#remoteTransportId) {
-	// Lower transportId gets EVEN_ROLE
-	this.#role = Transport.EVEN_ROLE;  // 0
+	// Lower transportId gets ROLE_EVEN
+	this.#role = Transport.ROLE_EVEN;  // 0
 	this.#nextChannelId = this.#operatingMinChannelId;
 	// Ensure even starting ID
 	if (this.#nextChannelId % 2 !== 0) this.#nextChannelId++;
 	
 } else if (this.#transportId > this.#remoteTransportId) {
-	// Higher transportId gets ODD_ROLE
-	this.#role = Transport.ODD_ROLE;  // 1
+	// Higher transportId gets ROLE_ODD
+	this.#role = Transport.ROLE_ODD;  // 1
 	this.#nextChannelId = this.#operatingMinChannelId;
 	// Ensure odd starting ID
 	if (this.#nextChannelId % 2 === 0) this.#nextChannelId++;
@@ -480,12 +480,12 @@ if (this.#transportId < this.#remoteTransportId) {
 ```
 
 **State Changes**:
-- Transport: `#role` set to `EVEN_ROLE` (0) or `ODD_ROLE` (1)
+- Transport: `#role` set to `ROLE_EVEN` (0) or `ROLE_ODD` (1)
 - Transport: `#nextChannelId` initialized to first even/odd ID >= `operatingMinChannelId`
 
 **Role Implications**:
-- **EVEN_ROLE**: Assigns even channel IDs (2, 4, 6, ...) and even message-type IDs
-- **ODD_ROLE**: Assigns odd channel IDs (3, 5, 7, ...) and odd message-type IDs
+- **ROLE_EVEN**: Assigns even channel IDs (2, 4, 6, ...) and even message-type IDs
+- **ROLE_ODD**: Assigns odd channel IDs (3, 5, 7, ...) and odd message-type IDs
 - **Deterministic**: Both sides compute same roles (no negotiation needed)
 - **Conflict-free**: Even/odd separation prevents ID collisions
 
@@ -538,7 +538,7 @@ if (this.#remoteConfig.c2cEnabled && this.#localConfig.c2cEnabled) {
 ## Postconditions
 
 - Handshake successfully exchanged in both directions
-- Transport role determined (EVEN_ROLE or ODD_ROLE)
+- Transport role determined (ROLE_EVEN or ROLE_ODD)
 - Remote configuration stored
 - Foundational channels initialized (TCC, optionally C2C)
 - Binary message stream active (ready for ACK/control/data messages)
@@ -796,7 +796,7 @@ this.#logger.debug('Handshake sent:', {
 this.#logger.debug('Handshake received:', {
 	remoteTransportId: this.#remoteTransportId,
 	remoteVersion: config.version,
-	role: this.#role === Transport.EVEN_ROLE ? 'EVEN' : 'ODD'
+	role: this.#role === Transport.ROLE_EVEN ? 'EVEN' : 'ODD'
 });
 ```
 

@@ -19,7 +19,15 @@ export class ControlChannel extends Channel {
 
 	constructor (options) {
 		super(options);
+		this._getState();
 		this.#preloadMessageTypes();
+	}
+
+	/**
+	 * Channel-request response reader
+	 */
+	onChannelResponse () {
+		//
 	}
 
 	/*
@@ -40,11 +48,22 @@ export class ControlChannel extends Channel {
 		}
 	}
 
-	// Thread private state (called by base constructor)
-	_setState (state) {
-		if (!this.#state) {
-			super._setState(state);
-			this.#state = state;
-		}
+	/**
+	 * Send a request to open a new channel
+	 * Called by transport.requestChannel
+	 * @param {string} channelName - The name of the channel
+	 * @param {Object} options 
+	 */
+	requestChannel (channelName, options) {
+		const request = JSON.stringify({
+			channelName
+		});
+		this.write(TCC_DTAM_CHAN_REQUEST, request);
+	}
+
+	// Subscribe to private state (called by base constructor)
+	_subState (subs) {
+		super._subState(subs);
+		subs.add((s) => this.#state ||= s);
 	}
 }

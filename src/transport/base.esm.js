@@ -5,6 +5,11 @@
  */
 
 import { Eventable } from '@eventable';
+import { TaskQueue } from '@task-queue';
+import { ControlChannel } from '../control-channel.esm.js';
+import {
+	CHANNEL_TCC, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID
+} from '../protocol.esm.js';
 
 /**
  * Transport Base Class
@@ -15,10 +20,12 @@ import { Eventable } from '@eventable';
  */
 
 export class Transport extends Eventable {
+	#starting; // Starting promise
 	#state; // Private state (sub-classes must have one also)
+	#stateSubs = new Set();
 
-	get EVEN_ROLE () { return 0; }
-	get ODD_ROLE () { return 1; }
+	static get ROLE_EVEN () { return 0; }
+	static get ROLE_ODD () { return 1; }
 
 	/**
 	 * Create a new Transport instance
@@ -28,7 +35,7 @@ export class Transport extends Eventable {
 	 */
 	constructor (options = {}) {
 		super();
-		this._setState({
+		this.#state = {
 			channelDefaults: {
 				maxBufferBytes: 0,      // 0 = unlimited
 				maxChunkBytes: 0,       // 0 = transport limit
@@ -36,15 +43,23 @@ export class Transport extends Eventable {
 			},
 			channels: new Map(), // ids / name / token -> channel
 			channelTokens: new Map(), // token <-> channel
+			disconnected: false,
 			id: crypto.randomUUID(),
 			logger: options.logger || console,
 			logSymbol: Symbol('log'),
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
+			minChannelId: MIN_CHANNEL_ID,
+			minMessageTypeId: MIN_MESG_TYPE_ID,
 			pool: options.pool,
+			role: undefined, // even/odd role not yet determined
 			started: false,
-			stoppped: false,
+			starting: null,
+			stopped: false,
+			stopping: null,
 			tccSymbol: Symbol('TCC'),
-		});
+			writerQueue: new TaskQueue(),
+		};
+		this._subState(this.#stateSubs);
 	}
 
 	/**
@@ -85,14 +100,14 @@ export class Transport extends Eventable {
 	 * @protected
 	 * @returns {Promise<void>}
 	 */
-	async _dispatchEvent (...spec) {
+	async dispatchEvent (...spec) {
 		if (typeof spec[0] === 'string') {
 			// Eventable expects an event object with type property
 			const [type, detail = null] = spec;
-			await this.dispatchEvent({ type, detail });
+			await super.dispatchEvent({ type, detail });
 		} else if (typeof spec[0] === 'object') {
 			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
-			await this.dispatchEvent(spec[0]);
+			await super.dispatchEvent(spec[0]);
 		}
 	}
 
@@ -114,6 +129,19 @@ export class Transport extends Eventable {
 	 */
 	getChannelDefaults () {
 		return { ...this.#state.channelDefaults };
+	}
+
+	/**
+	 * Base-class method to distribute private state to subscribers
+	 */
+	_getState () {
+		const state = this.#state, subs = this.#stateSubs;
+		try {
+			for (const sub of subs) {
+				sub(state); // Attempt to distribute state
+				subs.delete(sub); // Remove successfully-completed subscriptions
+			}
+		} catch (_) { }
 	}
 
 	/**
@@ -158,8 +186,84 @@ export class Transport extends Eventable {
 	 * Return transport-level maxChunkBytes
 	 */
 	get maxChunkBytes () {
-		const state = this.#state;
-		return state.maxChunkBytes;
+		return this.#state.maxChunkBytes;
+	}
+
+	/**
+	 * Does this transport require text encoding? (Default true)
+	 */
+	get needsEncodedText () { return true; }
+
+	/**
+	 * Calculate operating values and activate foundational channels upon receiving
+	 * remote configuration
+	 * @param {Object|AppAsyncEvent} event 
+	 */
+	async onRemoteConfig (state, config) {
+		if (state !== this.#state) throw new Error('Unauthorized call');
+		
+		// Negotiate consensus on minimum ids
+		const { minChannelId, minMessageTypeId } = state;
+		const { minChannelId: minRmtChanId, minMessageTypeId: minRmtMesgTypeId } = config;
+		if (minRmtChanId > minChannelId) state.minChannelId = minRmtChanId;
+		if (minRmtMesgTypeId > minMessageTypeId) state.minMessageTypeId = minRmtMesgTypeId;
+
+		// Compute even/odd role
+		const { transportId } = state;
+		const { transportId: rmtTranspId } = config;
+		if (transportId < rmtTranspId) {
+			state.role = Transport.ROLE_EVEN;
+		} else if (transportId > rmtTranspId) {
+			state.role = Transport.ROLE_ODD;
+		} else {
+			throw new Error('Received own transport ID in remote config');
+		}
+
+		// Always include the transport control channel (TCC)
+		const { channels, channelTokens } = state;
+		const token = Symbol('TCC');
+		const tcc = new ControlChannel({ ...state.channelDefaults, token });
+		channels.set(0, tcc);
+		channels.set(tcc, 0);
+		channelTokens.set(token, tcc);
+		channelTokens.set(tcc, token);
+
+		// Include console-content channel (C2C) if mutually enabled in config
+		const { c2cEnabled } = state;
+		const { c2cEnabled: rmtC2C } = config;
+		if (c2cEnabled && rmtC2C) {
+			//
+		}
+
+		this.#starting.resolve();
+	}
+
+	/**
+	 * Forward a received message to the appropriate channel
+	 * @param {Object} state - Private state for auth
+	 * @param {Object} header - Message header
+	 * @param {*} data - Optional message data
+	 * @returns 
+	 */
+	async receiveMessage (state, header, data) {
+		if (state !== this.#state) throw new Error('Unauthored receiveMessage');
+		if (state.stopped) return;
+
+		const channelId = header.channelId, channel = state.channels.get(channelId);
+
+		if (!channel) {
+			await this.dispatchEvent('protocolViolation', {
+				type: 'unknownChannelId',
+				description: 'Unknown channel ID',
+				channelId
+			});
+			await this.stop();
+			return;
+		}
+
+		// Dispatch the message to the appropriate channel for processing
+		const token = state.channelTokens.get(channel);
+		channel.receiveMessage(token, header, data);
 	}
 
 	/**
@@ -171,17 +275,19 @@ export class Transport extends Eventable {
 	 */
 	async requestChannel (name, options = {}) {
 		const state = this.#state;
-		if (!state.started) {
+		const { started, stopped, channels } = state;
+		if (!started) {
 			throw new StateError('Transport not started');
 		}
-		if (state.stopped) {
+		if (stopped) {
 			throw new StateError('Transport is stopped');
 		}
-		// TO DO:
-		// Base class: Generate request header object
-		// Subclasses: Send req obj (worker) or encode + send (byte-streams)
-		throw new Error(`Transport.requestChannel is not yet implemented`);
+		const tcc = channels.get(CHANNEL_TCC);
+		const result = await tcc.requestChannel(name, options);
+		// TO DO: Process result
 	}
+
+	async sendHandshake (state) {}
 
 	/**
 	 * Set default options for new channel requests
@@ -206,63 +312,62 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Thread the private state up through sub-classes
-	 * Called from the base-class constructor
-	 * Every sub-class MUST implement this
-	 * @param {Object} state - The private state object
+	 * Subscribe to private state (stub for base class)
 	 */
-	_setState (state) {
-		if (!this.#state) {
-			this.#state = state;
-			// All sub-classes must pass the state up via super
-			// super._setState(state);
-		}
-	}
+	_subState (state) { }
 
 	/**
-	 * Start the transport (begin reading and writing)
-	 * @returns {Promise<void>}
+	 * Common code to start the transport (begin reading and writing)
+	 * @fires Transport#startReader
+	 * @fires Transport#startWriter
+	 * @fires Transport#sendHandshake
+	 * @returns {Promise<void>} Promise resolving when the transport is started
 	 */
 	async start () {
 		const state = this.#state;
-		if (state.stopped) {
+		if (state.stopping) {
 			throw new StateError('Transport is stopped');
 		}
-		if (state.started) {
-			throw new StateError('Transport already started');
+		if (state.starting) {
+			// Already starting/started
+			return state.starting.promise;
 		}
 
-		state.started = true;
-		await this._start(state);
+		// Create the started promise, to be resolved when the transport is ready
+		const starting = this.#starting = { promise: null };
+		starting.promise = new Promise((...r) => [starting.resolve, starting.reject] = r);
 
-		// TO DO:
-		// * Send our local configuration
-		// * Start our reader task
-		//   * line-based config/handshake loop
-		//   * byte-stream-based message loop
-		// * Reader triggers `onRemoteConfig` upon receipt of remote configuration
-		//   * calculates operating "min" values
-		//   * activates foundational channels
-		//   * sends our start-byte-stream sequence to switch remote reader mode
+		await this.startReader(state);
+		await this.startWriter(state);
+		await this.sendHandshake(state);
+		return this.#starting.promise;
 	}
+	async startReader (state ) { }
+	async startWriter (state ) { }
 
 	/**
 	 * Stop the transport and close all channels
 	 * @param {Object} options - Close options
 	 * @param {boolean} options.discard - Discard pending data (default: false)
 	 * @param {number} options.timeout - Timeout in milliseconds
-	 * @returns {Promise<void>}
+	 * @returns {Promise<void>} Promise resolving when the transport is stopped
 	 */
-	async stop (options = {}) {
-		const state = this.#state;
-		if (state.stopped) {
-			return;
+	async stop (state, options = {}) {
+		if (state !== this.#state) {
+			throw new Error('transport.stop missing sub-class')
 		}
+		if (state.stopped) {
+			// Return existing promise if already stopping/stopped
+			return state.stopped.promise;
+		}
+
+		const stopped = state.stopped = { promise: null };
+		stopped.promise = new Promise((res) => stopped.resolve = res);
 
 		const { discard = false, timeout } = options;
 
 		// Emit beforeStopping event
-		await this._dispatchEvent('beforeStopping', {});
+		await this.dispatchEvent('beforeStopping', {});
 
 		// Close all channels
 		const channelClosePromises = [];
@@ -294,7 +399,7 @@ export class Transport extends Eventable {
 		state.stopped = true;
 
 		// Emit stopped event
-		await this._dispatchEvent('stopped', {});
+		await this.dispatchEvent('stopped', {});
 	}
 
 	/**
@@ -335,6 +440,28 @@ export class Transport extends Eventable {
 	 */
 	_stop () {
 		throw new Error('transport._stop implementation is missing');
+	}
+
+	/**
+	 * Common portion of transport-specific writes from channels
+	 * @param {symbol} token - Channel verification token
+	 * @param {number} type - The message type
+	 * @param {*} source - The data source
+	 * @param {Object} options 
+	 */
+	sendChannelData (token, type, source, { updatableTimeout, ...options } = {}) {
+		const state = this.#state;
+		const { channelTokens } = state;
+		const channel = channelTokens.get(token);
+		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
+			throw new Error('Unauthorized transport.write');
+		}
+		// TO DO:
+		// Chunking
+		// Conversion (maybe)
+		// - Byte-stream transports convert strings to bytes
+		// - Object-stream transports send strings as-is (UTF-16; length * 2 bytes)
+		// Serialized sending of messages per chunk
 	}
 }
 

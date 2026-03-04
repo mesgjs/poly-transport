@@ -20,8 +20,8 @@ This scenario documents how a transport receives and processes a channel request
 - All channels are bidirectional (unidirectional concept removed)
 - Channel responses use TCC data messages (message-type `chanResp`, type 2)
 - **Only the accepting transport assigns channel IDs**
-- EVEN_ROLE transports assign even channel IDs
-- ODD_ROLE transports assign odd channel IDs
+- ROLE_EVEN transports assign even channel IDs
+- ROLE_ODD transports assign odd channel IDs
 - Channel IDs stored in two-element array: `[]` → `[id]` → `[id1, id2]`
 - First (lowest) ID used for sending
 - Reuse existing ID if channel name already has one
@@ -29,7 +29,7 @@ This scenario documents how a transport receives and processes a channel request
 ## Preconditions
 
 - Transport is started ([`transport-initialization.md`](transport-initialization.md))
-- Transport role determined (EVEN_ROLE or ODD_ROLE) via UUID comparison
+- Transport role determined (ROLE_EVEN or ROLE_ODD) via UUID comparison
 - TCC channel (channel 0) is open and operational
 - At least one `newChannelRequest` event handler registered
 - Remote transport has sent `chanReq` TCC message
@@ -480,8 +480,8 @@ await tccChannel.#writeQueue.task(async () => {
 - Provides idempotent acceptance for duplicate requests
 
 **Assign New ID** (channel doesn't have ID):
-- EVEN_ROLE: next even ID (256, 258, 260, ...)
-- ODD_ROLE: next odd ID (257, 259, 261, ...)
+- ROLE_EVEN: next even ID (256, 258, 260, ...)
+- ROLE_ODD: next odd ID (257, 259, 261, ...)
 - Starting point: `minChannelId` from handshake (default 2)
 - Increment by 2 after each assignment
 

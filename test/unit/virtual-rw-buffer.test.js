@@ -88,7 +88,7 @@ Deno.test('VirtualRWBuffer - set with invalid source type', () => {
 	assertThrows(
 		() => vb.set('invalid'),
 		TypeError,
-		'Source must be Uint8Array or VirtualRWBuffer'
+		'Source must be Uint8Array or VirtualBuffer'
 	);
 });
 
@@ -385,27 +385,6 @@ Deno.test('VirtualRWBuffer - release with pool', () => {
 	
 	assertEquals(releasedBuffers.length, 1);
 	assertEquals(releasedBuffers[0], buf1.buffer);
-});
-
-Deno.test('VirtualRWBuffer - onShrink callback', () => {
-	let shrinkCalled = false;
-	let shrinkBuffer = null;
-	let shrinkNewLength = null;
-	
-	const onShrink = (buffer, newLength) => {
-		shrinkCalled = true;
-		shrinkBuffer = buffer;
-		shrinkNewLength = newLength;
-	};
-	
-	const buffer = new Uint8Array([1, 2, 3, 4, 5]);
-	const vb = new VirtualRWBuffer(buffer, { onShrink });
-	
-	vb.shrink(3);
-	
-	assertEquals(shrinkCalled, true);
-	assertEquals(shrinkBuffer, vb);
-	assertEquals(shrinkNewLength, 3);
 });
 
 Deno.test('VirtualRWBuffer - combined operations', () => {

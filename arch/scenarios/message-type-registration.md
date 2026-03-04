@@ -23,8 +23,8 @@ This scenario documents how channels register named message types for bidirectio
 - Message-type registration uses in-channel control messages (not TCC)
 - Control messages sent as channel data messages (type 2 headers)
 - Message-type IDs assigned by accepting side (even or odd based on role)
-- EVEN_ROLE assigns even message-type IDs
-- ODD_ROLE assigns odd message-type IDs
+- ROLE_EVEN assigns even message-type IDs
+- ROLE_ODD assigns odd message-type IDs
 - Message-type IDs stored in two-element array: `[]` → `[id]` → `[id1, id2]`
 - First (lowest) ID used for sending (like channels)
 - Message types stored in channel's Map indexed by name and ID
@@ -33,7 +33,7 @@ This scenario documents how channels register named message types for bidirectio
 ## Preconditions
 
 - Transport is started ([`transport-initialization.md`](transport-initialization.md))
-- Transport role determined (EVEN_ROLE or ODD_ROLE)
+- Transport role determined (ROLE_EVEN or ROLE_ODD)
 - Channel is open ([`channel-request.md`](channel-request.md), [`channel-acceptance.md`](channel-acceptance.md))
 - Channel not in closing state
 - TCC has pre-loaded message types: `mesgTypeReq` (5), `mesgTypeResp` (6)
@@ -464,8 +464,8 @@ for (const assignment of response.assignments) {
 - Provides idempotent registration
 
 **Assign New ID** (type not registered):
-- EVEN_ROLE: next even ID (1024, 1026, 1028, ...)
-- ODD_ROLE: next odd ID (1025, 1027, 1029, ...)
+- ROLE_EVEN: next even ID (1024, 1026, 1028, ...)
+- ROLE_ODD: next odd ID (1025, 1027, 1029, ...)
 - Starting point: `minMessageTypeId` from handshake (default 1024)
 - Increment by 2 after each assignment
 

@@ -11,6 +11,11 @@ import { HDR_TYPE_ACK, PROTOCOL } from '../protocol.esm.js';
 export class ObjectTransport extends Transport {
 	#state;
 
+	constructor (options = {}) {
+		super(options);
+		this._getState();
+	}
+
 	/**
 	 * Send a message (object-stream version)
 	 * @param {symbol} token
@@ -25,16 +30,14 @@ export class ObjectTransport extends Transport {
 		}
 	}
 
+	get needsEncodedText () { return false; }
+
 	/**
-	 * Thread and extend the private state
-	 * @param {Object} state - The private state
+	 * Subscribe to private state
+	 * @param {Set} subs - Subscribers Set
 	 */
-	_setState (state) {
-		if (!this.#state) {
-			this.#state = state;
-			super._setState(state);
-			// Object.assign(state, {
-			// });
-		}
+	_subState (subs) {
+		super._subState(subs);
+		subs.add((s) => this.#state ||= s); // Set #state once
 	}
 }

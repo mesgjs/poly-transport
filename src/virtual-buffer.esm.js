@@ -10,10 +10,10 @@
  * File-scoped WeakMap for secure private state storage
  * Allows protected copying across instances
  */
-const privateState = new WeakMap();
+const _state = new WeakMap();
 
 export class VirtualBuffer {
-	#state;
+	#state = {};
 
 	/**
 	 * Create a VirtualBuffer from one or more sources
@@ -22,8 +22,7 @@ export class VirtualBuffer {
 	 * @param {number} length - Length (only used if source is Uint8Array)
 	 */
 	constructor (source, { offset = 0, length = undefined } = {}) {
-		this._setState({});
-		privateState.set(this, this.#state);
+		_state.set(this, this.#state);
 		this.clear();
 
 		if (source !== undefined) {
@@ -50,7 +49,7 @@ export class VirtualBuffer {
 			}
 		} else if (source instanceof VirtualBuffer) {
 			// VirtualBuffer - copy segments
-			const sourceState = privateState.get(source);
+			const sourceState = _state.get(source);
 			for (const seg of sourceState.segments) {
 				state.segments.push({ ...seg });
 				state.length += seg.length;
@@ -138,7 +137,7 @@ export class VirtualBuffer {
 
 		// Get the slice to decode
 		const slice = (start === 0 && end === state.length) ? this : this.slice(start, end);
-		const segments = privateState.get(slice).segments;
+		const segments = _state.get(slice).segments;
 
 		// Single-segment optimization: zero-copy decode
 		if (segments.length === 1) {
@@ -176,18 +175,6 @@ export class VirtualBuffer {
 	 */
 	get segmentCount () {
 		return this.#state.segments.length;
-	}
-
-	/**
-	 * Thread the private state
-	 * All sub-classes MUST implment this
-	 * @param {Object} state
-	 */
-	_setState (state) {
-		if (!this.#state) {
-			this.#state = state;
-			// super._setState(state);
-		}
 	}
 
 	/**
@@ -403,6 +390,10 @@ export class VirtualBuffer {
 export class VirtualRWBuffer extends VirtualBuffer {
 	#state;
 
+	constructor (...p) {
+		super(...p);
+		this.#state = _state.get(this);
+	}
 	/**
 	 * Append data to this virtual buffer (overrides parent to enforce security)
 	 * @param {Uint8Array|VirtualRWBuffer|Array<{buffer: Uint8Array, offset: number, length: number}>} source
@@ -576,7 +567,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 	/**
 	 * Write bytes from source into this buffer
-	 * @param {Uint8Array|VirtualRWBuffer} source - Data to write
+	 * @param {Uint8Array|VirtualBuffer} source - Data to write
 	 * @param {number} offset - Offset in this buffer to start writing (default 0)
 	 * @returns {number} Number of bytes written
 	 */
@@ -586,65 +577,80 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			throw new RangeError(`Offset ${offset} is out of range [0, ${state.length})`);
 		}
 
-		// Security: Only accept Uint8Array or VirtualRWBuffer
-		let sourceData;
-		if (source instanceof VirtualRWBuffer) {
-			sourceData = source.toUint8Array();
+		// Accept Uint8Array or any VirtualBuffer
+		if (source instanceof VirtualBuffer) {
+			// Iterate over source segments without copying
+			const sourceState = _state.get(source);
+			const sourceSegments = sourceState.segments;
+			
+			const bytesToWrite = Math.min(sourceState.length, state.length - offset);
+			if (bytesToWrite === 0) {
+				return 0;
+			}
+
+			let destOffset = offset;
+			let remainingBytes = bytesToWrite;
+
+			for (const sourceSeg of sourceSegments) {
+				if (remainingBytes === 0) {
+					break;
+				}
+
+				// Create subarray if segment has non-zero offset
+				const sourceView = sourceSeg.offset === 0
+					? sourceSeg.buffer
+					: sourceSeg.buffer.subarray(sourceSeg.offset, sourceSeg.offset + sourceSeg.length);
+
+				// Recursively write this segment
+				const written = this.set(sourceView, destOffset);
+				destOffset += written;
+				remainingBytes -= written;
+			}
+
+			return bytesToWrite;
 		} else if (source instanceof Uint8Array) {
-			sourceData = source;
+			// Write Uint8Array directly
+			const bytesToWrite = Math.min(source.length, state.length - offset);
+			if (bytesToWrite === 0) {
+				return 0;
+			}
+
+			// Get segments and write data
+			const segments = state.segments;
+			let sourceOffset = 0;
+			let remainingOffset = offset;
+			let remainingBytes = bytesToWrite;
+
+			for (const seg of segments) {
+				if (remainingOffset >= seg.length) {
+					// Skip this segment
+					remainingOffset -= seg.length;
+					continue;
+				}
+
+				// Calculate how much to write to this segment
+				const segWriteStart = seg.offset + remainingOffset;
+				const segAvailable = seg.length - remainingOffset;
+				const segWriteLength = Math.min(segAvailable, remainingBytes);
+
+				// Write to this segment
+				seg.buffer.set(
+					source.subarray(sourceOffset, sourceOffset + segWriteLength),
+					segWriteStart
+				);
+
+				sourceOffset += segWriteLength;
+				remainingBytes -= segWriteLength;
+				remainingOffset = 0;
+
+				if (remainingBytes === 0) {
+					break;
+				}
+			}
+
+			return bytesToWrite;
 		} else {
-			throw new TypeError('Source must be Uint8Array or VirtualRWBuffer');
-		}
-
-		const bytesToWrite = Math.min(sourceData.length, state.length - offset);
-		if (bytesToWrite === 0) {
-			return 0;
-		}
-
-		// Get segments and write data
-		const segments = state.segments;
-		let sourceOffset = 0;
-		let remainingOffset = offset;
-		let remainingBytes = bytesToWrite;
-
-		for (const seg of segments) {
-			if (remainingOffset >= seg.length) {
-				// Skip this segment
-				remainingOffset -= seg.length;
-				continue;
-			}
-
-			// Calculate how much to write to this segment
-			const segWriteStart = seg.offset + remainingOffset;
-			const segAvailable = seg.length - remainingOffset;
-			const segWriteLength = Math.min(segAvailable, remainingBytes);
-
-			// Write to this segment
-			seg.buffer.set(
-				sourceData.subarray(sourceOffset, sourceOffset + segWriteLength),
-				segWriteStart
-			);
-
-			sourceOffset += segWriteLength;
-			remainingBytes -= segWriteLength;
-			remainingOffset = 0;
-
-			if (remainingBytes === 0) {
-				break;
-			}
-		}
-
-		return bytesToWrite;
-	}
-
-	/**
-	 * Thread the private state
-	 * @param {Object} state
-	 */
-	_setState (state) {
-		if (!this.#state) {
-			this.#state = state;
-			super._setState(state);
+			throw new TypeError('Source must be Uint8Array or VirtualBuffer');
 		}
 	}
 

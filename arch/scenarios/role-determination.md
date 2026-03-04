@@ -2,7 +2,7 @@
 
 ## Overview
 
-This scenario describes how two PolyTransport instances determine their roles (EVEN_ROLE vs ODD_ROLE) during the handshake process. Role determination is critical for preventing ID collisions when both transports simultaneously request channels or register message types.
+This scenario describes how two PolyTransport instances determine their roles (ROLE_EVEN vs ROLE_ODD) during the handshake process. Role determination is critical for preventing ID collisions when both transports simultaneously request channels or register message types.
 
 ## Preconditions
 
@@ -15,8 +15,8 @@ This scenario describes how two PolyTransport instances determine their roles (E
 **Requirements Reference**: [`arch/bidi-chan-even-odd-update.md:31-33`](../bidi-chan-even-odd-update.md:31)
 
 The bidirectional channel model requires that each transport assign itself a role based on UUID comparison:
-- **EVEN_ROLE** (0): Assigns even IDs (0, 2, 4, 6, ...)
-- **ODD_ROLE** (1): Assigns odd IDs (1, 3, 5, 7, ...)
+- **ROLE_EVEN** (0): Assigns even IDs (0, 2, 4, 6, ...)
+- **ROLE_ODD** (1): Assigns odd IDs (1, 3, 5, 7, ...)
 
 This prevents ID collisions when both transports simultaneously request the same named resource.
 
@@ -105,20 +105,20 @@ this.bufferPool.release(buffer);
 
 ```javascript
 // Constants (defined in transport module)
-const EVEN_ROLE = 0;
-const ODD_ROLE = 1;
+const ROLE_EVEN = 0;
+const ROLE_ODD = 1;
 
 // Lexicographic comparison
 if (this.#transportId < remoteConfig.transportId) {
-  // Local UUID is lower → EVEN_ROLE
-  this.#transportRole = EVEN_ROLE;
+  // Local UUID is lower → ROLE_EVEN
+  this.#transportRole = ROLE_EVEN;
   this.#nextChannelId = this.minChannelId;
   // Ensure even starting ID
   if (this.#nextChannelId % 2 !== 0) this.#nextChannelId++;
   
 } else if (this.#transportId > remoteConfig.transportId) {
-  // Local UUID is higher → ODD_ROLE
-  this.#transportRole = ODD_ROLE;
+  // Local UUID is higher → ROLE_ODD
+  this.#transportRole = ROLE_ODD;
   this.#nextChannelId = this.minChannelId;
   // Ensure odd starting ID
   if (this.#nextChannelId % 2 === 0) this.#nextChannelId++;
@@ -130,51 +130,51 @@ if (this.#transportId < remoteConfig.transportId) {
 ```
 
 **State Changes**:
-- `#transportRole` set to `EVEN_ROLE` (0) or `ODD_ROLE` (1)
+- `#transportRole` set to `ROLE_EVEN` (0) or `ROLE_ODD` (1)
 - `#nextChannelId` initialized to first even/odd ID >= `minChannelId`
 - `#nextMessageTypeId` will be initialized per-channel (not set here)
 
-### 5. Example: Transport A Becomes EVEN_ROLE
+### 5. Example: Transport A Becomes ROLE_EVEN
 
 **Scenario**: Transport A has lower UUID
 
 **Transport A**:
 - Local UUID: `"a3f2e1d0-c4b5-4a6e-8f7d-9c8b7a6e5d4c"`
 - Remote UUID: `"f7e6d5c4-b3a2-4918-8e7d-6c5b4a3e2d1c"`
-- Comparison: `"a3f2..." < "f7e6..."` → **EVEN_ROLE**
+- Comparison: `"a3f2..." < "f7e6..."` → **ROLE_EVEN**
 - Next channel ID: 2 (even)
 - Will assign: 2, 4, 6, 8, ...
 
 **Transport B**:
 - Local UUID: `"f7e6d5c4-b3a2-4918-8e7d-6c5b4a3e2d1c"`
 - Remote UUID: `"a3f2e1d0-c4b5-4a6e-8f7d-9c8b7a6e5d4c"`
-- Comparison: `"f7e6..." > "a3f2..."` → **ODD_ROLE**
+- Comparison: `"f7e6..." > "a3f2..."` → **ROLE_ODD**
 - Next channel ID: 3 (odd)
 - Will assign: 3, 5, 7, 9, ...
 
-### 6. Example: Transport B Becomes EVEN_ROLE
+### 6. Example: Transport B Becomes ROLE_EVEN
 
 **Scenario**: Transport B has lower UUID
 
 **Transport A**:
 - Local UUID: `"f7e6d5c4-b3a2-4918-8e7d-6c5b4a3e2d1c"`
 - Remote UUID: `"a3f2e1d0-c4b5-4a6e-8f7d-9c8b7a6e5d4c"`
-- Comparison: `"f7e6..." > "a3f2..."` → **ODD_ROLE**
+- Comparison: `"f7e6..." > "a3f2..."` → **ROLE_ODD**
 - Next channel ID: 3 (odd)
 - Will assign: 3, 5, 7, 9, ...
 
 **Transport B**:
 - Local UUID: `"a3f2e1d0-c4b5-4a6e-8f7d-9c8b7a6e5d4c"`
 - Remote UUID: `"f7e6d5c4-b3a2-4918-8e7d-6c5b4a3e2d1c"`
-- Comparison: `"a3f2..." < "f7e6..."` → **EVEN_ROLE**
+- Comparison: `"a3f2..." < "f7e6..."` → **ROLE_EVEN**
 - Next channel ID: 2 (even)
 - Will assign: 2, 4, 6, 8, ...
 
 ## Postconditions
 
-- Both transports have determined their roles (EVEN_ROLE or ODD_ROLE)
+- Both transports have determined their roles (ROLE_EVEN or ROLE_ODD)
 - Both transports have initialized `#nextChannelId` to first even/odd ID >= `minChannelId`
-- Roles are complementary (one EVEN_ROLE, one ODD_ROLE)
+- Roles are complementary (one ROLE_EVEN, one ROLE_ODD)
 - ID assignment will never collide (even vs odd)
 - Both transports can now safely request channels and register message types
 
@@ -209,9 +209,9 @@ if (this.#transportId < remoteConfig.transportId) {
 
 1. **Lexicographic Comparison**: Uses standard string comparison (`<`, `>`) for UUID comparison, which is deterministic and consistent across platforms.
 
-2. **EVEN_ROLE Gets Lower UUID**: The transport with the lexicographically lower UUID gets EVEN_ROLE. This is arbitrary but consistent.
+2. **ROLE_EVEN Gets Lower UUID**: The transport with the lexicographically lower UUID gets ROLE_EVEN. This is arbitrary but consistent.
 
-3. **Constants vs Strings**: `EVEN_ROLE` and `ODD_ROLE` are numeric constants (0 and 1), not strings, for efficient comparison and storage.
+3. **Constants vs Strings**: `ROLE_EVEN` and `ROLE_ODD` are numeric constants (0 and 1), not strings, for efficient comparison and storage.
 
 4. **Reserved IDs**: Channel IDs 0 (TCC) and 1 (C2C) are reserved and not affected by role-based assignment. **Users must use named channel requests** (never numeric IDs) to avoid collisions with transport-assigned IDs.
 
