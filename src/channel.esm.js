@@ -50,7 +50,7 @@ export class Channel extends Eventable {
 			state: Channel.STATE_OPEN,
 			transport,
 			token,
-			writerQueue: new TaskQueue(),
+			writeQueue: new TaskQueue(),
 		};
 		this._subState(this.#stateSubs);
 	}
@@ -462,7 +462,7 @@ export class Channel extends Eventable {
 	 * @param {*} data
 	 */
 	#receiveControlMessage (header, data) {
-		const { dataSize, eom, headerSize, messageType, sequenceId } = header;
+		const { dataSize, eom, headerSize, messageType, sequence } = header;
 		switch (messageType) {
 		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
 			break;
@@ -482,7 +482,7 @@ export class Channel extends Eventable {
 		if (messages.length && messages[0][0].messageType !== messageType) {
 			throw new ProtocolViolationError('Incomplete channel-control message', { messageType: messages[0][0].messageType });
 		}
-		flowControl.received(sequenceId, headerSize + dataSize);
+		flowControl.received(sequence, headerSize + dataSize);
 		messages.push([header, data]);
 		if (!eom) return;
 
@@ -547,6 +547,14 @@ export class Channel extends Eventable {
 		}
 	}
 
+	/* async */ #sendAcks () {
+		const state = this.#state;
+		const { flowControl, token, transport } = state;
+		if (!flowControl.ackable) return;
+		const { base, ranges } = flowControl.getAckInfo();
+		return transport.sendAckMessage(token, base, ranges);
+	}
+
 	// Implement in every sub-class to subscribe to state
 	_subState () { }
 
@@ -583,14 +591,14 @@ export class Channel extends Eventable {
 	}
 
 	/**
-	 * Write buffer-(or function)-sourced data
+	 * Write buffer-or-function-sourced data
 	 * @param {number} type - The message-type id
 	 * @param {function|Uint8Array|VirtualBuffer} source - The data source
 	 * @param {Object} options 
 	 */
 	async #writeBuffer (type, source, options) {
 		const state = this.#state;
-		const { flowControl, maxDataBytes, writerQueue, transport, token } = state;
+		const { flowControl, maxDataBytes, writeQueue, transport, token } = state;
 		const { eom } = options;
 		const fnSrc = typeof source === 'function';
 		if (source instanceof Uint8Array) {
@@ -604,11 +612,12 @@ export class Channel extends Eventable {
 			const dataSize = Math.min(remaining, maxDataBytes);
 			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
 			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
-			const bufferLoader = fnSrc ? (buffer) => source(offset, dataSize, buffer) : (buffer) => source.slice(offset, offset + dataSize).toUint8Array(buffer);
-			await writerQueue.add(async () => {
+			const bufferLoader = fnSrc ? (buffer) => source(offset, dataSize, buffer) : (buffer) => buffer.set(source.slice(offset, offset + dataSize));
+			await writeQueue.add(async () => {
 				await flowControl.writable(totalSize); // Wait for channel sending budget
-				const sequenceId = flowControl.nextWriteSeq;
-				const header = { dataSize, flags, sequenceId, messageType: type };
+				await this.#sendAcks();
+				const sequence = flowControl.nextWriteSeq;
+				const header = { dataSize, flags, sequence, messageType: type };
 				await transport.sendByteMessage(token, header, bufferLoader);
 				flowControl.sent(totalSize);
 			});
@@ -624,7 +633,31 @@ export class Channel extends Eventable {
 	 * @param {string} source - The (UTF-16) string data
 	 * @param {Object} options 
 	 */
-	async #writeEncodedText (type, source, options) {}
+	async #writeEncodedText (type, source, options) {
+		const state = this.#state;
+		const { flowControl, maxDataBytes, writeQueue, transport, token } = state;
+		const { eom } = options;
+		let offset = 0, remaining = source.length;
+		while (true) {
+			// Process the next chunk of text
+			const dataSize = Math.min(remaining * 3, maxDataBytes);
+			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			await writeQueue.add(async () => {
+				await flowControl.writable(totalSize); // Wait for channel sending budget
+				await this.#sendAcks();
+				const sequence = flowControl.nextWriteSeq;
+				const header = { dataSize, flags: 0, sequence, messageType: type };
+				await transport.sendByteMessage(token, header, (buffer) => {
+					const { read, written } = buffer.encodeFrom(offset ? source.slice(offset) : source);
+					offset += read;
+					remaining -= read;
+					if (eom && remaining <= 0) header.flags |= FLAG_EOM;
+					flowControl.sent(written + MAX_DATA_HEADER_BYTES);
+				});
+			});
+			if (remaining <= 0) break;
+		}
+	}
 
 	/**
 	 * Write raw text
@@ -634,19 +667,21 @@ export class Channel extends Eventable {
 	 */
 	async #writeRawText (type, source, options) {
 		const state = this.#state;
-		const { flowControl, maxDataBytes, writerQueue, transport, token } = state;
-		const { eom } = options;
+		const { flowControl, maxDataBytes, writeQueue, transport, token } = state;
 		const maxDataChars = maxDataBytes >>> 1;
+		const { eom } = options;
 		let offset = 0, remaining = source.length;
 		while (true) {
 			// Process the next chunk of text
 			const dataLen = Math.min(remaining, maxDataChars), dataSize = dataLen < 1;
 			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
 			const data = (!offset && dataLen === remaining) ? source : source.slice(offset, offset + dataLen);
-			await writerQueue.add(async () => {
+			await writeQueue.add(async () => {
 				await flowControl.writable(totalSize); // Wait for channel sending budget (in *bytes*)
-				const sequenceId = flowControl.nextWriteSeq;
-				const header = { dataSize, flags, sequenceId, messageType: type };
+				await this.#sendAcks();
+				const sequence = flowControl.nextWriteSeq;
+				const header = { dataSize, flags, sequence, messageType: type };
 				await transport.sendTextMessage(token, header, data);
 				flowControl.sent(totalSize);
 			});

@@ -17,56 +17,52 @@ export class VirtualBuffer {
 
 	/**
 	 * Create a VirtualBuffer from one or more sources
-	 * @param {Uint8Array|Array<{buffer: Uint8Array, offset: number, length: number}>} source
-	 * @param {number} offset - Starting offset (only used if source is Uint8Array)
-	 * @param {number} length - Length (only used if source is Uint8Array)
+	 * @param {Uint8Array|Array<Uint8Array>} source
 	 */
-	constructor (source, { offset = 0, length = undefined } = {}) {
+	constructor (source) {
 		_state.set(this, this.#state);
 		this.clear();
 
 		if (source !== undefined) {
-			this.append(source, offset, length);
+			this.append(source);
 		}
 	}
 
 	/**
 	 * Append data to this virtual buffer
-	 * @param {Uint8Array|VirtualBuffer|Array<{buffer: Uint8Array, offset: number, length: number}>} source
-	 * @param {number} offset - Starting offset (only used if source is Uint8Array)
-	 * @param {number} length - Length (only used if source is Uint8Array)
+	 * @param {Uint8Array|VirtualBuffer|Array<Uint8Array>} source
 	 */
-	append (source, offset = 0, length = undefined) {
+	append (source) {
 		const state = this.#state;
 
 		if (Array.isArray(source)) {
-			// Already segmented
+			// Array of Uint8Array subarrays
 			for (const seg of source) {
-				if (seg?.buffer instanceof Uint8Array && typeof seg.length === 'number' && seg.length > 0) {
+				if (seg instanceof Uint8Array && seg.length > 0) {
 					state.segments.push(seg);
 					state.length += seg.length;
 				}
 			}
 		} else if (source instanceof VirtualBuffer) {
 			// VirtualBuffer - copy segments
+			const isVRWB = VirtualRWBuffer.isVirtualRWBuffer;
+			if (isVRWB(this) && !isVRWB(source)) {
+				// Security - don't allow R/W access to R/O buffers
+				throw new TypeError('Cannot add a VirtualBuffer to a VirtualRWBuffer');
+			}
 			const sourceState = _state.get(source);
 			for (const seg of sourceState.segments) {
-				state.segments.push({ ...seg });
+				state.segments.push(seg);
 				state.length += seg.length;
 			}
 		} else if (source instanceof Uint8Array) {
 			// Single Uint8Array
-			const actualLength = length !== undefined ? length : source.length - offset;
-			if (actualLength > 0) {
-				state.segments.push({
-					buffer: source,
-					offset: offset,
-					length: actualLength
-				});
-				state.length += actualLength;
+			if (source.length > 0) {
+				state.segments.push(source);
+				state.length += source.length;
 			}
 		} else {
-			throw new TypeError('Source must be Uint8Array, VirtualBuffer, or array of segments');
+			throw new TypeError('Source must be Uint8Array, VirtualBuffer, or array of Uint8Array');
 		}
 	}
 
@@ -83,7 +79,7 @@ export class VirtualBuffer {
 	clear () {
 		const state = this.#state;
 		Object.assign(state, {
-			segments: [], // of {buffer: Uint8Array, offset: number, length: number}
+			segments: [], // of Uint8Array
 			length: 0,
 			// Segment cache for DataView methods (getUint8/setUint8)
 			cachedSegIndex: -1,
@@ -105,10 +101,10 @@ export class VirtualBuffer {
 		const thisState = this.#state;
 		const otherState = other.#state;
 
-		// Create a deep copy of segments to avoid sharing references
+		// Combine segments (Uint8Arrays are immutable views, safe to share)
 		const newSegments = [
-			...thisState.segments.map(seg => ({ ...seg })),
-			...otherState.segments.map(seg => ({ ...seg }))
+			...thisState.segments,
+			...otherState.segments
 		];
 		return new VirtualBuffer(newSegments);
 	}
@@ -141,10 +137,8 @@ export class VirtualBuffer {
 
 		// Single-segment optimization: zero-copy decode
 		if (segments.length === 1) {
-			const seg = segments[0];
-			const view = seg.buffer.subarray(seg.offset, seg.offset + seg.length);
 			const decoder = new TextDecoder(label, { fatal, ignoreBOM });
-			return decoder.decode(view);
+			return decoder.decode(segments[0]);
 		}
 
 		// Multi-segment: use streaming decoder
@@ -152,12 +146,9 @@ export class VirtualBuffer {
 		const parts = [];
 
 		for (let i = 0; i < segments.length; i++) {
-			const seg = segments[i];
-			const view = seg.buffer.subarray(seg.offset, seg.offset + seg.length);
 			const isLast = (i === segments.length - 1);
-			
 			// Use stream: true for all but the last segment
-			parts.push(decoder.decode(view, { stream: !isLast }));
+			parts.push(decoder.decode(segments[i], { stream: !isLast }));
 		}
 
 		return parts.join('');
@@ -220,13 +211,9 @@ export class VirtualBuffer {
 			// Segment overlaps with slice
 			const overlapStart = Math.max(0, start - segStart);
 			const overlapEnd = Math.min(seg.length, end - segStart);
-			const overlapLength = overlapEnd - overlapStart;
 
-			newSegments.push({
-				buffer: seg.buffer,
-				offset: seg.offset + overlapStart,
-				length: overlapLength
-			});
+			// Create subarray for the overlapping portion
+			newSegments.push(seg.subarray(overlapStart, overlapEnd));
 
 			currentPos = segEnd;
 		}
@@ -237,7 +224,7 @@ export class VirtualBuffer {
 	/**
 	 * Copy to buffers from a pool
 	 * @param {BufferPool} pool - The buffer source-pool
-	 * @returns {Array<{ buffer, offset, length }>} Array of segments
+	 * @returns {Array<Uint8Array>} Array of Uint8Array segments
 	 */
 	toPool (pool) {
 		if (typeof pool.acquireSet !== 'function') {
@@ -253,7 +240,7 @@ export class VirtualBuffer {
 			const slice = this.slice(offset, end);
 			const view = new Uint8Array(buffer);
 			slice.toUint8Array(view); // Copy successive buffers' worth
-			segments.push({ buffer: view, offset: 0, length });
+			segments.push(view.subarray(0, length));
 			offset = end;
 			remaining -= length;
 		}
@@ -288,8 +275,7 @@ export class VirtualBuffer {
 		let destOffset = 0;
 
 		for (const seg of segments) {
-			const view = seg.buffer.subarray(seg.offset, seg.offset + seg.length);
-			result.set(view, destOffset);
+			result.set(seg, destOffset);
 			destOffset += seg.length;
 		}
 
@@ -319,7 +305,7 @@ export class VirtualBuffer {
 		    offset < state.cachedSegEnd) {
 			const seg = segments[state.cachedSegIndex];
 			const segOffset = offset - state.cachedSegStart;
-			return seg.buffer[seg.offset + segOffset];
+			return seg[segOffset];
 		}
 
 		// Search for segment containing offset
@@ -335,7 +321,7 @@ export class VirtualBuffer {
 				state.cachedSegEnd = segEnd;
 				
 				const segOffset = offset - currentPos;
-				return seg.buffer[seg.offset + segOffset];
+				return seg[segOffset];
 			}
 			currentPos = segEnd;
 		}
@@ -390,22 +376,13 @@ export class VirtualBuffer {
 export class VirtualRWBuffer extends VirtualBuffer {
 	#state;
 
-	constructor (...p) {
-		super(...p);
+	constructor (source) {
+		super();
 		this.#state = _state.get(this);
-	}
-	/**
-	 * Append data to this virtual buffer (overrides parent to enforce security)
-	 * @param {Uint8Array|VirtualRWBuffer|Array<{buffer: Uint8Array, offset: number, length: number}>} source
-	 * @param {number} offset - Starting offset (only used if source is Uint8Array)
-	 * @param {number} length - Length (only used if source is Uint8Array)
-	 */
-	append (source, offset = 0, length = undefined) {
-		// Security: Only allow VirtualRWBuffer, not base VirtualBuffer
-		if (source instanceof VirtualBuffer && !(source instanceof VirtualRWBuffer)) {
-			throw new TypeError('VirtualRWBuffer can only append from Uint8Array, VirtualRWBuffer, or array of segments');
+
+		if (source !== undefined) {
+			this.append(source);
 		}
-		super.append(source, offset, length);
 	}
 
 	/**
@@ -441,7 +418,6 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			}
 
 			// Calculate available space in this segment
-			const segWriteStart = seg.offset + remainingOffset;
 			const segAvailable = seg.length - remainingOffset;
 
 			if (segAvailable === 0 || strOffset >= str.length) {
@@ -449,11 +425,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			}
 
 			// Create a view for this segment's available space
-			const targetView = new Uint8Array(
-				seg.buffer.buffer,
-				seg.buffer.byteOffset + segWriteStart,
-				segAvailable
-			);
+			const targetView = seg.subarray(remainingOffset, seg.length);
 
 			// Encode as much as fits
 			const result = encoder.encodeInto(str.slice(strOffset), targetView);
@@ -513,12 +485,22 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			const fillStart = Math.max(0, start - segStart);
 			const fillEnd = Math.min(seg.length, end - segStart);
 
-			seg.buffer.fill(value, seg.offset + fillStart, seg.offset + fillEnd);
+			seg.fill(value, fillStart, fillEnd);
 
 			currentPos = segEnd;
 		}
 
 		return this;
+	}
+
+	/**
+	 * Is the passed parameter a bona fide VirtualRWBuffer?
+	 * @param {*} obj 
+	 * @returns {boolean}
+	 */
+	static isVirtualRWBuffer (obj) {
+		try { obj.#state; return true; }
+		catch (_err) { return false; }
 	}
 
 	/**
@@ -535,12 +517,10 @@ export class VirtualRWBuffer extends VirtualBuffer {
 		state.cachedSegIndex = -1;
 		let remaining = count;
 		while (remaining > 0) {
-			const seg = state.segments[0];
-			const { buffer, offset, length } = seg;
+			const seg = state.segments[0], length = seg.length;
 			if (remaining < length) {
-				// Partial release of segment
-				seg.offset += remaining;
-				seg.length -= remaining;
+				// Partial release of segment - create new subarray
+				state.segments[0] = seg.subarray(remaining);
 				state.length -= remaining;
 				return true;
 			}
@@ -551,7 +531,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			if (pool) {
 				// Attempt to release to the pool
 				// (Fails silently if it's not a standard size)
-				pool.release(buffer.buffer);
+				pool.release(seg.buffer);
 			}
 		}
 		return true;
@@ -559,10 +539,10 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 	/**
 	 * Return a copy of the current segment list
-	 * @returns {Array<{buffer: Uint8Array, offset: number, length: number}}
+	 * @returns {Array<Uint8Array>}
 	 */
 	get segments () {
-		return this.#state.segments.map((segment) => ({...segment}));
+		return [...this.#state.segments];
 	}
 
 	/**
@@ -596,13 +576,8 @@ export class VirtualRWBuffer extends VirtualBuffer {
 					break;
 				}
 
-				// Create subarray if segment has non-zero offset
-				const sourceView = sourceSeg.offset === 0
-					? sourceSeg.buffer
-					: sourceSeg.buffer.subarray(sourceSeg.offset, sourceSeg.offset + sourceSeg.length);
-
-				// Recursively write this segment
-				const written = this.set(sourceView, destOffset);
+				// Recursively write this segment (already a Uint8Array)
+				const written = this.set(sourceSeg, destOffset);
 				destOffset += written;
 				remainingBytes -= written;
 			}
@@ -629,14 +604,13 @@ export class VirtualRWBuffer extends VirtualBuffer {
 				}
 
 				// Calculate how much to write to this segment
-				const segWriteStart = seg.offset + remainingOffset;
 				const segAvailable = seg.length - remainingOffset;
 				const segWriteLength = Math.min(segAvailable, remainingBytes);
 
 				// Write to this segment
-				seg.buffer.set(
+				seg.set(
 					source.subarray(sourceOffset, sourceOffset + segWriteLength),
-					segWriteStart
+					remainingOffset
 				);
 
 				sourceOffset += segWriteLength;
@@ -668,6 +642,9 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			return;
 		}
 
+		// Make sure section to be removed is clean first
+		this.fill(0, newLength);
+
 		// Adjust segments to match new length
 		let currentPos = 0;
 		const newSegments = [];
@@ -687,11 +664,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			} else {
 				// This segment is partially within new length
 				const truncatedLength = newLength - segStart;
-				newSegments.push({
-					buffer: seg.buffer,
-					offset: seg.offset,
-					length: truncatedLength
-				});
+				newSegments.push(seg.subarray(0, truncatedLength));
 				break;
 			}
 		}
@@ -700,8 +673,8 @@ export class VirtualRWBuffer extends VirtualBuffer {
 		state.segments = newSegments;
 		state.length = newLength;
 
-		// Invalidate segment cache
-		state.cachedSegIndex = -1;
+		// Invalidate segment cache when appropriate
+		if (state.cachedSegIndex >= newSegments.length) state.cachedSegIndex = -1;
 	}
 
 	//
@@ -731,7 +704,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 		    offset < state.cachedSegEnd) {
 			const seg = segments[state.cachedSegIndex];
 			const segOffset = offset - state.cachedSegStart;
-			seg.buffer[seg.offset + segOffset] = value;
+			seg[segOffset] = value;
 			return;
 		}
 
@@ -748,7 +721,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 				state.cachedSegEnd = segEnd;
 				
 				const segOffset = offset - currentPos;
-				seg.buffer[seg.offset + segOffset] = value;
+				seg[segOffset] = value;
 				return;
 			}
 			currentPos = segEnd;

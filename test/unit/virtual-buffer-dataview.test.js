@@ -15,10 +15,7 @@ Deno.test('VirtualBuffer - getUint8 single segment', () => {
 Deno.test('VirtualBuffer - getUint8 across segments', () => {
 	const buf1 = new Uint8Array([10, 20, 30]);
 	const buf2 = new Uint8Array([40, 50, 60]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	
 	assertEquals(vb.getUint8(0), 10);
@@ -67,10 +64,7 @@ Deno.test('VirtualBuffer - getUint16 single segment', () => {
 Deno.test('VirtualBuffer - getUint16 across segments', () => {
 	const buf1 = new Uint8Array([0x12, 0x34]);
 	const buf2 = new Uint8Array([0x56, 0x78]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 2 },
-		{ buffer: buf2, offset: 0, length: 2 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	
 	// Spans segment boundary
@@ -99,10 +93,7 @@ Deno.test('VirtualBuffer - getUint32 single segment', () => {
 Deno.test('VirtualBuffer - getUint32 across segments', () => {
 	const buf1 = new Uint8Array([0x12, 0x34]);
 	const buf2 = new Uint8Array([0x56, 0x78]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 2 },
-		{ buffer: buf2, offset: 0, length: 2 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	
 	// Spans segment boundary
@@ -136,10 +127,7 @@ Deno.test('VirtualRWBuffer - setUint8 single segment', () => {
 Deno.test('VirtualRWBuffer - setUint8 across segments', () => {
 	const buf1 = new Uint8Array([0, 0, 0]);
 	const buf2 = new Uint8Array([0, 0, 0]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	vb.setUint8(0, 10);
@@ -212,10 +200,7 @@ Deno.test('VirtualRWBuffer - setUint16 single segment', () => {
 Deno.test('VirtualRWBuffer - setUint16 across segments', () => {
 	const buf1 = new Uint8Array([0, 0]);
 	const buf2 = new Uint8Array([0, 0]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 2 },
-		{ buffer: buf2, offset: 0, length: 2 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	// Spans segment boundary
@@ -266,10 +251,7 @@ Deno.test('VirtualRWBuffer - setUint32 single segment', () => {
 Deno.test('VirtualRWBuffer - setUint32 across segments', () => {
 	const buf1 = new Uint8Array([0, 0]);
 	const buf2 = new Uint8Array([0, 0]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 2 },
-		{ buffer: buf2, offset: 0, length: 2 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	// Spans segment boundary
@@ -344,28 +326,6 @@ Deno.test('Security - VirtualBuffer.toUint8Array always copies', () => {
 	// Original should be unchanged
 	assertEquals(original[0], 1);
 	assertEquals(copy[0], 99);
-});
-
-Deno.test('Security - VirtualRWBuffer.append rejects VirtualBuffer', () => {
-	const rwBuf = new VirtualRWBuffer(new Uint8Array([1, 2, 3]));
-	const roBuf = new VirtualBuffer(new Uint8Array([4, 5, 6]));
-	
-	assertThrows(
-		() => rwBuf.append(roBuf),
-		TypeError,
-		'VirtualRWBuffer can only append from Uint8Array, VirtualRWBuffer, or array of segments'
-	);
-});
-
-Deno.test('Security - VirtualRWBuffer.append accepts VirtualRWBuffer', () => {
-	const rwBuf1 = new VirtualRWBuffer(new Uint8Array([1, 2, 3]));
-	const rwBuf2 = new VirtualRWBuffer(new Uint8Array([4, 5, 6]));
-	
-	// This should work
-	rwBuf1.append(rwBuf2);
-	
-	assertEquals(rwBuf1.length, 6);
-	assertEquals(Array.from(rwBuf1.toUint8Array()), [1, 2, 3, 4, 5, 6]);
 });
 
 Deno.test('Security - VirtualRWBuffer.set accepts VirtualBuffer', () => {

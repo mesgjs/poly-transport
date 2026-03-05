@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
-import { VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
+import { VirtualBuffer, VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
 
 Deno.test('VirtualRWBuffer - construction', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
@@ -45,10 +45,7 @@ Deno.test('VirtualRWBuffer - set truncates if source too large', () => {
 Deno.test('VirtualRWBuffer - set across segments', () => {
 	const buf1 = new Uint8Array([0, 0, 0]);
 	const buf2 = new Uint8Array([0, 0, 0]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	const source = new Uint8Array([10, 20, 30, 40, 50]);
@@ -122,10 +119,7 @@ Deno.test('VirtualRWBuffer - fill with negative indices', () => {
 Deno.test('VirtualRWBuffer - fill across segments', () => {
 	const buf1 = new Uint8Array([0, 0, 0]);
 	const buf2 = new Uint8Array([0, 0, 0]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	vb.fill(42, 1, 5);
@@ -194,10 +188,7 @@ Deno.test('VirtualRWBuffer - encodeFrom truncates if buffer too small', () => {
 Deno.test('VirtualRWBuffer - encodeFrom across segments', () => {
 	const buf1 = new Uint8Array(3);
 	const buf2 = new Uint8Array(3);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	const result = vb.encodeFrom('Hello!');
@@ -263,10 +254,7 @@ Deno.test('VirtualRWBuffer - shrink to same size is no-op', () => {
 Deno.test('VirtualRWBuffer - shrink across segments', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	vb.shrink(4);
@@ -279,10 +267,7 @@ Deno.test('VirtualRWBuffer - shrink across segments', () => {
 Deno.test('VirtualRWBuffer - shrink partial segment', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	vb.shrink(2);
@@ -323,10 +308,7 @@ Deno.test('VirtualRWBuffer - release partial segment', () => {
 Deno.test('VirtualRWBuffer - release full segment', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	const success = vb.release(3);
@@ -340,10 +322,7 @@ Deno.test('VirtualRWBuffer - release full segment', () => {
 Deno.test('VirtualRWBuffer - release across segments', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	const success = vb.release(4);
@@ -375,10 +354,7 @@ Deno.test('VirtualRWBuffer - release with pool', () => {
 	
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualRWBuffer(segments);
 	
 	vb.release(3, mockPool);
@@ -421,4 +397,38 @@ Deno.test('VirtualRWBuffer - inherits VirtualBuffer methods', () => {
 	const combined = vb.concat(other);
 	assertEquals(combined.length, 7);
 	assertEquals(Array.from(combined.toUint8Array()), [1, 2, 3, 4, 5, 6, 7]);
+});
+
+// Security tests
+
+Deno.test('Security - VirtualRWBuffer constructor rejects VirtualBuffer', () => {
+	const roBuf = new VirtualBuffer(new Uint8Array([1, 2, 3]));
+	
+	assertThrows(
+		() => new VirtualRWBuffer(roBuf),
+		TypeError,
+		'Cannot add a VirtualBuffer to a VirtualRWBuffer'
+	);
+});
+
+Deno.test('Security - VirtualRWBuffer.append rejects VirtualBuffer', () => {
+	const rwBuf = new VirtualRWBuffer(new Uint8Array([1, 2, 3]));
+	const roBuf = new VirtualBuffer(new Uint8Array([4, 5, 6]));
+	
+	assertThrows(
+		() => rwBuf.append(roBuf),
+		TypeError,
+		'Cannot add a VirtualBuffer to a VirtualRWBuffer'
+	);
+});
+
+Deno.test('Security - VirtualRWBuffer.append accepts VirtualRWBuffer', () => {
+	const rwBuf1 = new VirtualRWBuffer(new Uint8Array([1, 2, 3]));
+	const rwBuf2 = new VirtualRWBuffer(new Uint8Array([4, 5, 6]));
+	
+	// This should work
+	rwBuf1.append(rwBuf2);
+	
+	assertEquals(rwBuf1.length, 6);
+	assertEquals(Array.from(rwBuf1.toUint8Array()), [1, 2, 3, 4, 5, 6]);
 });

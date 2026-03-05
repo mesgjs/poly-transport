@@ -16,20 +16,7 @@ export class ObjectTransport extends Transport {
 		this._getState();
 	}
 
-	/**
-	 * Send a message (object-stream version)
-	 * @param {symbol} token
-	 * @param {Object} header
-	 * @param {*} data
-	 */
-	async sendMessage (token, header, data) {
-		const state = this.#state;
-		const channel = state.channelTokens.get(token);
-		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized sendMessage');
-		}
-	}
-
+	// Expect object transports to not require text encoding
 	get needsEncodedText () { return false; }
 
 	/**

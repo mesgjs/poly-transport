@@ -64,7 +64,7 @@ export class OutputRingBuffer {
 	 * More precisely, this is the number of uncommitted bytes.
 	 */
 	get available () {
-		return this.#size - this.#committed;
+		return this.#reserved ? 0 : this.#size - this.#committed;
 	}
 
 	/**
@@ -78,21 +78,23 @@ export class OutputRingBuffer {
 			throw new Error('Reservation not active');
 		}
 
-		/*
-		 * Advance writeHead, move from reserved to committed
-		 * The reservation can be shortened, but never lengthened
-		 */
+		// The reservation can be shortened, but never lengthened
 		const length = Math.min(reservation.length, this.#reserved);
-		this.#writeHead = (this.#writeHead + length) % this.#size;
+		
+		// Clear reservation
 		this.#reserved = 0;
-		this.#committed += length;
+		this.#reservation = null;
 
-		// Clear reservation metadata and pending reservation
 		if (typeof reservation.clear === 'function') {
-			// Clear reservation buffer to prevent further use
+			// Clear reservation virtual buffer to prevent further access
 			reservation.clear();
 		}
-		this.#reservation = null;
+
+		if (length < 1) return; // Effectively cancelled
+
+		// Advance writeHead, move from reserved to committed
+		this.#writeHead = (this.#writeHead + length) % this.#size;
+		this.#committed += length;
 
 		++this.#stats.commits;
 		this.#stats.bytesCommitted += length;
@@ -119,13 +121,13 @@ export class OutputRingBuffer {
 	 * @returns {Uint8Array[]} - Array of Uint8Array views
 	 */
 	getBuffers (length = this.#committed) {
-		if (length < 1) {
+		if (!Number.isInteger(length) || length < 1) {
 			return [];
 		}
 
 		const committed = this.#committed;
 		if (length > committed) {
-			throw new RangeError(`Cannot get buffers for ${length} bytes - only ${committed} available`);
+			throw new RangeError(`Cannot get buffers for ${length} bytes - only ${committed} committed`);
 		}
 
 		// Check if data splits around wrap-around
@@ -177,7 +179,7 @@ export class OutputRingBuffer {
 
 		const committed = this.committed;
 		if (length > committed) {
-			throw new RangeError(`Cannot release ${length} bytes - only ${committed} available`);
+			throw new RangeError(`Cannot release ${length} bytes - only ${committed} committed`);
 		}
 
 		// Zero the consumed space (security: prevent data leakage)
@@ -204,6 +206,8 @@ export class OutputRingBuffer {
 
 	/**
 	 * Reserve space for writing
+	 * Note: shrinking the returned VirtualRWBuffer shrinks the number of bytes
+	 *  committed; committing a zero-length buffer cancels the reservation
 	 * @param {number} length - Number of bytes to reserve
 	 * @returns {VirtualRWBuffer|null} - Reservation that can be written to, or null if insufficient space
 	 */
@@ -222,44 +226,41 @@ export class OutputRingBuffer {
 		}
 
 		// Return null if insufficient space (transport will wait and retry)
-		if (this.space < length) {
+		if (this.available < length) {
 			return null;
 		}
 
 		// Check if we need to wrap around
-		const spaceToEnd = this.#size - this.#writeHead;
+		const writeHead = this.#writeHead;
+		const spaceToEnd = this.#size - writeHead;
+		const buffer = this.#buffer;
 		let segments;
 
 		if (spaceToEnd >= length) {
 			// Reservation fits before end of buffer
 			segments = [
-				{ buffer: this.#buffer.buffer, offset: this.#writeHead, length }
+				 buffer.subarray(writeHead, writeHead + length)
 			];
 		} else {
 			// Reservation splits around wrap-around
-			const firstPart = spaceToEnd;
-			const secondPart = length - firstPart;
+			const firstLength = spaceToEnd;
+			const secondLength = length - firstLength;
 			segments = [
-				{ buffer: this.#buffer.buffer, offset: this.#writeHead, length: firstPart },
-				{ buffer: this.#buffer.buffer, offset: 0, length: secondPart }
+				buffer.subarray(writeHead, writeHead + firstLength),
+				buffer.subarray(0, secondLength)
 			];
 			++this.#stats.wraps;
 		}
 
 		// Create VirtualRWBuffer for the reservation
-		const buffer = new VirtualRWBuffer();
-		for (const seg of segments) {
-			const view = new Uint8Array(seg.buffer, seg.offset, seg.length);
-			buffer.append(view);
-		}
+		const reservation = this.#reservation = new VirtualRWBuffer(segments);
 
 		// Track reservation metadata
-		this.#reservation = buffer;
 		this.#reserved = length;
 		++this.#stats.reservations;
 		this.#stats.bytesReserved += length;
 
-		return buffer;
+		return reservation;
 	}
 
 	/**

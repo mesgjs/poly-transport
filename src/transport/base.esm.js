@@ -57,7 +57,7 @@ export class Transport extends Eventable {
 			stopped: false,
 			stopping: null,
 			tccSymbol: Symbol('TCC'),
-			writerQueue: new TaskQueue(),
+			writeQueue: new TaskQueue(),
 		};
 		this._subState(this.#stateSubs);
 	}
@@ -246,7 +246,7 @@ export class Transport extends Eventable {
 	 * @returns 
 	 */
 	async receiveMessage (state, header, data) {
-		if (state !== this.#state) throw new Error('Unauthored receiveMessage');
+		if (state !== this.#state) throw new Error('Unauthorized receiveMessage');
 		if (state.stopped) return;
 
 		const channelId = header.channelId, channel = state.channels.get(channelId);

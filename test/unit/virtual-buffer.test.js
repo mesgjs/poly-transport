@@ -10,22 +10,10 @@ Deno.test('VirtualBuffer - construction from Uint8Array', () => {
 	assertEquals(vb.segmentCount, 1);
 });
 
-Deno.test('VirtualBuffer - construction with offset and length', () => {
-	const data = new Uint8Array([1, 2, 3, 4, 5]);
-	const vb = new VirtualBuffer(data, { offset: 1, length: 3 });
-
-	assertEquals(vb.length, 3);
-	const result = vb.toUint8Array();
-	assertEquals(Array.from(result), [2, 3, 4]);
-});
-
 Deno.test('VirtualBuffer - construction from segments', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 
 	assertEquals(vb.length, 6);
@@ -52,22 +40,12 @@ Deno.test('VirtualBuffer - append Uint8Array', () => {
 	assertEquals(Array.from(result), [1, 2, 3, 4, 5]);
 });
 
-Deno.test('VirtualBuffer - append with offset and length', () => {
-	const vb = new VirtualBuffer();
-	const data = new Uint8Array([1, 2, 3, 4, 5]);
-	vb.append(data, 1, 3);
-
-	assertEquals(vb.length, 3);
-	const result = vb.toUint8Array();
-	assertEquals(Array.from(result), [2, 3, 4]);
-});
-
 Deno.test('VirtualBuffer - append segments', () => {
 	const vb = new VirtualBuffer();
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const segments = [
-		{ buffer: buf1, offset: 0, length: 2 },
-		{ buffer: buf1, offset: 2, length: 1 }
+		buf1.subarray(0, 2),
+		buf1.subarray(2, 3)
 	];
 	vb.append(segments);
 
@@ -90,8 +68,8 @@ Deno.test('VirtualBuffer - append VirtualBuffer', () => {
 Deno.test('VirtualBuffer - append zero-length segment', () => {
 	const vb = new VirtualBuffer();
 	const segments = [
-		{ buffer: new Uint8Array([1, 2, 3]), offset: 0, length: 0 }, // Zero length
-		{ buffer: new Uint8Array([4, 5, 6]), offset: 0, length: 3 }
+		new Uint8Array(0), // Zero length
+		new Uint8Array([4, 5, 6])
 	];
 	vb.append(segments);
 	
@@ -103,7 +81,7 @@ Deno.test('VirtualBuffer - append zero-length segment', () => {
 
 Deno.test('VirtualBuffer - append zero-length Uint8Array', () => {
 	const vb = new VirtualBuffer(new Uint8Array([1, 2, 3]));
-	vb.append(new Uint8Array([4, 5, 6]), 0, 0); // Zero length
+	vb.append(new Uint8Array(0)); // Zero length
 	
 	assertEquals(vb.length, 3); // Should not change
 	assertEquals(vb.segmentCount, 1);
@@ -150,10 +128,7 @@ Deno.test('VirtualBuffer - slice empty range', () => {
 Deno.test('VirtualBuffer - slice across segments', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	const slice = vb.slice(1, 5);
 
@@ -173,23 +148,10 @@ Deno.test('VirtualBuffer - toUint8Array single segment always copies', () => {
 	assertEquals(result.buffer !== data.buffer, true);
 });
 
-Deno.test('VirtualBuffer - toUint8Array single segment with offset', () => {
-	const data = new Uint8Array([1, 2, 3, 4, 5]);
-	const vb = new VirtualBuffer(data, { offset: 1, length: 3 });
-	const result = vb.toUint8Array();
-
-	assertEquals(Array.from(result), [2, 3, 4]);
-	// Should always copy for security (not the same buffer)
-	assertEquals(result.buffer !== data.buffer, true);
-});
-
 Deno.test('VirtualBuffer - toUint8Array multiple segments', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	const result = vb.toUint8Array();
 
@@ -260,10 +222,7 @@ Deno.test('VirtualBuffer - decode UTF-8 multi-segment', () => {
 	const encoder = new TextEncoder();
 	const part1 = encoder.encode('Hello, ');
 	const part2 = encoder.encode('World!');
-	const segments = [
-		{ buffer: part1, offset: 0, length: part1.length },
-		{ buffer: part2, offset: 0, length: part2.length }
-	];
+	const segments = [part1, part2];
 	const vb = new VirtualBuffer(segments);
 	const result = vb.decode();
 
@@ -291,10 +250,7 @@ Deno.test('VirtualBuffer - decode UTF-8 multi-byte split across segments', () =>
 	const part1 = fullData.slice(0, splitPoint);
 	const part2 = fullData.slice(splitPoint);
 
-	const segments = [
-		{ buffer: part1, offset: 0, length: part1.length },
-		{ buffer: part2, offset: 0, length: part2.length }
-	];
+	const segments = [part1, part2];
 	const vb = new VirtualBuffer(segments);
 	const result = vb.decode();
 
@@ -321,7 +277,7 @@ Deno.test('VirtualBuffer - invalid source type', () => {
 	assertThrows(
 		() => new VirtualBuffer('invalid'),
 		TypeError,
-		'Source must be Uint8Array, VirtualBuffer, or array of segments'
+		'Source must be Uint8Array, VirtualBuffer, or array of Uint8Array'
 	);
 });
 
@@ -364,10 +320,7 @@ Deno.test('VirtualBuffer - toUint8Array with exact-size buffer', () => {
 Deno.test('VirtualBuffer - toUint8Array with multi-segment and provided buffer', () => {
 	const buf1 = new Uint8Array([1, 2, 3]);
 	const buf2 = new Uint8Array([4, 5, 6]);
-	const segments = [
-		{ buffer: buf1, offset: 0, length: 3 },
-		{ buffer: buf2, offset: 0, length: 3 }
-	];
+	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	const destBuffer = new Uint8Array(6);
 	
@@ -421,7 +374,7 @@ Deno.test('VirtualBuffer - toPool with BufferPool', async () => {
 	const segments = vb.toPool(pool);
 	pool.stop();
 	
-	// Should return array of segments
+	// Should return array of Uint8Array segments
 	assertEquals(Array.isArray(segments), true);
 	assertEquals(segments.length > 0, true);
 	
@@ -429,8 +382,8 @@ Deno.test('VirtualBuffer - toPool with BufferPool', async () => {
 	let totalLength = 0;
 	const result = new Uint8Array(10);
 	for (const seg of segments) {
-		// seg.buffer is a Uint8Array
-		result.set(seg.buffer.subarray(seg.offset, seg.offset + seg.length), totalLength);
+		// seg is a Uint8Array
+		result.set(seg, totalLength);
 		totalLength += seg.length;
 	}
 	assertEquals(totalLength, 10);

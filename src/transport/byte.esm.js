@@ -32,6 +32,7 @@ export class ByteTransport extends Transport {
 		const state = this.#state;
 		this.#autoWriteBytes = options.autoWriteBytes ?? 16 * 1024;
 		this.#autoWriteTime = options.autoWriteTime ?? 5; // msec
+		state.outputBuffer = new OutputRingBuffer(options.outputBufferSize);
 	}
 
 	/**
