@@ -7,11 +7,13 @@
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
 import { StateError, TimeoutError } from './transport/base.esm.js';
 import {
-	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, MAX_DATA_HEADER_BYTES, TCC_CTLM_MESG_TYPE_REG_REQ
+	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, DATA_HEADER_BYTES, TCC_CTLM_MESG_TYPE_REG_REQ
 } from './protocol.esm.js';
 import { AppAsyncEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
 import { VirtualBuffer } from './virtual-buffer.esm.js';
+
+const minChunkBytes = DATA_HEADER_BYTES + 1024;
 
 export class Channel extends Eventable {
 	static get STATE_OPEN () { return 'open'; }
@@ -20,8 +22,9 @@ export class Channel extends Eventable {
 	static get STATE_REMOTE_CLOSING () { return 'remoteClosing'; }
 	static get STATE_CLOSED () { return 'closed'; }
 
-	#stateSubs = new Set();
-	#state;
+	static __protected = Object.freeze({});
+	#_subs = new Set();
+	#_;
 
 	/**
 	 * Channel constructor
@@ -33,8 +36,10 @@ export class Channel extends Eventable {
 	 * @param {number} config.localLimit - Local buffer limit
 	 * @param {number} config.remoteLimit - Remote buffer limit
 	 */
-	constructor ({ id, name, transport, token, localLimit, remoteLimit, maxDataBytes }) {
-		this.#state = {
+	constructor ({ id, name, transport, token, localLimit, remoteLimit, maxChunkBytes }) {
+		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
+		const maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
+		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
 			allReader: {
 				waiting: false
 			},
@@ -51,8 +56,8 @@ export class Channel extends Eventable {
 			transport,
 			token,
 			writeQueue: new TaskQueue(),
-		};
-		this._subState(this.#stateSubs);
+		});
+		this._sub_(this.#_subs);
 	}
 
 	/**
@@ -64,7 +69,8 @@ export class Channel extends Eventable {
 		if (!types?.length) {
 			return Promise.resolve();
 		}
-		const state = this.#state, { messageTypes } = state;
+		const _thys = this.#_;
+		const { messageTypes } = _thys;
 		const newTypes = [], promises = [];
 
 		// Check the current status of each type
@@ -110,8 +116,8 @@ export class Channel extends Eventable {
 	 * @param {boolean} options.discard - Discard incoming data
 	 */
 	async close ({ discard = false } = {}) {
-		const state = this.#state;
-		if (discard) state.discard = true;
+		const _thys = this.#_;
+		if (discard) _thys.discard = true;
 		// TO DO: IMPLEMENT
 	}
 
@@ -137,12 +143,12 @@ export class Channel extends Eventable {
 	 * @returns {{waiting: boolean, resolve}|undefined}
 	 */
 	#findReader (type) {
-		const state = this.#state;
+		const _thys = this.#_;
 
-		const allReader = state.allReader;
+		const allReader = _thys.allReader;
 		if (allReader.waiting) return allReader;
 
-		const filtered = state.filteredReaders.get(type);
+		const filtered = _thys.filteredReaders.get(type);
 		if (filtered.waiting) return filtered;
 	}
 
@@ -152,17 +158,18 @@ export class Channel extends Eventable {
 	 * @returns {number|undefined} The message-type id
 	 */
 	getMessageType (type) {
-		const state = this.#state, { messageTypes } = state;;
+		const _thys = this.#_;
+		const { messageTypes } = _thys;
 		const entry = messageTypes.get(type);
 		const { ids, name } = entry;
 		return { ids, name };
 	}
 
-	_getState () {
-		const state = this.#state, subs = this.#stateSubs;
+	_get_ () {
+		const prot = this.#_, subs = this.#_subs;
 		try {
 			for (const sub of subs) {
-				sub(state);
+				sub(prot);
 				subs.delete(sub);
 			}
 		} catch (_) { /**/ }
@@ -176,8 +183,8 @@ export class Channel extends Eventable {
 	_getTypeIdSet (spec) {
 		if (spec instanceof IdSet || spec === null) return spec; // Already normalized
 		if (spec === undefined) return null;
-		const state = this.#state;
-		const types = state.messageTypes;
+		const _thys = this.#_;
+		const types = _this.messageTypes;
 		const ids = new IdSet();
 		const iterable = spec?.prototype[Symbol.iterator];
 		for (const value of iterable ? spec : [spec]) {
@@ -207,20 +214,20 @@ export class Channel extends Eventable {
 	 * @returns {boolean}
 	 */
 	hasReader (only = null) {
-		const state = this.#state;
+		const _thys = this.#_;
 		const idSet = this._getTypeIdSet(only);
 
 		if (!idSet) {
 			// Unfiltered - check for *any* readers
-			if (state.allReader.waiting) return true;
-			for (const entry of state.filteredReaders.values()) {
+			if (_thys.allReader.waiting) return true;
+			for (const entry of _thys.filteredReaders.values()) {
 				if (entry.waiting) return true;
 			}
 			return false;
 		}
 
 		// Filtered - check for *overlapping* readers
-		const readers = state.filteredReaders;
+		const readers = _thys.filteredReaders;
 		for (const type of idSet) {
 			const reader = readers.get(type);
 			if (reader?.waiting) return true;
@@ -232,20 +239,20 @@ export class Channel extends Eventable {
 	 * Return the channel even and/or odd ids
 	 * The idsRW form takes a channel auth token and provides direct, raw access for id updates
 	 */
-	get ids () {
-		const state = this.#state;
-		return [...state.ids];
+	get id () { return this.#_.ids[0]; } // The currently-active id
+	get ids () { // Copy of all ids
+		return [...this.#_.ids];
 	}
-	idsRW (token) {
-		const state = this.#state;
-		return (token && (token === state.token) && state.ids);
+	idsRW (token) { // Read/write access to ids
+		const _thys = this.#_;
+		return (token && (token === _thys.token) && _thys.ids);
 	}
 
 	/**
 	 * Return the channel name
 	 */
 	get name () {
-		return this.#state.name;
+		return this.#_.name;
 	}
 
 	/**
@@ -311,8 +318,9 @@ export class Channel extends Eventable {
 	 * @returns
 	 */
 	async read ({ only, timeout } = {}) {
+		const _thys = this.#_;
 		const idSet = this._getTypeIdSet(only);
-		if (this.hasReader(idSet)) {
+		if (thys.hasReader(idSet)) {
 			throw new Error('Conflicting readers');
 		}
 
@@ -331,11 +339,10 @@ export class Channel extends Eventable {
 		}
 
 		// Register reader for specific or any/all types, as appropriate
-		const state = this.#state;
 		if (!idSet) {
-			state.allReader = reader;
+			_thys.allReader = reader;
 		} else {
-			const readers = state.filteredReaders;
+			const readers = _thys.filteredReaders;
 			for (const type of idSet) {
 				readers.set(type, reader);
 			}
@@ -373,15 +380,15 @@ export class Channel extends Eventable {
 	 * @returns
 	 */
 	#readSync (idSet) {
-		const state = this.#state;
+		const _thys = this.#_;
 		let message = null;
 
 		if (!idSet) {
 			// No filter - select the first message, if any
-			message = state.dataMessages.values().next().value;
+			message = _thys.dataMessages.values().next().value;
 		} else {
 			// Select the first message matching the filter, if any
-			for (const current of state.dataMessages) {
+			for (const current of _thys.dataMessages) {
 				if (idSet.has(current.header.messageType)) {
 					message = current;
 					break;
@@ -392,15 +399,15 @@ export class Channel extends Eventable {
 		// Done if no matching messages
 		if (!message) return null;
 
-		state.dataMessages.delete(message);
+		_thys.dataMessages.delete(message);
 
 		const { eom, dataSize, sequence, messageType: typeId } = message.header;
-		const typeEntry = state.messageTypes.get(typeId);
+		const typeEntry = _thys.messageTypes.get(typeId);
 		const messageType = typeEntry?.name || typeId;
 		const result = {
 			data: null,
 			done: () => {
-				state.flowControl.markProcessed(sequence);
+				_thys.flowControl.markProcessed(sequence);
 			},
 			header: {
 				eom,
@@ -435,7 +442,8 @@ export class Channel extends Eventable {
 	 * Process remote ACK for locally-sent messages
 	 */
 	async #receiveAckMessage (header) {
-		const state = this.#state, { flowControl } = state;
+		const _thys = this.#_;
+		const { flowControl } = _thys;
 		const { baseSequence, ranges } = header;
 		const result = flowControl.clearWriteAckInfo(baseSequence, ranges);
 		if (result.duplicate) {
@@ -472,7 +480,8 @@ export class Channel extends Eventable {
 			throw new ProtocolViolationError('Unknown channel-control message-type', { messageType });
 		}
 
-		const state = this.#state, { controlMessages: messages, flowControl } = state;
+		const _thys = this.#_;
+		const { controlMessages: messages, flowControl } = _thys;
 
 		/*
 		 * Accumulate control-message chunks until EOM.
@@ -507,8 +516,8 @@ export class Channel extends Eventable {
 	 * @param {*} data
 	 */
 	#receiveDataMessage (header, data) {
-		const state = this.#state;
-		const messages = state.receivedMessages;
+		const _thys = this.#_;
+		const messages = _thys.receivedMessages;
 
 		messages.add({ header, data }); // Add to received messages
 
@@ -528,9 +537,8 @@ export class Channel extends Eventable {
 	 * @param {VirtualRWBuffer} data - Optional message data
 	 */
 	receiveMessage (token, header, data) {
-		const state = this.#state;
-		if (!token || token !== state.token) {
-			throw new Error('Unauthorized receiveMessage');
+		if (!token || token !== this.#_.token) {
+			throw new Error('Unauthorized');
 		}
 
 		switch (header.type) {
@@ -547,16 +555,8 @@ export class Channel extends Eventable {
 		}
 	}
 
-	/* async */ #sendAcks () {
-		const state = this.#state;
-		const { flowControl, token, transport } = state;
-		if (!flowControl.ackable) return;
-		const { base, ranges } = flowControl.getAckInfo();
-		return transport.sendAckMessage(token, base, ranges);
-	}
-
-	// Implement in every sub-class to subscribe to state
-	_subState () { }
+	// Base protected-state subscription stub
+	_sub_ () { }
 
 	/**
 	 * Write a message (in one or more chunks) to the channel
@@ -568,9 +568,9 @@ export class Channel extends Eventable {
 	 * @param {Object} options.options - Additional options
 	 */
 	/* async */ write (type, source, options = {}) {
-		const state = this.#state;
+		const _thys = this.#_;
 		if (typeof type === 'string') {
-			const { messageTypes } = state;
+			const { messageTypes } = _thys;
 			const info = messageTypes.get(type);
 			if (info?.ids.length) {
 				type = info.ids[0];
@@ -578,7 +578,7 @@ export class Channel extends Eventable {
 				throw new RangeError(`Unknown message type "${type}" for channel.write`);
 			}
 		}
-		const { transport } = state;
+		const { transport } = _thys;
 		if (typeof source === 'string') {
 			if (transport.needsEncodedText) {
 				return this.#writeEncodedText(type, source, options);
@@ -597,8 +597,7 @@ export class Channel extends Eventable {
 	 * @param {Object} options 
 	 */
 	async #writeBuffer (type, source, options) {
-		const state = this.#state;
-		const { flowControl, maxDataBytes, writeQueue, transport, token } = state;
+		const { flowControl, maxDataBytes, writeQueue, transport, token } = this.#_;
 		const { eom } = options;
 		const fnSrc = typeof source === 'function';
 		if (source instanceof Uint8Array) {
@@ -610,15 +609,14 @@ export class Channel extends Eventable {
 		while (true) {
 			// Process the next chunk of data
 			const dataSize = Math.min(remaining, maxDataBytes);
-			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			const totalSize = dataSize + DATA_HEADER_BYTES;
 			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
 			const bufferLoader = fnSrc ? (buffer) => source(offset, dataSize, buffer) : (buffer) => buffer.set(source.slice(offset, offset + dataSize));
 			await writeQueue.add(async () => {
 				await flowControl.writable(totalSize); // Wait for channel sending budget
-				await this.#sendAcks();
 				const sequence = flowControl.nextWriteSeq;
 				const header = { dataSize, flags, sequence, messageType: type };
-				await transport.sendByteMessage(token, header, bufferLoader);
+				await transport.sendByteMessage(token, header, bufferLoader, () => flowControl.getAckInfo());
 				flowControl.sent(totalSize);
 			});
 			offset += dataSize;
@@ -634,17 +632,15 @@ export class Channel extends Eventable {
 	 * @param {Object} options 
 	 */
 	async #writeEncodedText (type, source, options) {
-		const state = this.#state;
-		const { flowControl, maxDataBytes, writeQueue, transport, token } = state;
+		const { flowControl, maxDataBytes, writeQueue, transport, token } = this.#_;
 		const { eom } = options;
 		let offset = 0, remaining = source.length;
 		while (true) {
 			// Process the next chunk of text
 			const dataSize = Math.min(remaining * 3, maxDataBytes);
-			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			const totalSize = dataSize + DATA_HEADER_BYTES;
 			await writeQueue.add(async () => {
 				await flowControl.writable(totalSize); // Wait for channel sending budget
-				await this.#sendAcks();
 				const sequence = flowControl.nextWriteSeq;
 				const header = { dataSize, flags: 0, sequence, messageType: type };
 				await transport.sendByteMessage(token, header, (buffer) => {
@@ -652,8 +648,8 @@ export class Channel extends Eventable {
 					offset += read;
 					remaining -= read;
 					if (eom && remaining <= 0) header.flags |= FLAG_EOM;
-					flowControl.sent(written + MAX_DATA_HEADER_BYTES);
-				});
+					flowControl.sent(written + DATA_HEADER_BYTES);
+				}, () => flowControl.getAckInfo());
 			});
 			if (remaining <= 0) break;
 		}
@@ -666,23 +662,21 @@ export class Channel extends Eventable {
 	 * @param {Object} options 
 	 */
 	async #writeRawText (type, source, options) {
-		const state = this.#state;
-		const { flowControl, maxDataBytes, writeQueue, transport, token } = state;
+		const { flowControl, maxDataBytes, writeQueue, transport, token } = this.#_;
 		const maxDataChars = maxDataBytes >>> 1;
 		const { eom } = options;
 		let offset = 0, remaining = source.length;
 		while (true) {
 			// Process the next chunk of text
 			const dataLen = Math.min(remaining, maxDataChars), dataSize = dataLen < 1;
-			const totalSize = dataSize + MAX_DATA_HEADER_BYTES;
+			const totalSize = dataSize + DATA_HEADER_BYTES;
 			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
 			const data = (!offset && dataLen === remaining) ? source : source.slice(offset, offset + dataLen);
 			await writeQueue.add(async () => {
 				await flowControl.writable(totalSize); // Wait for channel sending budget (in *bytes*)
-				await this.#sendAcks();
 				const sequence = flowControl.nextWriteSeq;
 				const header = { dataSize, flags, sequence, messageType: type };
-				await transport.sendTextMessage(token, header, data);
+				await transport.sendTextMessage(token, header, data, () => flowControl.getAckInfo());
 				flowControl.sent(totalSize);
 			});
 			offset += dataLen;

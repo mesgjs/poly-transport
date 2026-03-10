@@ -5,17 +5,16 @@
  */
 
 import { Channel } from '../channel.esm.js';
-import { ObjectTransport } from './object.esm.js';
+import { Transport } from './base.esm.js';
 import {
 	// GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
-	MAX_DATA_HEADER_BYTES, PROTOCOL,
+	DATA_HEADER_BYTES, PROTOCOL,
 	ackHeaderSize,
 } from '../protocol.esm.js';
 
-export class PostMessageTransport extends ObjectTransport {
-	#state;
-	#bufferPool;
+export class PostMessageTransport extends Transport {
+	#_;
 	#gateway;
 
 	/**
@@ -24,9 +23,8 @@ export class PostMessageTransport extends ObjectTransport {
 	 */
 	constructor (options = {}) {
 		super(options);
-		this._getState();
-		const { bufferPool, gateway } = options;
-		this.#bufferPool = bufferPool;
+		this._get_();
+		const { gateway } = options;
 		this.#gateway = gateway;
 		// gateway object:
 		// - Listen for message events to receive
@@ -41,18 +39,23 @@ export class PostMessageTransport extends ObjectTransport {
 	 */
 	#getPoolVRWB (size) {
 		if (!Number.isInteger(size) || size <= 0) return null;
-		const byteBuffers = this.#bufferPool.acquireSet(size).map((buffer) => new Uint8Array(buffer));
+		const { bufferPool } = this.#_;
+		const byteBuffers = bufferPool.acquireSet(size).map((buffer) => new Uint8Array(buffer));
 		const virtual = new VirtualRWBuffer(byteBuffers);
 		virtual.shrink(size);
 		return virtual;
 	}
+
+	// postMessage can send string data without encoding
+	get needsEncodedText () { return false; }
 
 	/**
 	 * Receive a message on a gateway message event
 	 * @param {Event} event 
 	 */
 	#onMessage (event) {
-		const state = this.#state, message = event?.data, proto = message?.protocol;
+		const _thys = this.#_;
+		const message = event?.data, proto = message?.protocol;
 		if (proto === PROTOCOL) {
 			const { header, data: rawData } = message, type = header?.type;
 			switch (type) {
@@ -61,13 +64,13 @@ export class PostMessageTransport extends ObjectTransport {
 				const ranges = header?.ranges || [], rangeSize = ranges?.length || 0;
 				header.headerSize = ackHeaderSize(rangeSize);
 				header.dataSize = 0;
-				this.receiveMessage(state, header);
+				_thys.receiveMessage(header);
 				break;
 			}
 			case HDR_TYPE_CHAN_CONTROL:
 			case HDR_TYPE_CHAN_DATA:
 			{
-				header.headerSize = MAX_DATA_HEADER_BYTES;
+				header.headerSize = DATA_HEADER_BYTES;
 				const data = (() => {
 					if (typeof rawData === 'string') return rawData;
 					if (rawData) return new VirtualBuffer(rawData);
@@ -77,29 +80,42 @@ export class PostMessageTransport extends ObjectTransport {
 					if (data instanceof VirtualBuffer) return data.length;
 					return 0;
 				})();
-				this.receiveMessage(state, header, data);
+				_thys.receiveMessage(header, data);
 				break;
 			}
 			}
 		}
 	}
+	/**
+	 * Send an ACK message by itself
+	 * @param {symbol} token - The channel ID token
+	 * @param {ChannelFlowControl} flowControl - The associatec channel flow control
+	 */
+	sendAckMessage (token, flowControl) {
+		const _thys = this.#_;
+		const channel = _thys.channelTokens.get(token);
+		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
+			throw new Error('Unauthorized');
+		}
+		this.#sendAckMessage(channel.id, flowControl);
+		_thys.afterWrite(); // (no deferred write)
+	}
 
 	/**
-	 * Send an ACK message
-	 * @param {symbol} token - The channel ID token
-	 * @param {number} baseSequence - The base sequence number to ACK
-	 * @param {number[]} ranges - Optional addition sequence ranges to ACK
+	 * Send an ACK message (private internal)
+	 * @param {number} channelId - The channel ID
+	 * @param {ChannelFlowControl} flowControl - The associatec channel flow control
 	 */
-	sendAckMessage (token, baseSequence, ranges) {
-		const state = this.#state;
-		const channel = state.channelTokens.get(token);
-		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized sendByteMessage');
+	#sendAckMessage (channelId, flowControl) {
+		for (;;) {
+			const { base, ranges } = flowControl.getAckInfo();
+			if (base === undefined) return;
+			const header = {
+				type: HDR_TYPE_ACK, channelId, baseSequence: base, ranges
+			};
+			this.#gateway.postMessage({ protocol: PROTOCOL, header });
+			// (caller is responsible for afterWrite)
 		}
-		const header = {
-			type: HDR_TYPE_ACK. baseSequence, ranges
-		};
-		this.#gateway.postMessage({ protocol: PROTOCOL, header });
 	}
 
 	/**
@@ -107,21 +123,24 @@ export class PostMessageTransport extends ObjectTransport {
 	 * @param {symbol} token - The channel ID token
 	 * @param {Object} header - The message header
 	 * @param {Function} loader - The data-loader function: loader(buffer)
+	 * @param {ChannelFlowControl} flowControl - The associatec channel flow control
 	 */
-	sendByteMessage (token, header, loader) {
-		const state = this.#state;
-		const channel = state.channelTokens.get(token);
+	sendByteMessage (token, header, loader, flowControl) {
+		const _thys = this.#_;
+		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized sendByteMessage');
+			throw new Error('Unauthorized');
 		}
 		const buffer = this.#getPoolVRWB(header.dataSize);
 		if (buffer) loader(buffer);
 		const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
-		const finalHeader = {
-			type, flags, channelId: channel.ids[0], sequence, messageType
+		const channelId = channel.id, finalHeader = {
+			type, flags, channelId, sequence, messageType
 		};
 		const transfer = buffer ? buffer.segments.map((buffer) => buffer.buffer) : [];
+		this.#sendAckMessage(channelId, flowControl);
 		this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data: buffer?.segments }, transfer);
+		_thys.afterWrite(); // (no deferred write)
 	}
 
 	/**
@@ -130,16 +149,16 @@ export class PostMessageTransport extends ObjectTransport {
 	 * @param {Object} header - The message header
 	 * @param {string} data
 	 */
-	sendTextMessage (token, header, data) {
-		const state = this.#state;
-		const channel = state.channelTokens.get(token);
+	sendTextMessage (token, header, data, getAckInfo) {
+		const channel = this.#_.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized sendByteMessage');
+			throw new Error('Unauthorized');
 		}
 		const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
-		const finalHeader = {
-			type, flags, channelId: channel.ids[0], sequence, messageType
+		const channelId = channel.id, finalHeader = {
+			type, flags, channelId, sequence, messageType
 		};
+		this.#sendAckMessage(channelId, getAckInfo());
 		this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data });
 	}
 
@@ -147,8 +166,8 @@ export class PostMessageTransport extends ObjectTransport {
 	 * Subscribe to private state
 	 * @param {Set} subs - Set of subscription setter functions
 	 */
-	_subState (subs) {
-		super._subState(subs);
-		subs.add((s) => this.#state ||= s); // Set #state once
+	_sub_ (subs) {
+		super._sub_(subs);
+		subs.add((prot) => this.#_ ||= prot); // Set #_ once
 	}
 }

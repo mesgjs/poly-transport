@@ -14,25 +14,105 @@
 import { Channel } from '../channel.esm.js';
 import { OutputRingBuffer } from '../output-ring-bffer.esm.js';
 import { Transport } from './base.esm.js';
-import { VirtualRWBuffer } from '../virtual-buffer.esm.js';
 import {
 	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
-	decodeAckHeaderFrom, decodeChannelHeaderFrom, encAddlToTotal
+	RESERVE_ACK_BYTES, DATA_HEADER_BYTES,
+	decodeAckHeaderFrom, decodeChannelHeaderFrom,
+	encAddlToTotal, encodeAckHeaderInto, encodeChannelHeaderInto,
 } from '../protocol.esm.js';
+import { TaskQueue } from '@task-queue';
 
 export class ByteTransport extends Transport {
-	#state; // Constructor-threaded private state
+	static __protected = Object.freeze(Object.setPrototypeOf({
+		/**
+		 * Handle any post-write actions
+		 */
+		afterWrite () {
+			super.afterWrite();
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			// Wake a pending reservation if a ring-buffer release enables it
+			const { outputBuffer, reserveWaiter } = _thys;
+			if (reserveWaiter && outputBuffer.available >= reserveWaiter.size) reserveWaiter.resolve();
+		},
+
+		/**
+		* Receive additional transport input into the VirtualRWBuffer
+		* @param {Uint8Array|VirtualBuffer|Uint8Array[]} source
+		*/
+		receiveBytes (source) {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const { inputBuffer, readWaiter } = _thys;
+			inputBuffer.append(source);
+
+			// If there's a waiter and we have sufficient input, wake them up
+			if (readWaiter && inputBuffer.length >= readWaiter.count) readWaiter.resolve();
+		},
+
+		// Wait until there's room for size bytes in the output ring
+		/* async */ reservable (size) {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const { outputBuffer } = _thys;
+			if (outputBuffer.available >= size) return; // Requested space is available now
+			if (size > outputBuffer.size) throw new RangeError(`Request (${size}) exceeds buffer size (${outputBuffer.size}`);
+			const waiter = _thys.reserveWaiter = { size };
+			const promise = new Promise((r) => waiter.resolve = r);
+			promise.then(() => _thys.reserveWaiter = null);
+			return promise;
+		},
+
+		/**
+		* Figure out when to write our output buffer
+		* Handles batching/scheduling, writes in progress, etc.
+		* @param {boolean} now - Send immediately (if there's any committed output)
+		* @returns
+		*/
+		scheduleWrite (now = false) {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const { autoWriteBytes, autoWriteTime, outputBuffer } = _thys;
+			const committed = outputBuffer.committed;
+			if (committed === 0 || _thys.writing) {
+				return; // Nothing to write, or writing in progress
+			}
+			if (committed >= (now ? 1 : autoWriteBytes)) {
+				// Send if forced or over byte threshold
+				if (_thys.writeTimer) {
+					clearTimeout(_thys.writeTimer);
+					_thys.writeTimer = null;
+				}
+				_thys.writeBytes();
+			} else if (Number.isInteger(autoWriteTime) && !_thys.writeTimer) {
+				// Send when we've waited the maximum batching time
+				_thys.writeTimer = setTimeout(() => _thys.scheduleWrite(true), autoWriteTime);
+			}
+		},
+
+		// Transport-specific startup - start the byte-stream reader
+		startReader () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			super.startReader();
+			_thys.readerTimer = setTimeout(() => thys.#byteReader(), 0);
+		}
+	}, super.__protected));
+
+	#_; // ByteTransport-level view of shared protected state
 	#autoWriteBytes;
 	#autoWriteTime;
 
 	constructor (options = {}) {
 		super(options);
-		this._getState();
-		const state = this.#state;
+		this._get_();
 		this.#autoWriteBytes = options.autoWriteBytes ?? 16 * 1024;
 		this.#autoWriteTime = options.autoWriteTime ?? 5; // msec
-		state.outputBuffer = new OutputRingBuffer(options.outputBufferSize);
+		Object.assign(_thys, {
+			outputBuffer: new OutputRingBuffer(options.outputBufferSize),
+			writeQueue: new TaskQueue(),
+		});
 	}
 
 	/**
@@ -42,22 +122,22 @@ export class ByteTransport extends Transport {
 	 * - Byte-stream-based ACK and channel messages
 	 */
 	async #byteReader () {
-		const state = this.#state;
-		const input = state.inputBuffer;
+		const _thys = this.#_;
+		const { bufferPool, inputBuffer } = _thys;
 		const newLine = 10, stx = 2;
 		let firstConfig = true;
 		let offset = 0;
 
 		// Line-based config/handshake loop
-		while (!state.stopped) {
-			if (offset === input.length) {
+		while (!_thys.stopped) {
+			if (offset === inputBuffer.length) {
 				await this.#readable(offset + 1);
 			}
 
-			const nextByte = input.getUint8(offset);
+			const nextByte = inputBuffer.getUint8(offset);
 
 			if (nextByte === stx && offset > 0) {
-				const line = input.decode({ end: offset });
+				const line = inputBuffer.decode({ end: offset });
 				input.release(offset);
 				offset = 0;
 				await this.dispatchEvent('outOfBandData', { data: line });
@@ -65,8 +145,8 @@ export class ByteTransport extends Transport {
 			}
 
 			if (nextByte === newLine) {
-				const line = input.decode({ end: offset });
-				input.release(offset);
+				const line = inputBuffer.decode({ end: offset });
+				inputBuffer.release(offset);
 				offset = 0;
 
 				if (line === START_BYTE_STREAM) break;
@@ -74,8 +154,8 @@ export class ByteTransport extends Transport {
 					try {
 						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
 						firstConfig = false;
-						await this.onRemoteConfig(state, config);
-					} catch (_e) { /**/ }
+						await _thys.onRemoteConfig(config);
+					} catch (_) { /**/ }
 				} else {
 					await this.dispatchEvent('outOfBandData', { data: line });
 				}
@@ -86,15 +166,15 @@ export class ByteTransport extends Transport {
 		}
 
 		// Byte-stream-based message loop
-		while (!state.stopped) {
+		while (_thys.status != Transport.STATUS_STOPPED) {
 			// Read a message header
-			if (input.length < 2) {
+			if (inputBuffer.length < 2) {
 				await this.#readable(2);
 			}
-			const type = input.getUint8(0);
-			const encAddl = input.getUint8(1);
+			const type = inputBuffer.getUint8(0);
+			const encAddl = inputBuffer.getUint8(1);
 			const totalHeaderSize = encAddlToTotal(encAddl);
-			if (input.length < totalHeaderSize) {
+			if (inputBuffer.length < totalHeaderSize) {
 				await this.#readable(totalHeaderSize);
 			}
 
@@ -103,11 +183,11 @@ export class ByteTransport extends Transport {
 
 			switch (type) {
 			case HDR_TYPE_ACK:
-				header = decodeAckHeaderFrom(input);
+				header = decodeAckHeaderFrom(inputBuffer);
 				break;
 			case HDR_TYPE_CHAN_CONTROL:
 			case HDR_TYPE_CHAN_DATA:
-				header = decodeChannelHeaderFrom(input);
+				header = decodeChannelHeaderFrom(inputBuffer);
 				break;
 			default:
 				await this.dispatchEvent('protocolViolation', {
@@ -119,17 +199,17 @@ export class ByteTransport extends Transport {
 				continue;
 			}
 
-			input.release(totalHeaderSize, state.pool);
+			inputBuffer.release(totalHeaderSize, bufferPool);
 			const dataSize = header.dataSize ?? 0;
 			if (dataSize > 0 && !state.stopped) {
-				if (dataSize > input.length) {
+				if (dataSize > inputBuffer.length) {
 					await this.#readable(dataSize);
 				}
-				data = input.slice(0, dataSize).toPool(state.pool);
-				input.release(dataSize, state.pool);
+				data = inputBuffer.slice(0, dataSize).toPool(bufferPool);
+				inputBuffer.release(dataSize, bufferPool);
 			}
 
-			this.receiveMessage(state, header, data);
+			_thys.receiveMessage(header, data);
 		}
 	}
 
@@ -138,116 +218,123 @@ export class ByteTransport extends Transport {
 	 * @param {number} count - The number of bytes required
 	 */
 	#readable (count) {
-		const state = this.#state;
-		const input = state.inputBuffer;
-		if (input.length >= count) return; // Already available
+		const _thys = this.#_;
+		const { inputBuffer } = _thys;
+		if (inputBuffer.length >= count) return; // Already available
 		
 		// Wait on the necessary additional bytes
 		const waiter = { count };
 		const promise = new Promise((resolve) => waiter.resolve = resolve);
-		state.readWaiter = waiter;
+		_thys.readWaiter = waiter;
+		promise.then(() => _thys.readWaiter = null);
 		return promise;
 	}
 
 	/**
-	 * Receive additional transport input into the VirtualRWBuffer
-	 * @param {Uint8Array|VirtualBuffer|Array<{buffer: Uint8Array, offset: number, length: number}>} source
-	 * @param {number} offset - Starting offset (only used if source is Uint8Array)
-	 * @param {number} length - Length (only used if source is Uint8Array)
+	 * Send an ACK message (not associated with a data message)
+	 * @param {symbol} token - The channel ID token
+	 * @param {ChannelFlowControl} flowControl - Associated channel flow control
+	 * @returns {Promise}
 	 */
-	receiveBytes (state, source, offset = 0, length = undefined) {
-		if (state !== this.#state) {
-			throw new Error('Unauthorized receiveBytes');
-		}
-		const input = state.inputBuffer.
-		input.append(source, offset, length);
-		
-		// If there's a waiter and we have sufficient input, wake them up
-		const waiter = state.readWaiter;
-		if (waiter && input.length >= waiter.count) {
-			state.readWaiter = null;
-			waiter.resolve();
-		}
-	}
-
-	/**
-	 * Figure out when to write our output buffer
-	 * Handles batching/scheduling, writes in progress, etc.
-	 * @param {Object} state - Private state (for authorization)
-	 * @param {boolean} now - Send immediately (if there's any committed output)
-	 * @returns
-	 */
-	async scheduleWrite (state, now = false) {
-		if (state !== this.#state) {
-			throw new Error('Unauthorized scheduleWrite');
-		}
-		const { autoWriteBytes: bytes, autoWriteType: time, outputBuffer: buffer } = state;
-		const committed = buffer.committed;
-		if (committed === 0 || state.writing) {
-			return; // Nothing to write, or writing in progress
-		}
-		if (committed >= (now ? 1 : bytes)) {
-			// Send if forced or over byte threshold
-			if (state.writeTimer) {
-				clearTimeout(state.writeTimer);
-				state.writeTimer = null;
-			}
-			state.writing = true;
-			try {
-				await this.writeBytes(state);
-			}
-			finally {
-				state.writing = false;
-			}
-		} else if (Number.isInteger(time) && !state.writeTimer) {
-			// Send when we've waited the maximum batching time
-			state.writeTimer = setTimeout(() => this.scheduleWrite(state, true), time);
-		}
-	}
-
-	/**
-	 * Send a message (byte-stream version)
-	 * @param {symbol} token
-	 * @param {Object} header
-	 * @param {*} data
-	 */
-	async sendMessage (token, header, data) {
-		const state = this.#state;
-		const channel = state.channelTokens.get(token);
+	/* async */ sendAckMessage (token, flowControl) {
+		const _thys = this.#_;
+		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized sendMessage');
+			throw new Error('Unauthorized');
 		}
-		// TO DO:
-		// Encode data
-		// writeBytes
+		// Don't queue more ACKs if they're already pending
+		if (flowControl.ackPending) return;
+		flowControl.ackPending = true;
+		const { writeQueue } = _thys;
+		const task = writeQueue.add(async () => {
+			await _thys.reservable(RESERVE_ACK_BYTES);
+			this.#sendAckMessage(channel.id, flowControl);
+		});
+		return task;
 	}
 
 	/**
-	 * Transport-specific startup - start the byte-stream reader
-	 * @param {*} state
+	 * Send an ACK message (private internal)
+	 * @param {number} channelId - The channel ID
+	 * @param {ChannelFlowControl} flowControl - Associated channel flow control
+	 * @returns {Promise}
 	 */
-	_start (state) {
-		if (state !== this.#state) {
-			throw new Error('Unauthorized _start');
+	async #sendAckMessage (channelId, flowControl) {
+		const _thys = this.#_;
+		const { outputBuffer, writeQueue } = _thys;
+		// Wait until we're able to reserve space for a max-size ACK header
+		const vrwb = outputBuffer.reserve(RESERVE_ACK_BYTES);
+		if (!vrwb) throw new Error('Insufficient pre-reservation');
+		const { base, ranges, complete } = flowControl.getAckInfo();
+		if (base !== undefined) {
+			const headerSize = encodeAckHeaderInto(vrwb, 0, { channelId, baseSequence: base, ranges });
+			vrwb.shrink(headerSize);
+		} else {
+			// Nothing to ACK; cancel reservation
+			vrwb.shrink(0);
 		}
-		state.readerTimer = setTimeout(() => this.#byteReader(), 0);
+		outputBuffer.commit();
+		flowControl.clearReadAckInfo(base, ranges);
+		_thys.scheduleWrite();
+		if (complete) {
+			// All currently ready ACKs have been written
+			flowControl.ackPending = false;
+		} else {
+			// Queue a request to process more ACKs
+			writeQueue.add(async () => {
+				await _thys.reservable(RESERVE_ACK_BYTES);
+				this.#sendAckMessage(channelId, flowControl);
+			});
+		}
+	}
+
+	/**
+	 * Send a control or data message (optionally with byte data)
+	 * @param {symbol} token - The channel ID token
+	 * @param {Object} header - The message header
+	 * @param {function} loader - The data-loader function: loader(buffer)
+	 * @param {ChannelFlowControl} flowControl - Associated channel flow control
+	 */
+	sendByteMessage (token, header, loader, flowControl) {
+		const _thys = this.#_;
+		const { outputBuffer, writeQueue } = _thys;
+		const channel = _thys.channelTokens.get(token);
+		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
+			throw new Error('Unauthorized');
+		}
+		const channelId = channel.id;
+		const task = writeQueue.add(async () => {
+			const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0, dataSize = 0 } = header;
+			const ackPending = flowControl.ackPending, ackBytes = ackPending ? 0 : RESERVE_ACK_BYTES;
+			const maxSize = ackBytes + DATA_HEADER_BYTES + dataSize;
+			await _thys.reservable(maxSize);
+			if (!ackPending) this.#sendAckMessage(channelId, flowControl);
+			const messageSize = DATA_HEADER_BYTES + dataSize;
+			const message = outputBuffer.reserve(messageSize);
+			if (!message) throw new Error('Insufficient pre-reservation');
+			const finalHeader = {
+				type, dataSize, flags, channelId, sequence, messageType
+			};
+			if (dataSize) {
+				const data = message.slice(DATA_HEADER_BYTES);
+				loader(data);
+				const length = data.length;
+				finalHeader.dataSize = length;
+				message.shrink(DATA_HEADER_BYTES + length);
+			}
+			encodeChannelHeaderInto(message);
+			outputBuffer.commit();
+			_thys.scheduleWrite();
+		});
+		return task;
 	}
 
 	/**
 	 * Subscribe to private state
 	 * @param {Set} subs - Subscribers Set
 	 */
-	_subState (subs) {
-		super._subState(subs);
-		subs.add((s) => this.#state ||= s); // Set #state once
-	}
-
-	/**
-	 * Sub-classes must override this method to actually get the output buffer(s) and write the bytes
-	 * @abstract
-	 * @param {Object} _state - Private state (used for authentication)
-	 */
-	/* async */ writeBytes (_state) {
-		throw new Error('byteTransport.writeBytes implementation is missing')
+	_sub_ (subs) {
+		super._sub_(subs);
+		subs.add((prot) => this.#_ ||= prot); // Set #_ once
 	}
 }

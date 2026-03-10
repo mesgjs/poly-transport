@@ -15,11 +15,11 @@ import {
 } from './protocol.esm.js';
 
 export class ControlChannel extends Channel {
-	#state;
+	#_;
 
 	constructor (options) {
 		super(options);
-		this._getState();
+		this._get_();
 		this.#preloadMessageTypes();
 	}
 
@@ -34,8 +34,7 @@ export class ControlChannel extends Channel {
 	 * Pre-load channel's message-type id <-> name mappings
 	 */
 	#preloadMessageTypes () {
-		const state = this.#state;
-		const types = state.messageTypes;
+		const types = this.#_.messageTypes;
 		for (const [id, name] of [
 			TCC_DTAM_TRAN_STOP,
 			TCC_DTAM_CHAN_REQUEST,
@@ -62,8 +61,8 @@ export class ControlChannel extends Channel {
 	}
 
 	// Subscribe to private state (called by base constructor)
-	_subState (subs) {
-		super._subState(subs);
-		subs.add((s) => this.#state ||= s);
+	_sub_ (subs) {
+		super._sub_(subs);
+		subs.add((prot) => this.#_ ||= prot);
 	}
 }

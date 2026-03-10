@@ -67,6 +67,8 @@ export class ChannelFlowControl {
 		this.#writeLimit = writeLimit;
 		this.#writer = null;
 		this.#written = 0;
+
+		this.ackPending = false;
 	}
 
 	/**
@@ -156,16 +158,14 @@ export class ChannelFlowControl {
 	 * @returns {{ base: number, ranges: number[] } | null} ACK info or null if nothing to ACK
 	 */
 	getAckInfo () {
+		if (!this.#ackable) return null;
+
 		// Filter for consumed chunks only (no sorting needed - already in order)
 		const processed = [];
 		for (const [seq, info] of this.#readAckInfo) {
 			if (info.processed) {
 				processed.push(seq);
 			}
-		}
-
-		if (processed.length === 0) {
-			return null;
 		}
 
 		const base = processed[0];
@@ -200,8 +200,9 @@ export class ChannelFlowControl {
 
 		let currentSeq = base + 1;  // Start after base
 		let additional = 0; // Only base so far
+		let complete = true; // Is base + ranges complete?
 
-		for (let i = 1; i < processed.length; i++) {
+		for (let i = 1; i < processed.length; ++i) {
 			const seq = processed[i];
 			const gap = seq - currentSeq;
 
@@ -210,11 +211,9 @@ export class ChannelFlowControl {
 				additional++;
 			} else {
 				// Gap detected - flush additional, add skip, start new additional
-				if (!addCount(additional)) {
-					break;  // Hit range limit
-				}
-				if (!addCount(gap)) {
-					break;  // Hit range limit
+				if (!addCount(additional) || !addCount(gap)) {
+					complete = false; // Hit range limit; result is incomplete
+					break;
 				}
 				additional = 1;
 			}
@@ -227,7 +226,7 @@ export class ChannelFlowControl {
 			addCount(additional);
 		}
 
-		return { base, ranges };
+		return { base, ranges, complete };
 	}
 
 	/**

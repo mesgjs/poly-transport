@@ -275,11 +275,11 @@ class RingBufferReservationError extends Error {
 - 2: Channel data message
 
 **Constants** (requirements.md:633-638):
-- `MAX_DATA_HEADER_BYTES` = 18 (current bytestream data format)
+- `DATA_HEADER_BYTES` = 18 (current bytestream data format)
 - `MIN_DATA_RES_BYTES` = 4 (minimum data reservation)
 - `RESERVE_ACK_BYTES` = 514 (maximum ACK message size)
-- Requirement: `maxChunkBytes >= MAX_DATA_HEADER_BYTES + MIN_DATA_RES_BYTES`
-- `maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES`
+- Requirement: `maxChunkBytes >= DATA_HEADER_BYTES + MIN_DATA_RES_BYTES`
+- `maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES`
 
 **ACK Message Format** (lines 430-456):
 ```
@@ -303,11 +303,11 @@ class RingBufferReservationError extends Error {
 4B: remote transport channel number
 4B: local channel sequence number
 2B: remote message type
-Total: 18 bytes (MAX_DATA_HEADER_BYTES)
+Total: 18 bytes (DATA_HEADER_BYTES)
 Followed by data segment if data-segment size > 0
 ```
 
-**Note**: `maxChunkBytes` is the "over-the-wire" size limit (header + data payload). All data chunking must be based on `maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES` (requirements.md:636-640).
+**Note**: `maxChunkBytes` is the "over-the-wire" size limit (header + data payload). All data chunking must be based on `maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES` (requirements.md:636-640).
 
 **API**:
 ```javascript

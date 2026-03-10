@@ -107,7 +107,7 @@ await channel.write(JSON.stringify(largeObject), { eom: true, type: 2 });
 
 **Data Structures**:
 - `channel.maxChunkBytes`: Maximum chunk size (header + data)
-- `MAX_DATA_HEADER_BYTES = 18`: Fixed header size
+- `DATA_HEADER_BYTES = 18`: Fixed header size
 - `maxDataBytes = maxChunkBytes - 18`: Maximum data per chunk
 
 **Note**: This scenario covers multi-chunk writes. For single-chunk, see [`simple-write.md`](simple-write.md).

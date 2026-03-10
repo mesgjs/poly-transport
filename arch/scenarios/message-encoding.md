@@ -281,9 +281,9 @@ const dataSize = dataBytes.length;
 **Actor**: Channel
 
 ```javascript
-import { MAX_DATA_HEADER_BYTES } from './protocol.esm.js';
+import { DATA_HEADER_BYTES } from './protocol.esm.js';
 
-const headerSize = MAX_DATA_HEADER_BYTES; // Always 18 bytes
+const headerSize = DATA_HEADER_BYTES; // Always 18 bytes
 const chunkBytes = headerSize + dataSize;
 ```
 
@@ -373,7 +373,7 @@ Offset  Size  Field                Value (example)
 8       4B    Channel ID           42
 12      4B    Sequence             sequence
 16      2B    Message type         3 (TCC_CTLM_MESG_TYPE_REG_REQ)
-Total: 18 bytes (MAX_DATA_HEADER_BYTES)
+Total: 18 bytes (DATA_HEADER_BYTES)
 ```
 
 **Remaining Size**:
@@ -465,7 +465,7 @@ const messageType = 'userMessage'; // Named message type (for filtering)
 
 // Determine encoding strategy
 const isString = typeof data === 'string';
-const maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES;
+const maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
 ```
 
 **State**:
@@ -496,7 +496,7 @@ const messageTypeId = channel.getMessageTypeId(messageType);
 const remaining = data.length - offset; // UTF-16 code units
 const worstCase = remaining * 3; // Worst-case UTF-8 bytes
 const reserveSize = Math.min(worstCase, maxDataBytes);
-const chunkBytes = MAX_DATA_HEADER_BYTES + reserveSize;
+const chunkBytes = DATA_HEADER_BYTES + reserveSize;
 ```
 
 **State**:
@@ -574,7 +574,7 @@ Offset  Size  Field                Value (example)
 8       4B    Channel ID           42
 12      4B    Sequence             sequence
 16      2B    Message type         messageTypeId (for filtering)
-Total: 18 bytes (MAX_DATA_HEADER_BYTES)
+Total: 18 bytes (DATA_HEADER_BYTES)
 ```
 
 **EOM Flag**:
@@ -603,7 +603,7 @@ const result = reservation.encodeFrom(data, offset, 'utf-8');
 
 ```javascript
 const actualDataSize = result.written;
-const actualChunkBytes = MAX_DATA_HEADER_BYTES + actualDataSize;
+const actualChunkBytes = DATA_HEADER_BYTES + actualDataSize;
 
 if (actualChunkBytes < chunkBytes) {
   // Update header with actual data size
@@ -697,7 +697,7 @@ ringBuffer.consume(actualChunkBytes);
 
 ```javascript
 const isString = typeof data === 'string';
-const maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES;
+const maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
 
 if (isString) {
   // String: dynamic chunking (variable-length UTF-8)

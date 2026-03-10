@@ -7,7 +7,7 @@
 import { assertEquals, assertThrows } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
 import {
 	// Constants
-	MAX_DATA_HEADER_BYTES,
+	DATA_HEADER_BYTES,
 	MIN_DATA_RES_BYTES,
 	RESERVE_ACK_BYTES,
 	HDR_TYPE_ACK,
@@ -69,7 +69,7 @@ function encodeAckHeader (fields) {
  * @returns {Uint8Array} Encoded channel header
  */
 function encodeChannelHeader (type, fields) {
-	const buffer = new Uint8Array(MAX_DATA_HEADER_BYTES);
+	const buffer = new Uint8Array(DATA_HEADER_BYTES);
 	const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 	encodeChannelHeaderInto(view, 0, type, fields);
 	return buffer;
@@ -80,10 +80,10 @@ function encodeChannelHeader (type, fields) {
 // ============================================================================
 
 Deno.test('Protocol - constants are defined', () => {
-	assertEquals(typeof MAX_DATA_HEADER_BYTES, 'number');
+	assertEquals(typeof DATA_HEADER_BYTES, 'number');
 	assertEquals(typeof MIN_DATA_RES_BYTES, 'number');
 	assertEquals(typeof RESERVE_ACK_BYTES, 'number');
-	assertEquals(MAX_DATA_HEADER_BYTES, 18);
+	assertEquals(DATA_HEADER_BYTES, 18);
 	assertEquals(MIN_DATA_RES_BYTES, 4);
 	assertEquals(RESERVE_ACK_BYTES, 514);
 });
@@ -182,7 +182,7 @@ Deno.test('Protocol - ackHeaderSize validation', () => {
 
 Deno.test('Protocol - channelHeaderSize', () => {
 	assertEquals(channelHeaderSize(), 18);
-	assertEquals(channelHeaderSize(), MAX_DATA_HEADER_BYTES);
+	assertEquals(channelHeaderSize(), DATA_HEADER_BYTES);
 });
 
 // ============================================================================

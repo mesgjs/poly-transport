@@ -8,11 +8,11 @@
  */
 
 // Protocol constants (requirements.md:636-641, Update 2026-01-08-A)
-export const MAX_DATA_HEADER_BYTES = 18;
+export const DATA_HEADER_BYTES = 18;
 export const MIN_DATA_RES_BYTES = 4;
 export const MIN_ACK_BYTES = 14; // even(13) (base without ranges)
 export const MAX_ACK_BYTES = 268; // Base (13) + max 255 ranges
-export const RESERVE_ACK_BYTES = 256; // Reserved when sending control or data messages
+export const RESERVE_ACK_BYTES = MAX_ACK_BYTES; // Reserved when sending control or data messages
 
 // Header type constants (requirements.md:415-421)
 export const HDR_TYPE_ACK = 0;
@@ -99,7 +99,7 @@ export function ackHeaderSize (rangeCount) {
  * @returns {number} Header size in bytes
  */
 export function channelHeaderSize () {
-	return MAX_DATA_HEADER_BYTES;
+	return DATA_HEADER_BYTES;
 }
 
 /**
@@ -173,7 +173,7 @@ export function encodeAckHeaderInto (target, offset, fields) {
  * - 4B: remote transport channel number
  * - 4B: local channel sequence number
  * - 2B: remote message type
- * Total: 18 bytes (MAX_DATA_HEADER_BYTES)
+ * Total: 18 bytes (DATA_HEADER_BYTES)
  *
  * @param {VirtualRWBuffer|DataView} target - Target buffer with DataView-compatible API
  * @param {number} offset - Offset in target buffer
@@ -196,14 +196,14 @@ export function encodeChannelHeaderInto (target, offset, type, fields) {
 
 	let o = offset;
 	target.setUint8(o++, type);
-	target.setUint8(o++, totalToEncAddl(MAX_DATA_HEADER_BYTES));
+	target.setUint8(o++, totalToEncAddl(DATA_HEADER_BYTES));
 	target.setUint32(o, dataSize); o += 4;
 	target.setUint16(o, flags); o += 2;
 	target.setUint32(o, channelId); o += 4;
 	target.setUint32(o, sequence); o += 4;
 	target.setUint16(o, messageType); o += 2;
 
-	return MAX_DATA_HEADER_BYTES;
+	return DATA_HEADER_BYTES;
 }
 
 /**
@@ -253,7 +253,7 @@ export function decodeAckHeaderFrom (buffer, offset = 0) {
  */
 export function decodeChannelHeaderFrom (buffer, offset = 0) {
 	const length = buffer.length || buffer.byteLength;
-	if (length - offset < MAX_DATA_HEADER_BYTES) {
+	if (length - offset < DATA_HEADER_BYTES) {
 		throw new Error('Buffer too small for channel header');
 	}
 
@@ -269,7 +269,7 @@ export function decodeChannelHeaderFrom (buffer, offset = 0) {
 
 	return {
 		type,
-		headerSize: MAX_DATA_HEADER_BYTES,
+		headerSize: DATA_HEADER_BYTES,
 		dataSize,
 		flags,
 		channelId,
@@ -365,9 +365,10 @@ export class ProtocolViolationError extends Error {
 	 */
 	constructor (description, details) {
 		super(`Protocol violation: ${description}`);
-		this.name = this.constructor.name;
 		this.description = this.reason = description;
 		this.details = details;
 	}
+
+	get name () { return this.constructor.name; }
 }
 

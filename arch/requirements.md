@@ -633,11 +633,11 @@ It is expected that header information will be encoded and decoded in the main t
 ### Sizes, Reservations, ACKs
 
 - For better clarity, "size" items should be renamed to "bytes" (where applicable), e.g. `maxChunkSize` should be renamed `maxChunkBytes`
-- Define `MAX_DATA_HEADER_BYTES` as 18 (current value based on bytestream data format)
+- Define `DATA_HEADER_BYTES` as 18 (current value based on bytestream data format)
 - Define `MIN_DATA_RES_BYTES` as 4
-- Require `maxChunkBytes >= MAX_DATA_HEADER_BYTES + MIN_DATA_RES_BYTES`
+- Require `maxChunkBytes >= DATA_HEADER_BYTES + MIN_DATA_RES_BYTES`
 - `maxChunkBytes` is the **"over-the-wire"** size limit (header + data payload)
-- All data chunking must be based on `maxDataBytes = maxChunkBytes - MAX_DATA_HEADER_BYTES`
+- All data chunking must be based on `maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES`
 - Define `RESERVE_ACK_BYTES` as 514 (current maximum header/ACK bytes)
 - ACKs have a channel field (required for sequence number context), but they are *transport-level* messages, not channel-level messages
 - ACK handling:

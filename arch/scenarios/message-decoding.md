@@ -108,7 +108,7 @@ export function decodeHeaderSizeFromPrefix (buffer, offset = 0) {
   }
 
   if (type === HDR_TYPE_CHAN_CONTROL || type === HDR_TYPE_CHAN_DATA) {
-    return MAX_DATA_HEADER_BYTES;  // Always 18
+    return DATA_HEADER_BYTES;  // Always 18
   }
 
   throw new Error(`Unknown message type: ${type}`);
@@ -302,7 +302,7 @@ const headerSize = decodeHeaderSizeFromPrefix(inputBuffer, 0);
 ```
 
 **State**:
-- `headerSize` = 18 bytes (MAX_DATA_HEADER_BYTES)
+- `headerSize` = 18 bytes (DATA_HEADER_BYTES)
 - Fixed size for all channel messages
 
 #### 2. Wait for Complete Header
@@ -352,14 +352,14 @@ Offset  Size  Field                Value (example)
 8       4B    Channel ID           42
 12      4B    Sequence             7
 16      2B    Message type         3 (TCC_CTLM_MESG_TYPE_REG_REQ)
-Total: 18 bytes (MAX_DATA_HEADER_BYTES)
+Total: 18 bytes (DATA_HEADER_BYTES)
 ```
 
 **Implementation**:
 ```javascript
 function decodeChannelHeaderFrom (buffer, offset) {
   const length = buffer.length || buffer.byteLength;
-  if (length - offset < MAX_DATA_HEADER_BYTES) {
+  if (length - offset < DATA_HEADER_BYTES) {
     throw new Error('Buffer too small for channel header');
   }
 
@@ -379,7 +379,7 @@ function decodeChannelHeaderFrom (buffer, offset) {
 
   return {
     type,
-    headerSize: MAX_DATA_HEADER_BYTES,
+    headerSize: DATA_HEADER_BYTES,
     dataSize,
     flags,
     channelId,
@@ -580,7 +580,7 @@ const headerSize = decodeHeaderSizeFromPrefix(inputBuffer, 0);
 ```
 
 **State**:
-- `headerSize` = 18 bytes (MAX_DATA_HEADER_BYTES)
+- `headerSize` = 18 bytes (DATA_HEADER_BYTES)
 
 #### 2. Wait for Complete Header
 
@@ -624,7 +624,7 @@ Offset  Size  Field                Value (example)
 8       4B    Channel ID           42
 12      4B    Sequence             8
 16      2B    Message type         1024 (for filtering)
-Total: 18 bytes (MAX_DATA_HEADER_BYTES)
+Total: 18 bytes (DATA_HEADER_BYTES)
 ```
 
 #### 4. Wait for Complete Data Payload
