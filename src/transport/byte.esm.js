@@ -91,6 +91,75 @@ export class ByteTransport extends Transport {
 			}
 		},
 
+		/**
+		 * Send handshake configuration to remote endpoint
+		 * Sends only the greeting + config line (byte stream marker sent later in onRemoteConfig)
+		 */
+		async sendHandshake () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+
+			const { id, c2cSymbol, minChannelId, minMessageTypeId, outputBuffer } = _thys;
+
+			// Prepare configuration object
+			const config = {
+				transportId: id,
+				version: 1,
+				c2cEnabled: typeof c2cSymbol === 'symbol',
+				minChannelId,
+				minMessageTypeId,
+			};
+
+			// Calculate size for greeting + config line
+			const configJson = JSON.stringify(config);
+			const greetConfigLine = GREET_CONFIG_PREFIX + configJson + GREET_CONFIG_SUFFIX;
+			const greetConfigSize = greetConfigLine.length * 2; // Still-conservative UTF-8 estimate
+
+			// Check if space is available (handshake is first message, should always fit)
+			if (greetConfigSize > outputBuffer.available) {
+				throw new Error(`Handshake is too big (${greetConfigSize}) for output buffer (${outputBuffer.available})`);
+			}
+
+			// Reserve space for greeting + config line
+			const greetReservation = outputBuffer.reserve(greetConfigSize);
+			if (!greetReservation) {
+				throw new Error('Failed to reserve space for handshake greeting and config');
+			}
+
+			// Encode greeting + config line
+			const { written } = greetReservation.encodeFrom(greetConfigLine);
+			greetReservation.shrink(written);
+
+			// Commit greeting + config line
+			outputBuffer.commit();
+
+			// Schedule immediate write
+			_thys.scheduleWrite(true);
+		},
+
+		/**
+		 * Send start of byte stream
+		 */
+		async startByteStream () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+
+			// Deliberately plain ASCII (no length adjustment)
+			const start = START_BYTE_STREAM, length = start.length;
+			await _thys.reservable(length);
+
+			// Now send the byte stream marker
+			const { outputBuffer } = _thys;
+			const reservation = outputBuffer.reserve(length);
+			reservation.encodeFrom(start);
+
+			// Commit byte stream marker
+			outputBuffer.commit();
+
+			// Schedule immediate write
+			_thys.scheduleWrite(true);
+		},
+
 		// Transport-specific startup - start the byte-stream reader
 		startReader () {
 			const [thys, _thys] = [this.__this, this];
@@ -221,7 +290,7 @@ export class ByteTransport extends Transport {
 		const _thys = this.#_;
 		const { inputBuffer } = _thys;
 		if (inputBuffer.length >= count) return; // Already available
-		
+
 		// Wait on the necessary additional bytes
 		const waiter = { count };
 		const promise = new Promise((resolve) => waiter.resolve = resolve);

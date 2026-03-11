@@ -7,13 +7,42 @@
 import { Channel } from '../channel.esm.js';
 import { Transport } from './base.esm.js';
 import {
-	// GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
-	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
+	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, HDR_TYPE_HANDSHAKE,
 	DATA_HEADER_BYTES, PROTOCOL,
 	ackHeaderSize,
 } from '../protocol.esm.js';
 
 export class PostMessageTransport extends Transport {
+	static __protected = Object.freeze(Object.setPrototypeOf({
+		/**
+		 * Send handshake configuration to remote endpoint
+		 * @returns {Promise<void>}
+		 */
+		sendHandshake () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			
+			// Prepare configuration object
+			const { id, c2cSymbol, minChannelId, minMessageTypeId } = _thys;
+			const config = {
+				transportId: id,
+				version: 1,
+				c2cEnabled: typeof c2cSymbol === 'symbol',
+				minChannelId,
+				minMessageTypeId,
+			};
+			
+			// Send handshake as structured object via postMessage
+			thys.#gateway.postMessage({
+				protocol: PROTOCOL,
+				header: {
+					type: HDR_TYPE_HANDSHAKE
+				},
+				data: config
+			});
+		}
+	}, super.__protected));
+
 	#_;
 	#gateway;
 
@@ -59,6 +88,15 @@ export class PostMessageTransport extends Transport {
 		if (proto === PROTOCOL) {
 			const { header, data: rawData } = message, type = header?.type;
 			switch (type) {
+			case HDR_TYPE_HANDSHAKE:
+			{
+				// Process handshake configuration from remote endpoint
+				const config = rawData;
+				if (config && typeof config === 'object') {
+					_thys.onRemoteConfig(config);
+				}
+				break;
+			}
 			case HDR_TYPE_ACK:
 			{
 				const ranges = header?.ranges || [], rangeSize = ranges?.length || 0;

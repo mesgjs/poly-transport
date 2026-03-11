@@ -22,7 +22,10 @@ export class Channel extends Eventable {
 	static get STATE_REMOTE_CLOSING () { return 'remoteClosing'; }
 	static get STATE_CLOSED () { return 'closed'; }
 
-	static __protected = Object.freeze({});
+	static __protected = Object.freeze({
+		// Prototype protected methods
+	});
+
 	#_subs = new Set();
 	#_;
 
@@ -162,7 +165,7 @@ export class Channel extends Eventable {
 		const { messageTypes } = _thys;
 		const entry = messageTypes.get(type);
 		const { ids, name } = entry;
-		return { ids, name };
+		return { ids: [...ids], name };
 	}
 
 	_get_ () {

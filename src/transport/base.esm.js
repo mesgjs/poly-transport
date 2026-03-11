@@ -5,9 +5,10 @@
  */
 
 import { Eventable } from '@eventable';
+import { Con2Channel } from '../con2-channel.esm.js';
 import { ControlChannel } from '../control-channel.esm.js';
 import {
-	CHANNEL_TCC, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID
+	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID
 } from '../protocol.esm.js';
 
 /**
@@ -31,6 +32,7 @@ export class Transport extends Eventable {
 	static __protected = Object.freeze({ // `protected` prototype
 		// Base stubs
 		afterWrite () { },
+		startByteStream () { },
 		startReader () { },
 		startWriter () { },
 		stop () { },
@@ -40,7 +42,7 @@ export class Transport extends Eventable {
 		* remote configuration
 		* @param {object} config 
 		*/
-		/* async */ onRemoteConfig (config) {
+		async onRemoteConfig (config) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			
@@ -62,21 +64,32 @@ export class Transport extends Eventable {
 			}
 
 			// Always include the transport control channel (TCC)
-			const { channels, channelTokens, lowBufferBytes, maxChunkBytes } = _thys;
-			const token = Symbol('TCC');
-			const tcc = new ControlChannel({ token, lowBufferBytes, maxChunkBytes });
-			channels.set(0, tcc);
-			channels.set(tcc, 0);
-			channelTokens.set(token, tcc);
-			channelTokens.set(tcc, token);
+			const { channels, channelTokens } = _thys;
+			const tccLowBuffer = _thys.tcc?.lowBufferBytes ?? _thys.lowBufferBytes;
+			const tccMaxChunk = _thys.tcc?.maxChunkBytes ?? _thys.maxChunkBytes;
+			const tccToken = Symbol('TCC');
+			const tcc = new ControlChannel({ token: tccToken, lowBufferBytes: tccLowBuffer, maxChunkBytes: tccMaxChunk });
+			channels.set(CHANNEL_TCC, tcc);
+			channels.set(tcc, CHANNEL_TCC);
+			channelTokens.set(tccToken, tcc);
+			channelTokens.set(tcc, tccToken);
 
 			// Include console-content channel (C2C) if mutually enabled in config
-			const { c2cEnabled } = _thys;
+			const { c2cSymbol } = _thys;
 			const { c2cEnabled: rmtC2C } = config;
-			if (c2cEnabled && rmtC2C) {
-				// TO DO
+			if (typeof c2cSymbol === 'symbol' && rmtC2C) {
+				const c2cLowBuffer = _thys.c2c?.lowBufferBytes ?? _thys.lowBufferBytes;
+				const c2cMaxChunk = _thys.c2c?.maxChunkBytes ?? _thys.maxChunkBytes;
+				const c2cToken = Symbol('c2c');
+				const c2c = new ControlChannel({ token: c2cToken, lowBufferBytes: c2cLowBuffer, maxChunkBytes: c2cMaxChunk });
+				channels.set(CHANNEL_C2C, c2c);
+				channels.set(c2cSymbol, c2c);
+				channels.set(c2c, CHANNEL_C2C);
+				channelTokens.set(c2cToken, c2c);
+				channelTokens.set(c2c, c2cToken);
 			}
 
+			await _thys.startByteStream();
 			_thys.started.resolve();
 		},
 
@@ -116,14 +129,24 @@ export class Transport extends Eventable {
 	/**
 	 * Create a new Transport instance
 	 * @param {Object} options - Transport options
+	 * @param {BufferPool} options.bufferPool - Buffer pool
+	 * @param {Object} options.c2c - Console-content channel options
+	 * @param {number} options.c2c.lowBufferBytes - C2C ACK threshold
+	 * @param {number} options.c2c.maxChunkBytes - C2C maximum chunk size
+	 * @param {boolean} options.c2cSymbol - C2C symbol if locally enabled
 	 * @param {Object} options.logger - Logger instance (default: console)
-	 * @param {BufferPool} options.pool - Buffer pool
+	 * @param {number} options.lowBufferBytes - ACK threshold
+	 * @param {number} options.maxChunkBytes - Maximum chunk size
+	 * @param {number} options.tcc.lowBufferBytes - TCC ACK threshold
+	 * @param {number} options.tcc.maxChunkBytes - TCC maximum chunk size
 	 */
 	constructor (options = {}) {
 		super();
 		Object.assign(this.#_ = Object.create(this.constructor.__protected), {
 			__this: this,
 			bufferPool: options.bufferPool,
+			c2c: options.c2c ?? {},
+			c2cSymbol: options.c2cSymbol,
 			channels: new Map(), // ids / name / token -> channel
 			channelTokens: new Map(), // token <-> channel
 			disconnected: false,
@@ -138,6 +161,7 @@ export class Transport extends Eventable {
 			started: null, // startup promise
 			status: Transport.STATE_CREATED,
 			stopped: null, // shutdown promise
+			tcc: options.tcc ?? {},
 			tccSymbol: Symbol('TCC'),
 		});
 		this._sub_(this.#_subs);
@@ -146,7 +170,7 @@ export class Transport extends Eventable {
 	/**
 	 * Helper to add an even or odd role id (stored in ascending order, allowing one of each)
 	 * @param {number} id Id candidate to be added
-	 * @param {Array<number>} ids 0/1/2-element set of ids
+	 * @param {number[]} ids 0/1/2-element set of ids
 	 * @returns {boolean} Success (true) or error (false)
 	 */
 	static addRoleId (id, ids) {
@@ -254,16 +278,14 @@ export class Transport extends Eventable {
 	/**
 	 * Request a new channel
 	 * @param {string} Name - Channel name
-	 * @param {Object} options - Request options
-	 * @param {number} options.timeout - Timeout in milliseconds
 	 * @returns {Promise<Channel>} The requested channel
 	 */
-	async requestChannel (name, options = {}) {
+	async requestChannel (name) {
 		const _thys = this.#_;
 		const { channels, status } = _thys;
 		if (status !== Transport.STATE_ACTIVE) throw new StateError('Transport is not active');
 		const tcc = channels.get(CHANNEL_TCC);
-		const result = await tcc.requestChannel(name, options);
+		const result = await tcc.requestChannel(name);
 		// TO DO: Process result
 	}
 

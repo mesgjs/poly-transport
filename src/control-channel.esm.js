@@ -51,9 +51,8 @@ export class ControlChannel extends Channel {
 	 * Send a request to open a new channel
 	 * Called by transport.requestChannel
 	 * @param {string} channelName - The name of the channel
-	 * @param {Object} options 
 	 */
-	requestChannel (channelName, options) {
+	requestChannel (channelName) {
 		const request = JSON.stringify({
 			channelName
 		});

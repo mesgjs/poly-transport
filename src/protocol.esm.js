@@ -18,6 +18,7 @@ export const RESERVE_ACK_BYTES = MAX_ACK_BYTES; // Reserved when sending control
 export const HDR_TYPE_ACK = 0;
 export const HDR_TYPE_CHAN_CONTROL = 1;
 export const HDR_TYPE_CHAN_DATA = 2;
+export const HDR_TYPE_HANDSHAKE = 'handshake'; // For object-stream transports
 
 // Byte-stream-transport greeting and start-byte-stream sequences
 export const PROTOCOL = 'PolyTransport';
@@ -54,12 +55,11 @@ export const TCC_CTLM_MESG_TYPE_REG_RESP = [4, 'mesgTypeResp']; // message-type 
 
 // C2C pre-defined (foundational) message types (requirements.md:495-505)
 // (Message-types not required at transport start should be registered/mapped)
-export const C2C_MESG_EXCEPT = [0, 'except']; // uncaught exceptions
-export const C2C_MESG_TRACE = [1, 'trace'];
-export const C2C_MESG_DEBUG = [2, 'debug'];
-export const C2C_MESG_INFO = [3, 'info'];
-export const C2C_MESG_WARN = [4, 'warn'];
-export const C2C_MESG_ERROR = [5, 'error'];
+export const C2C_MESG_TRACE = [0, 'trace'];
+export const C2C_MESG_DEBUG = [1, 'debug'];
+export const C2C_MESG_INFO = [2, 'info'];
+export const C2C_MESG_WARN = [3, 'warn'];
+export const C2C_MESG_ERROR = [4, 'error'];
 
 /**
  * Helper: Round up to even number

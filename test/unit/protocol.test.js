@@ -21,7 +21,6 @@ import {
 	TCC_DTAM_CHAN_RESPONSE,
 	TCC_CTLM_MESG_TYPE_REG_REQ,
 	TCC_CTLM_MESG_TYPE_REG_RESP,
-	C2C_MESG_EXCEPT,
 	C2C_MESG_TRACE,
 	C2C_MESG_DEBUG,
 	C2C_MESG_INFO,
@@ -85,7 +84,7 @@ Deno.test('Protocol - constants are defined', () => {
 	assertEquals(typeof RESERVE_ACK_BYTES, 'number');
 	assertEquals(DATA_HEADER_BYTES, 18);
 	assertEquals(MIN_DATA_RES_BYTES, 4);
-	assertEquals(RESERVE_ACK_BYTES, 514);
+	assertEquals(RESERVE_ACK_BYTES, 268);
 });
 
 Deno.test('Protocol - message type constants', () => {
@@ -112,12 +111,11 @@ Deno.test('Protocol - TCC message-type constants', () => {
 });
 
 Deno.test('Protocol - C2C message-type constants', () => {
-	assertEquals(C2C_MESG_EXCEPT, [0, 'except']);
-	assertEquals(C2C_MESG_TRACE, [1, 'trace']);
-	assertEquals(C2C_MESG_DEBUG, [2, 'debug']);
-	assertEquals(C2C_MESG_INFO, [3, 'info']);
-	assertEquals(C2C_MESG_WARN, [4, 'warn']);
-	assertEquals(C2C_MESG_ERROR, [5, 'error']);
+	assertEquals(C2C_MESG_TRACE, [0, 'trace']);
+	assertEquals(C2C_MESG_DEBUG, [1, 'debug']);
+	assertEquals(C2C_MESG_INFO, [2, 'info']);
+	assertEquals(C2C_MESG_WARN, [3, 'warn']);
+	assertEquals(C2C_MESG_ERROR, [4, 'error']);
 });
 
 // ============================================================================
@@ -291,21 +289,21 @@ Deno.test('Protocol - encodeAckHeaderInto validation', () => {
 	assertThrows(
 		() => encodeAckHeaderInto(null, 0, { channelId: 100, baseSequence: 200 }),
 		TypeError,
-		'target must have DataView-compatible API'
+		'Target must have DataView-compatible API'
 	);
 
 	// Invalid offset
 	assertThrows(
 		() => encodeAckHeaderInto(view, -1, { channelId: 100, baseSequence: 200 }),
 		RangeError,
-		'offset out of range'
+		'Offset out of range'
 	);
 
 	// Invalid ranges
 	assertThrows(
 		() => encodeAckHeaderInto(view, 0, { channelId: 100, baseSequence: 200, ranges: 'invalid' }),
 		TypeError,
-		'ranges must be an array'
+		'Ranges must be an array'
 	);
 
 	// Too many ranges
