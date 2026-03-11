@@ -4,12 +4,15 @@
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
-import { Eventable } from '@eventable';
+import { Channel } from '../channel.esm.js';
 import { Con2Channel } from '../con2-channel.esm.js';
 import { ControlChannel } from '../control-channel.esm.js';
+import { ChannelFlowControl } from '../channel-flow-control.esm.js';
 import {
 	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID
 } from '../protocol.esm.js';
+import { Eventable } from '@eventable';
+ import { TaskQueue } from '@task-queue';
 
 /**
  * Transport Base Class
@@ -157,6 +160,7 @@ export class Transport extends Eventable {
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
 			minChannelId: MIN_CHANNEL_ID,
 			minMessageTypeId: MIN_MESG_TYPE_ID,
+			pendingChannelRequests: new Map(), // name -> { channelPromise, channelResolve, channelReject, responsePromise, options }
 			role: undefined, // even/odd role not yet determined
 			started: null, // startup promise
 			status: Transport.STATE_CREATED,
@@ -214,6 +218,42 @@ export class Transport extends Eventable {
 			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
 			await super.dispatchEvent(spec[0]);
 		}
+	}
+
+	/**
+	 * Create and register a new channel
+	 * @protected
+	 * @param {string} name - Channel name
+	 * @param {number} id - Channel ID
+	 * @param {Object} options - Channel options
+	 * @returns {Channel} The created channel
+	 */
+	#createChannel (name, id, options) {
+		const _thys = this.#_;
+		const { channels, channelTokens, pendingChannelRequests } = _thys;
+
+		const token = Symbol(`channel-${name}`);
+		const newChannel = new Channel({
+			id,
+			name,
+			transport: this,
+			token,
+			localLimit: options.localLimit,
+			remoteLimit: options.remoteLimit,
+			maxChunkBytes: options.maxChunkBytes
+		});
+
+		// Register channel in maps
+		channels.set(name, newChannel);
+		channels.set(id, newChannel);
+		channels.set(newChannel, id);
+		channelTokens.set(token, newChannel);
+		channelTokens.set(newChannel, token);
+
+		// Remove pending request if exists
+		pendingChannelRequests.delete(name);
+
+		return newChannel;
 	}
 
 	/**
@@ -277,16 +317,97 @@ export class Transport extends Eventable {
 
 	/**
 	 * Request a new channel
-	 * @param {string} Name - Channel name
+	 * @param {string} name - Channel name
+	 * @param {Object} options - Channel options
+	 * @param {number} options.maxBufferBytes - Local maximum buffer size
+	 * @param {number} options.maxChunkBytes - Local maximum chunk size
+	 * @param {number} options.lowBufferBytes - Local low-water mark for ACKs
 	 * @returns {Promise<Channel>} The requested channel
 	 */
-	async requestChannel (name) {
+	async requestChannel (name, options = {}) {
 		const _thys = this.#_;
-		const { channels, status } = _thys;
-		if (status !== Transport.STATE_ACTIVE) throw new StateError('Transport is not active');
+		const { channels, state, pendingChannelRequests } = _thys;
+		
+		// Validate transport state
+		if (state !== Transport.STATE_ACTIVE) {
+			throw new StateError('Transport is not active');
+		}
+
+		// Check if channel already exists and is open
+		const existing = channels.get(name);
+		if (existing && existing.state === 'open') {
+			return existing;
+		}
+
+		// Check if request already pending - return existing channel promise
+		const pending = pendingChannelRequests.get(name);
+		if (pending) {
+			return pending.channelPromise;
+		}
+
+		// Merge options with defaults
+		const channelOptions = {
+			maxBufferBytes: options.maxBufferBytes ?? _thys.maxBufferBytes,
+			maxChunkBytes: options.maxChunkBytes ?? _thys.maxChunkBytes,
+			lowBufferBytes: options.lowBufferBytes ?? _thys.lowBufferBytes
+		};
+
+		// Create TWO promises:
+		// 1. channelPromise - resolves when channel is ready (either direction)
+		// 2. responsePromise - resolves when remote response arrives
+		const request = { options: channelOptions };
+		request.channelPromise = new Promise((resolve, reject) => {
+			request.channelResolve = resolve;
+			request.channelReject = reject;
+		});
+		request.responsePromise = new Promise((resolve, reject) => {
+			request.responseResolve = resolve;
+			request.responseReject = reject;
+		});
+		pendingChannelRequests.set(name, request);
+
+		// Send request via TCC
 		const tcc = channels.get(CHANNEL_TCC);
-		const result = await tcc.requestChannel(name);
-		// TO DO: Process result
+		await tcc.requestChannel(name, channelOptions, request.responsePromise, request.responseResolve, request.responseReject);
+
+		// Handle response when it arrives
+		request.responsePromise.then((channelInfo) => {
+			// Response accepted - create or update channel
+			const { remoteLimits } = channelInfo;
+			const existingChannel = channels.get(name);
+
+			if (existingChannel) {
+				// Channel was created by accepting remote request while we waited
+				// Add the second role ID
+				const token = _thys.channelTokens.get(existingChannel);
+				const ids = existingChannel.idsRW(token);
+				if (ids && !Transport.addRoleId(channelInfo.id, ids)) {
+					const error = new Error('Failed to add role ID - duplicate or invalid');
+					request.channelReject(error);
+					throw error;
+				}
+				// Register new ID in channels map
+				channels.set(channelInfo.id, existingChannel);
+				// Channel promise resolved at creation
+			} else {
+				// Channel doesn't exist yet - create it now
+				const newChannel = this.#createChannel(name, channelInfo.id, {
+					localLimit: channelOptions.maxBufferBytes,
+					remoteLimit: remoteLimits.maxBufferBytes,
+					maxChunkBytes: Math.min(channelOptions.maxChunkBytes, remoteLimits.maxChunkBytes)
+				});
+
+				// Resolve channel promise
+				request.channelResolve(newChannel);
+			}
+		}).catch((error) => {
+			// Response rejected - reject channel promise
+			request.channelReject(error);
+			// Remove pending request
+			pendingChannelRequests.delete(name);
+		});
+
+		return request.channelPromise;
 	}
 
 	/**

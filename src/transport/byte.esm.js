@@ -165,7 +165,7 @@ export class ByteTransport extends Transport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			super.startReader();
-			_thys.readerTimer = setTimeout(() => thys.#byteReader(), 0);
+			thys.#byteReader();
 		}
 	}, super.__protected));
 
