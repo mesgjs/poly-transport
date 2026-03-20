@@ -61,7 +61,7 @@ export class ChannelFlowControl {
 		this.#read = 0;
 		this.#readAckInfo = new Map();
 		this.#readLimit = readLimit;
-		
+
 		this.#nextWriteSeq = 1;  // Sequence numbers start at 1
 		this.#writeAckInfo = new Map();
 		this.#writeLimit = writeLimit;

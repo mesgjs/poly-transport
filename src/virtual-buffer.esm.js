@@ -313,13 +313,13 @@ export class VirtualBuffer {
 		for (let i = 0; i < segments.length; i++) {
 			const seg = segments[i];
 			const segEnd = currentPos + seg.length;
-			
+
 			if (offset < segEnd) {
 				// Cache this segment
 				state.cachedSegIndex = i;
 				state.cachedSegStart = currentPos;
 				state.cachedSegEnd = segEnd;
-				
+
 				const segOffset = offset - currentPos;
 				return seg[segOffset];
 			}
@@ -404,7 +404,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 		const encoder = new TextEncoder();
 		const segments = state.segments;
-		
+
 		let read = 0;
 		let written = 0;
 		let remainingOffset = offset;
@@ -429,7 +429,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 
 			// Encode as much as fits
 			const result = encoder.encodeInto(str.slice(strOffset), targetView);
-			
+
 			read += result.read;
 			written += result.written;
 			strOffset += result.read;
@@ -562,7 +562,7 @@ export class VirtualRWBuffer extends VirtualBuffer {
 			// Iterate over source segments without copying
 			const sourceState = _state.get(source);
 			const sourceSegments = sourceState.segments;
-			
+
 			const bytesToWrite = Math.min(sourceState.length, state.length - offset);
 			if (bytesToWrite === 0) {
 				return 0;
@@ -713,13 +713,13 @@ export class VirtualRWBuffer extends VirtualBuffer {
 		for (let i = 0; i < segments.length; i++) {
 			const seg = segments[i];
 			const segEnd = currentPos + seg.length;
-			
+
 			if (offset < segEnd) {
 				// Cache this segment
 				state.cachedSegIndex = i;
 				state.cachedSegStart = currentPos;
 				state.cachedSegEnd = segEnd;
-				
+
 				const segOffset = offset - currentPos;
 				seg[segOffset] = value;
 				return;

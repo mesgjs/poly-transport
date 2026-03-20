@@ -83,7 +83,7 @@ Deno.test('ChannelFlowControl - processAck with ranges', () => {
 
 Deno.test('ChannelFlowControl - processAck with large ranges (>255)', () => {
 	const fc = new ChannelFlowControl(0, 0);  // Unlimited
-	
+
 	// Send 300 chunks of 100 bytes each
 	for (let i = 0; i < 300; i++) {
 		fc.recordSent(100);
@@ -133,7 +133,7 @@ Deno.test('ChannelFlowControl - waitForBudget waits for ACK', async () => {
 
 	// Start waiting for 5000 bytes (insufficient)
 	const waitPromise = fc.waitForBudget(5000);
-	
+
 	// Wait a bit to ensure it's actually waiting
 	await new Promise(resolve => setTimeout(resolve, 10));
 
@@ -151,7 +151,7 @@ Deno.test('ChannelFlowControl - waitForBudget single waiter model', async () => 
 
 	// Start waiting for 5000 bytes (insufficient)
 	const waitPromise = fc.waitForBudget(5000);
-	
+
 	// Wait a bit to ensure it's actually waiting
 	await new Promise(resolve => setTimeout(resolve, 10));
 
@@ -301,7 +301,7 @@ Deno.test('ChannelFlowControl - getAckInfo with gaps', () => {
 
 Deno.test('ChannelFlowControl - getAckInfo with large ranges (>255)', () => {
 	const fc = new ChannelFlowControl(0, 0);  // Unlimited
-	
+
 	// Receive and consume 300 sequences
 	for (let i = 1; i <= 300; i++) {
 		fc.recordReceived(i, 100);
@@ -316,7 +316,7 @@ Deno.test('ChannelFlowControl - getAckInfo with large ranges (>255)', () => {
 
 Deno.test('ChannelFlowControl - getAckInfo enforces 255 range limit', () => {
 	const fc = new ChannelFlowControl(0, 0);  // Unlimited
-	
+
 	// Create alternating consumed/unconsumed pattern (worst case for ranges)
 	for (let i = 1; i <= 1000; i++) {
 		fc.recordReceived(i, 100);

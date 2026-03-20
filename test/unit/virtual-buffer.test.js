@@ -56,9 +56,9 @@ Deno.test('VirtualBuffer - append segments', () => {
 Deno.test('VirtualBuffer - append VirtualBuffer', () => {
 	const vb1 = new VirtualBuffer(new Uint8Array([1, 2, 3]));
 	const vb2 = new VirtualBuffer(new Uint8Array([4, 5, 6]));
-	
+
 	vb1.append(vb2);
-	
+
 	assertEquals(vb1.length, 6);
 	assertEquals(vb1.segmentCount, 2);
 	const result = vb1.toUint8Array();
@@ -72,7 +72,7 @@ Deno.test('VirtualBuffer - append zero-length segment', () => {
 		new Uint8Array([4, 5, 6])
 	];
 	vb.append(segments);
-	
+
 	assertEquals(vb.length, 3);
 	assertEquals(vb.segmentCount, 1); // Zero-length segment should be skipped
 	const result = vb.toUint8Array();
@@ -82,7 +82,7 @@ Deno.test('VirtualBuffer - append zero-length segment', () => {
 Deno.test('VirtualBuffer - append zero-length Uint8Array', () => {
 	const vb = new VirtualBuffer(new Uint8Array([1, 2, 3]));
 	vb.append(new Uint8Array(0)); // Zero length
-	
+
 	assertEquals(vb.length, 3); // Should not change
 	assertEquals(vb.segmentCount, 1);
 });
@@ -295,9 +295,9 @@ Deno.test('VirtualBuffer - toUint8Array with provided buffer', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
 	const vb = new VirtualBuffer(data);
 	const destBuffer = new Uint8Array(10); // Larger than needed
-	
+
 	const result = vb.toUint8Array(destBuffer);
-	
+
 	// Should return the same buffer
 	assertEquals(result, destBuffer);
 	// Should copy data into buffer
@@ -310,9 +310,9 @@ Deno.test('VirtualBuffer - toUint8Array with exact-size buffer', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
 	const vb = new VirtualBuffer(data);
 	const destBuffer = new Uint8Array(5);
-	
+
 	const result = vb.toUint8Array(destBuffer);
-	
+
 	assertEquals(result, destBuffer);
 	assertEquals(Array.from(result), [1, 2, 3, 4, 5]);
 });
@@ -323,9 +323,9 @@ Deno.test('VirtualBuffer - toUint8Array with multi-segment and provided buffer',
 	const segments = [buf1, buf2];
 	const vb = new VirtualBuffer(segments);
 	const destBuffer = new Uint8Array(6);
-	
+
 	const result = vb.toUint8Array(destBuffer);
-	
+
 	assertEquals(result, destBuffer);
 	assertEquals(Array.from(result), [1, 2, 3, 4, 5, 6]);
 });
@@ -333,9 +333,9 @@ Deno.test('VirtualBuffer - toUint8Array with multi-segment and provided buffer',
 Deno.test('VirtualBuffer - toUint8Array with empty buffer and provided buffer', () => {
 	const vb = new VirtualBuffer();
 	const destBuffer = new Uint8Array(10);
-	
+
 	const result = vb.toUint8Array(destBuffer);
-	
+
 	// Should return the provided buffer even for empty VirtualBuffer
 	assertEquals(result, destBuffer);
 });
@@ -344,7 +344,7 @@ Deno.test('VirtualBuffer - toUint8Array with buffer too small', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
 	const vb = new VirtualBuffer(data);
 	const destBuffer = new Uint8Array(3); // Too small
-	
+
 	assertThrows(
 		() => vb.toUint8Array(destBuffer),
 		RangeError,
@@ -355,7 +355,7 @@ Deno.test('VirtualBuffer - toUint8Array with buffer too small', () => {
 Deno.test('VirtualBuffer - toUint8Array with invalid buffer type', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
 	const vb = new VirtualBuffer(data);
-	
+
 	assertThrows(
 		() => vb.toUint8Array([1, 2, 3, 4, 5]),
 		TypeError,
@@ -366,18 +366,18 @@ Deno.test('VirtualBuffer - toUint8Array with invalid buffer type', () => {
 Deno.test('VirtualBuffer - toPool with BufferPool', async () => {
 	// Import BufferPool
 	const { BufferPool } = await import('../../src/buffer-pool.esm.js');
-	
+
 	const pool = new BufferPool({ sizeClasses: [1024, 4096] });
 	const data = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 	const vb = new VirtualBuffer(data);
-	
+
 	const segments = vb.toPool(pool);
 	pool.stop();
-	
+
 	// Should return array of Uint8Array segments
 	assertEquals(Array.isArray(segments), true);
 	assertEquals(segments.length > 0, true);
-	
+
 	// Verify data was copied correctly
 	let totalLength = 0;
 	const result = new Uint8Array(10);
@@ -393,7 +393,7 @@ Deno.test('VirtualBuffer - toPool with BufferPool', async () => {
 Deno.test('VirtualBuffer - toPool with invalid pool', () => {
 	const data = new Uint8Array([1, 2, 3, 4, 5]);
 	const vb = new VirtualBuffer(data);
-	
+
 	assertThrows(
 		() => vb.toPool({}),
 		TypeError,

@@ -80,7 +80,7 @@ export class OutputRingBuffer {
 
 		// The reservation can be shortened, but never lengthened
 		const length = Math.min(reservation.length, this.#reserved);
-		
+
 		// Clear reservation
 		this.#reserved = 0;
 		this.#reservation = null;

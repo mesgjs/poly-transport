@@ -62,9 +62,10 @@ export const C2C_MESG_WARN = [3, 'warn'];
 export const C2C_MESG_ERROR = [4, 'error'];
 
 /**
- * Helper: Round up to even number
+ * Helpers: Round up to even/odd number
  */
-const toEven = (v) => (v & 1) ? (v + 1) : v;
+export const toEven = (v) => (v & 1) ? (v + 1) : v;
+export const toOdd = (v) => (v & 1) ? v : (v + 1);
 
 /**
  * Additional-bytes helpers
@@ -153,7 +154,7 @@ export function encodeAckHeaderInto (target, offset, fields) {
 	target.setUint32(o, channelId); o += 4;
 	target.setUint32(o, baseSequence); o += 4;
 	target.setUint8(o++, rangeCount);
-	
+
 	for (const range of ranges) {
 		target.setUint8(o++, range);
 	}
@@ -260,7 +261,7 @@ export function decodeChannelHeaderFrom (buffer, offset = 0) {
 	let o = offset;
 	const type = buffer.getUint8(o++);
 	o++;  // Skip size byte
-	
+
 	const dataSize = buffer.getUint32(o); o += 4;
 	const flags = buffer.getUint16(o); o += 2;
 	const channelId = buffer.getUint32(o); o += 4;

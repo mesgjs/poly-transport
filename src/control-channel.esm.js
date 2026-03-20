@@ -26,36 +26,6 @@ export class ControlChannel extends Channel {
 	}
 
 	/**
-	 * Start the response reader loop
-	 * Continuously reads TCC data messages and dispatches to handlers
-	 */
-	async #startResponseReader () {
-		while (true) {
-			try {
-				const message = await this.read();
-				if (!message) break; // Channel closed
-
-				const { header } = message;
-				const { messageType } = header;
-
-				// Dispatch based on message type
-				switch (messageType) {
-				case TCC_DTAM_CHAN_RESPONSE[0]:
-					await this.#onChannelResponse(message);
-					break;
-				// Add other TCC message handlers here as needed
-				default:
-					// Unknown message type - mark as processed
-					message.done();
-				}
-			} catch (err) {
-				// Channel closed or error - exit reader loop
-				break;
-			}
-		}
-	}
-
-	/**
 	 * Handle channel response message
 	 * @param {Object} message - Message from read()
 	 */
@@ -87,7 +57,7 @@ export class ControlChannel extends Channel {
 				});
 			} else {
 				// Reject response promise
-				pending.responseReject(new Error(`Channel request rejected`));
+				pending.responseReject(null);
 			}
 		} finally {
 			// Mark message as processed
@@ -145,6 +115,41 @@ export class ControlChannel extends Channel {
 			maxChunkBytes: options.maxChunkBytes
 		});
 		await this.write(TCC_DTAM_CHAN_REQUEST[0], request);
+	}
+
+	/**
+	 * Start the response reader loop
+	 * Continuously reads TCC data messages and dispatches to handlers
+	 */
+	async #startResponseReader () {
+		const _thys = this.#_;
+		const { token, transport } = _thys;
+		while (true) {
+			try {
+				const message = await this.read();
+				if (!message) break; // Channel closed
+
+				const { header } = message;
+				const { messageType } = header;
+
+				// Dispatch based on message type
+				switch (messageType) {
+				case TCC_DTAM_CHAN_REQUEST[0]:
+					await transport.onChannelRequest(token, message);
+					break;
+				case TCC_DTAM_CHAN_RESPONSE[0]:
+					await this.#onChannelResponse(message);
+					break;
+				// Add other TCC message handlers here as needed
+				default:
+					// Unknown message type - mark as processed
+					message.done();
+				}
+			} catch (err) {
+				// Channel closed or error - exit reader loop
+				break;
+			}
+		}
 	}
 
 	// Subscribe to private state (called by base constructor)

@@ -52,7 +52,7 @@ Deno.test('Transport - constructor with custom logger', () => {
 
 Deno.test('Transport - setChannelDefaults', () => {
 	const transport = new MockTransport();
-	
+
 	transport.setChannelDefaults({
 		maxBufferBytes: 1024,
 		maxChunkBytes: 512,
@@ -69,7 +69,7 @@ Deno.test('Transport - setChannelDefaults', () => {
 
 Deno.test('Transport - setChannelDefaults partial update', () => {
 	const transport = new MockTransport();
-	
+
 	transport.setChannelDefaults({ maxBufferBytes: 1024 });
 	let defaults = transport.getChannelDefaults();
 	assertEquals(defaults.maxBufferBytes, 1024);
@@ -83,7 +83,7 @@ Deno.test('Transport - setChannelDefaults partial update', () => {
 
 Deno.test('Transport - start', async () => {
 	const transport = new MockTransport();
-	
+
 	assertEquals(transport.isStarted, false);
 	await transport.start();
 	assertEquals(transport.isStarted, true);
@@ -92,7 +92,7 @@ Deno.test('Transport - start', async () => {
 
 Deno.test('Transport - start throws if already started', async () => {
 	const transport = new MockTransport();
-	
+
 	await transport.start();
 	await assertRejects(
 		() => transport.start(),
@@ -103,10 +103,10 @@ Deno.test('Transport - start throws if already started', async () => {
 
 Deno.test('Transport - start throws if stopped', async () => {
 	const transport = new MockTransport();
-	
+
 	await transport.start();
 	await transport.stop();
-	
+
 	await assertRejects(
 		() => transport.start(),
 		Error,
@@ -116,10 +116,10 @@ Deno.test('Transport - start throws if stopped', async () => {
 
 Deno.test('Transport - stop', async () => {
 	const transport = new MockTransport();
-	
+
 	await transport.start();
 	assertEquals(transport.isStopped, false);
-	
+
 	await transport.stop();
 	assertEquals(transport.isStopped, true);
 	assertEquals(transport.stopCalled, true);
@@ -127,38 +127,38 @@ Deno.test('Transport - stop', async () => {
 
 Deno.test('Transport - stop is idempotent', async () => {
 	const transport = new MockTransport();
-	
+
 	await transport.start();
 	await transport.stop();
 	await transport.stop(); // Should not throw
-	
+
 	assertEquals(transport.isStopped, true);
 });
 
 Deno.test('Transport - stop emits beforeStopping and stopped events', async () => {
 	const transport = new MockTransport();
 	const events = [];
-	
+
 	transport.addEventListener('beforeStopping', (event) => {
 		events.push('beforeStopping');
 	});
-	
+
 	transport.addEventListener('stopped', (event) => {
 		events.push('stopped');
 	});
-	
+
 	await transport.start();
 	await transport.stop();
-	
+
 	assertEquals(events, ['beforeStopping', 'stopped']);
 });
 
 Deno.test('Transport - requestChannel', async () => {
 	const transport = new MockTransport();
-	
+
 	await transport.start();
 	const channel = await transport.requestChannel('test-channel', { timeout: 5000 });
-	
+
 	assertEquals(channel.id, 'test-channel');
 	assertEquals(transport.requestedChannels.length, 1);
 	assertEquals(transport.requestedChannels[0].idOrName, 'test-channel');
@@ -169,7 +169,7 @@ Deno.test('Transport - requestChannel', async () => {
  * BROKEN/INVALID - These test the mock, not the real transport
 Deno.test('Transport - requestChannel throws if not started', async () => {
 	const transport = new MockTransport();
-	
+
 	await assertRejects(
 		() => transport.requestChannel('test-channel'),
 		Error,
@@ -179,10 +179,10 @@ Deno.test('Transport - requestChannel throws if not started', async () => {
 
 Deno.test('Transport - requestChannel throws if stopped', async () => {
 	const transport = new MockTransport();
-	
+
 	await transport.start();
 	await transport.stop();
-	
+
 	await assertRejects(
 		() => transport.requestChannel('test-channel'),
 		Error,
@@ -193,14 +193,14 @@ Deno.test('Transport - requestChannel throws if stopped', async () => {
 
 Deno.test('Transport - getChannel returns undefined for non-existent channel', () => {
 	const transport = new MockTransport();
-	
+
 	const channel = transport.getChannel('non-existent');
 	assertEquals(channel, undefined);
 });
 
 Deno.test('Transport - channels returns empty map initially', () => {
 	const transport = new MockTransport();
-	
+
 	const channels = transport.channels;
 	assertEquals(channels.size, 0);
 });
@@ -208,12 +208,12 @@ Deno.test('Transport - channels returns empty map initially', () => {
 Deno.test('Transport - _registerChannel and getChannel', () => {
 	const transport = new MockTransport();
 	const mockChannel = { id: 'test', name: 'test' };
-	
+
 	transport._registerChannel('test', mockChannel);
-	
+
 	const retrieved = transport.getChannel('test');
 	assertEquals(retrieved, mockChannel);
-	
+
 	const channels = transport.channels;
 	assertEquals(channels.size, 1);
 	assertEquals(channels.get('test'), mockChannel);
@@ -222,19 +222,19 @@ Deno.test('Transport - _registerChannel and getChannel', () => {
 Deno.test('Transport - abstract methods throw if not implemented', async () => {
 	class IncompleteTransport extends Transport {}
 	const transport = new IncompleteTransport();
-	
+
 	await assertRejects(
 		() => transport._start(),
 		Error,
 		'_start() must be implemented by subclass'
 	);
-	
+
 	await assertRejects(
 		() => transport._stop(),
 		Error,
 		'_stop() must be implemented by subclass'
 	);
-	
+
 	/*
 	 * BROKEN/INVALID TEST!
 	 * transport.requestChannel should NOT be an abstract method!
@@ -244,13 +244,13 @@ Deno.test('Transport - abstract methods throw if not implemented', async () => {
 		'_requestChannel() must be implemented by subclass'
 	);
 	 */
-	
+
 	await assertRejects(
 		() => transport._sendMessage(1, {}),
 		Error,
 		'_sendMessage() must be implemented by subclass'
 	);
-	
+
 	try {
 		transport._handleIncomingMessage({});
 		assert(false, 'Should have thrown');
@@ -263,7 +263,7 @@ Deno.test('TimeoutError', () => {
 	const error = new TimeoutError();
 	assertEquals(error.name, 'TimeoutError');
 	assertEquals(error.message, 'Operation timed out');
-	
+
 	const customError = new TimeoutError('Custom timeout');
 	assertEquals(customError.message, 'Custom timeout');
 });

@@ -362,9 +362,10 @@ export class ByteTransport extends Transport {
 	 * @param {symbol} token - The channel ID token
 	 * @param {Object} header - The message header
 	 * @param {function} loader - The data-loader function: loader(buffer)
+	 * @param {boolean} som - Is start-of-message
 	 * @param {ChannelFlowControl} flowControl - Associated channel flow control
 	 */
-	sendByteMessage (token, header, loader, flowControl) {
+	sendByteMessage (token, header, loader, som, flowControl) {
 		const _thys = this.#_;
 		const { outputBuffer, writeQueue } = _thys;
 		const channel = _thys.channelTokens.get(token);
@@ -374,10 +375,10 @@ export class ByteTransport extends Transport {
 		const channelId = channel.id;
 		const task = writeQueue.add(async () => {
 			const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0, dataSize = 0 } = header;
-			const ackPending = flowControl.ackPending, ackBytes = ackPending ? 0 : RESERVE_ACK_BYTES;
+			const ackPending = flowControl.ackPending, ackBytes = (!som || ackPending) ? 0 : RESERVE_ACK_BYTES;
 			const maxSize = ackBytes + DATA_HEADER_BYTES + dataSize;
 			await _thys.reservable(maxSize);
-			if (!ackPending) this.#sendAckMessage(channelId, flowControl);
+			if (som && !ackPending) this.#sendAckMessage(channelId, flowControl);
 			const messageSize = DATA_HEADER_BYTES + dataSize;
 			const message = outputBuffer.reserve(messageSize);
 			if (!message) throw new Error('Insufficient pre-reservation');

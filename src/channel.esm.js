@@ -5,11 +5,12 @@
  */
 
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
-import { StateError, TimeoutError } from './transport/base.esm.js';
+import { Base, TimeoutError } from './transport/base.esm.js';
 import {
-	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, DATA_HEADER_BYTES, TCC_CTLM_MESG_TYPE_REG_REQ
+	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
+	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
 } from './protocol.esm.js';
-import { AppAsyncEvent, Eventable } from '@eventable';
+import { AsyncAppEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
 import { VirtualBuffer } from './virtual-buffer.esm.js';
 
@@ -28,6 +29,7 @@ export class Channel extends Eventable {
 
 	#_subs = new Set();
 	#_;
+	#nextMessageTypeId; // Private field for message-type ID assignment
 
 	/**
 	 * Channel constructor
@@ -38,26 +40,30 @@ export class Channel extends Eventable {
 	 * @param {symbol} config.token - Unique channel auth token
 	 * @param {number} config.localLimit - Local buffer limit
 	 * @param {number} config.remoteLimit - Remote buffer limit
+	 * @param {number} config.maxChunkBytes - Maximum chunk size
+	 * @param {number} config.nextMessageTypeId - Initial message-type ID for assignment
 	 */
-	constructor ({ id, name, transport, token, localLimit, remoteLimit, maxChunkBytes }) {
+	constructor ({ id, name, transport, token, localLimit, remoteLimit, maxChunkBytes, nextMessageTypeId, dechunk = true }) {
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
 		const maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
+		this.#nextMessageTypeId = nextMessageTypeId;
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
 			allReader: {
 				waiting: false
 			},
-			controlMessages: [], // Accumulated control-message chunks
-			dataMessages: new Set(),
+			dataMessages: new Set(), // Complete messages (or individual chunks if dechunk=false)
+			dechunk, // Default de-chunking behavior
 			discard: false, // Discard input when closing
 			filteredReaders: new Map(), // Map<type, {waiting: boolean, resolve}>
 			flowControl: new ChannelFlowControl(localLimit, remoteLimit),
 			ids: [id],
 			maxDataBytes,
+			messageChunks: [], // Accumulated message chunks (control and data)
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
 			name,
 			state: Channel.STATE_OPEN,
-			transport,
 			token,
+			transport,
 			writeQueue: new TaskQueue(),
 		});
 		this._sub_(this.#_subs);
@@ -73,7 +79,7 @@ export class Channel extends Eventable {
 			return Promise.resolve();
 		}
 		const _thys = this.#_;
-		const { messageTypes } = _thys;
+		const { messageTypes, transport } = _thys;
 		const newTypes = [], promises = [];
 
 		// Check the current status of each type
@@ -98,19 +104,16 @@ export class Channel extends Eventable {
 
 		if (newTypes.length) {
 			// Send message requesting remote registration of new types
-			const { transport, token } = state;
-			const data = JSON.stringify({
-				request: newTypes
-			});
-			await transport.sendMessage(token, {
-				channelId: state.ids[0],
-				eom: true,
-				messageType: TCC_CTLM_MESG_TYPE_REG_REQ[0],
-				type: HDR_TYPE_CHAN_CONTROL,
-			}, data);
+			const type = HDR_TYPE_CHAN_CONTROL, messageType = TCC_CTLM_MESG_TYPE_REG_REQ[0];
+			const data = JSON.stringify({ request: newTypes });
+			if (transport.needsEncodedText) {
+				await this.#writeEncodedText(messageType, data, { eom: true }, type);
+			} else {
+				await this.#writeRawText(messageType, data, { eom: true }, type);
+			}
 		}
 
-		return Promise.all(promises);
+		return Promise.allSettled(promises);
 	}
 
 	/**
@@ -135,7 +138,7 @@ export class Channel extends Eventable {
 			const [type, detail = null] = spec;
 			await super.dispatchEvent({ type, detail });
 		} else if (typeof spec[0] === 'object') {
-			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
+			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AsyncAppEvent)
 			await super.dispatchEvent(spec[0]);
 		}
 	}
@@ -266,11 +269,54 @@ export class Channel extends Eventable {
 	 * }
 	 */
 	async #onMesgTypeRegRequest (request) {
-		// TO DO:
-		// Emit event for each message-type
-		// Accept (with current or generated id) each not-default-prevented event
-		// Reject types that were default-prevented
-		// Send response with results
+		const _thys = this.#_;
+		const { messageTypes, transport } = _thys;
+		const accept = {}, reject = [];
+
+		for (const name of request.request) {
+			// Emit event for each type
+			const event = new AsyncAppEvent('newMessageType', {
+				cancelable: true,
+				detail: { name }
+			});
+			await this.dispatchEvent(event);
+
+			if (event.defaultPrevented) {
+				// Rejected by handler
+				reject.push(name);
+			} else {
+				// Check for existing registration
+				const existing = messageTypes.get(name);
+				let typeId;
+
+				if (existing?.ids?.length) {
+					// Reuse existing ID
+					typeId = existing.ids[0];
+				} else {
+					// Assign new ID
+					typeId = this.#nextMessageTypeId;
+					this.#nextMessageTypeId += 2; // Increment by 2 for even/odd separation
+
+					// Create/update record
+					const record = { name, ids: [typeId] };
+					messageTypes.set(name, record);
+					messageTypes.set(typeId, record); // Bidirectional mapping
+				}
+
+				accept[name] = typeId;
+			}
+		}
+
+		// Send response
+		const response = { accept, reject };
+		const type = HDR_TYPE_CHAN_CONTROL, messageType = TCC_CTLM_MESG_TYPE_REG_RESP[0];
+		const data = JSON.stringify(response);
+
+		if (transport.needsEncodedText) {
+			return this.#writeEncodedText(messageType, data, { eom: true }, type);
+		} else {
+			return this.#writeRawText(messageType, data, { eom: true }, type);
+		}
 	}
 
 	/**
@@ -282,29 +328,70 @@ export class Channel extends Eventable {
 	 * }
 	 */
 	#onMesgTypeRegResponse (response) {
-		// TO DO:
-		// Add ids for accepted message-types
-		// Resolve waiters
+		const _thys = this.#_;
+		const { messageTypes, transport } = _thys;
+
+		// Process accepted types
+		if (response.accept) {
+			for (const [name, id] of Object.entries(response.accept)) {
+				let entry = messageTypes.get(name);
+
+				if (entry) {
+					// Add ID to existing entry (handles jitter settlement)
+					if (!Base.addRoleId(id, entry.ids)) {
+						// Protocol violation - close channel
+						this.close({ discard: true });
+						return;
+					}
+				} else {
+					// Create new entry
+					entry = { name, ids: [id] };
+					messageTypes.set(name, entry);
+				}
+
+				// Create reverse mapping (ID → same record object)
+				messageTypes.set(id, entry);
+
+				// Resolve waiting promise if exists
+				if (entry.resolve) {
+					entry.resolve(id);
+					delete entry.promise;
+					delete entry.resolve;
+					delete entry.reject;
+				}
+			}
+		}
+
+		// Process rejected types
+		if (response.reject) {
+			for (const name of response.reject) {
+				const entry = messageTypes.get(name);
+				if (entry?.reject) {
+					entry.reject(null); // Non-Error rejection (no stack trace overhead)
+					messageTypes.delete(name);
+				}
+			}
+		}
 	}
 
 	/**
 	 * Parse JSON from an array of message chunks
-	 * @param {{header, data:(string|VirtualBuffer)}[]} messages 
+	 * @param {{header, data:(string|VirtualBuffer)}[]} messages
 	 * @returns {Object}
 	 */
 	#parseMessageJSON (messages) {
 		// Collect any chunked string or buffer data, decoding the latter.
-		const jsonText = messages.reduce((acc, [_, data]) => {
-			if (typeof data === 'string') { // string chunks
+		const jsonText = messages.reduce((acc, chunk) => {
+			if (typeof chunk.data === 'string') { // string chunks
 				acc ||= [];
-				acc.push(data);
+				acc.push(chunk.data);
 			}
 			return acc;
 		}, null)?.join('') ??
-		messages.reduce((acc, [_, data]) => {
-			if (typeof data === 'object' && data !== null) { // buffer chunks
+		messages.reduce((acc, chunk) => {
+			if (typeof chunk.data === 'object' && chunk.data !== null) { // buffer chunks
 				acc ||= new VirtualBuffer();
-				acc.append(data);
+				acc.append(chunk.data);
 			}
 			return acc;
 		}, null)?.decode();
@@ -451,7 +538,7 @@ export class Channel extends Eventable {
 		const result = flowControl.clearWriteAckInfo(baseSequence, ranges);
 		if (result.duplicate) {
 			// Emit PVE for result.duplicate duplicate ACKs
-			const event = new AppAsyncEvent('protocolViolation', { cancelable: true, detail: { duplicateAcks: result.duplicate }});
+			const event = new AsyncAppEvent('protocolViolation', { cancelable: true, detail: { duplicateAcks: result.duplicate }});
 			await this.dispatchEvent(event);
 			if (!event.defaultPrevented) {
 				await this.close({ discard: true });
@@ -459,7 +546,7 @@ export class Channel extends Eventable {
 		}
 		if (result.premature) {
 			// Emit PVE for result.premature premature ACKS
-			const event = new AppAsyncEvent('protocolViolation', { cancelable: true, detail: { prematureAcks: result.premature }});
+			const event = new AsyncAppEvent('protocolViolation', { cancelable: true, detail: { prematureAcks: result.premature }});
 			await this.dispatchEvent(event);
 			if (!event.defaultPrevented) {
 				await this.close({ discard: true });
@@ -484,24 +571,24 @@ export class Channel extends Eventable {
 		}
 
 		const _thys = this.#_;
-		const { controlMessages: messages, flowControl } = _thys;
+		const { messageChunks, flowControl } = _thys;
 
 		/*
 		 * Accumulate control-message chunks until EOM.
 		 * We can't detect an incomplete message if it's followed by another
 		 * of the same type, but we can if the message-type changes.
 		 */
-		if (messages.length && messages[0][0].messageType !== messageType) {
-			throw new ProtocolViolationError('Incomplete channel-control message', { messageType: messages[0][0].messageType });
+		if (messageChunks.length && messageChunks[0].header.messageType !== messageType) {
+			throw new ProtocolViolationError('Incomplete channel-control message', { messageType: messageChunks[0].header.messageType });
 		}
 		flowControl.received(sequence, headerSize + dataSize);
-		messages.push([header, data]);
+		messageChunks.push({ header, data });
 		if (!eom) return;
 
 		/*
 		 * Message-type registration requests and responses both require JSON-parsed text.
 		 */
-		const parsed = this.#parseMessageJSON(messages);
+		const parsed = this.#parseMessageJSON(messageChunks);
 
 		switch (messageType) {
 		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
@@ -511,6 +598,14 @@ export class Channel extends Eventable {
 			this.#onMesgTypeRegResponse(parsed);
 			break;
 		}
+
+		// Mark all chunks as processed
+		for (const chunk of messageChunks) {
+			flowControl.markProcessed(chunk.header.sequence);
+		}
+
+		// Clear chunks after processing
+		messageChunks.length = 0;
 	}
 
 	/**
@@ -563,43 +658,43 @@ export class Channel extends Eventable {
 
 	/**
 	 * Write a message (in one or more chunks) to the channel
-	 * @param {number|string} type - The message type
+	 * @param {number|string} messageType - The message type
 	 * @param {string|function|Uint8Array|VirtualBuffer} source
 	 * @param {Object} options
 	 * @param {number} options.byteLength - Data size (for function source)
 	 * @param {boolean} options.eom=true - Last chunk of message
 	 * @param {Object} options.options - Additional options
 	 */
-	/* async */ write (type, source, options = {}) {
+	/* async */ write (messageType, source, options = {}) {
 		const _thys = this.#_;
-		if (typeof type === 'string') {
+		if (typeof messageType === 'string') {
 			const { messageTypes } = _thys;
-			const info = messageTypes.get(type);
+			const info = messageTypes.get(messageType);
 			if (info?.ids.length) {
-				type = info.ids[0];
+				messageType = info.ids[0];
 			} else {
-				throw new RangeError(`Unknown message type "${type}" for channel.write`);
+				throw new RangeError(`Unknown message type "${messageType}" for channel.write`);
 			}
 		}
 		const { transport } = _thys;
 		if (typeof source === 'string') {
 			if (transport.needsEncodedText) {
-				return this.#writeEncodedText(type, source, options);
+				return this.#writeEncodedText(messageType, source, options);
 			}
-			return this.#writeRawText(type, source, options);
+			return this.#writeRawText(messageType, source, options);
 		}
 		if (typeof source === 'function' || source instanceof Uint8Array || source instanceof VirtualBuffer) {
-			return this.#writeBuffer(type, source, options);
+			return this.#writeBuffer(messageType, source, options);
 		}
 	}
 
 	/**
 	 * Write buffer-or-function-sourced data
-	 * @param {number} type - The message-type id
+	 * @param {number} messageType - The message-type id
 	 * @param {function|Uint8Array|VirtualBuffer} source - The data source
 	 * @param {Object} options 
 	 */
-	async #writeBuffer (type, source, options) {
+	async #writeBuffer (messageType, source, options) {
 		const { flowControl, maxDataBytes, writeQueue, transport, token } = this.#_;
 		const { eom } = options;
 		const fnSrc = typeof source === 'function';
@@ -609,83 +704,83 @@ export class Channel extends Eventable {
 		}
 		let offset = 0, remaining = fnSrc ? options.byteLength : source.length;
 		if (!Number.isInteger(remaining) || remaining < 1) remaining = 0;
-		while (true) {
-			// Process the next chunk of data
-			const dataSize = Math.min(remaining, maxDataBytes);
-			const totalSize = dataSize + DATA_HEADER_BYTES;
-			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
-			const bufferLoader = fnSrc ? (buffer) => source(offset, dataSize, buffer) : (buffer) => buffer.set(source.slice(offset, offset + dataSize));
-			await writeQueue.add(async () => {
+		return writeQueue.add(async () => {
+			for (let som = true; ; som = false) {
+				// Process the next chunk of data
+				const dataSize = Math.min(remaining, maxDataBytes);
+				const totalSize = dataSize + DATA_HEADER_BYTES;
+				const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
+				const bufferLoader = fnSrc ? (buffer) => source(offset, dataSize, buffer) : (buffer) => buffer.set(source.slice(offset, offset + dataSize));
 				await flowControl.writable(totalSize); // Wait for channel sending budget
 				const sequence = flowControl.nextWriteSeq;
-				const header = { dataSize, flags, sequence, messageType: type };
-				await transport.sendByteMessage(token, header, bufferLoader, () => flowControl.getAckInfo());
+				const header = { dataSize, flags, sequence, messageType };
+				await transport.sendByteMessage(token, header, bufferLoader, som, flowControl);
 				flowControl.sent(totalSize);
-			});
-			offset += dataSize;
-			remaining -= dataSize;
-			if (remaining <= 0) break;
-		}
+				offset += dataSize;
+				remaining -= dataSize;
+				if (remaining <= 0) break;
+			}
+		});
 	}
 
 	/**
 	 * Write UTF-8-encoded text
-	 * @param {number} type - The message-type id
+	 * @param {number} messageType - The message-type id
 	 * @param {string} source - The (UTF-16) string data
-	 * @param {Object} options 
+	 * @param {Object} options
 	 */
-	async #writeEncodedText (type, source, options) {
+	async #writeEncodedText (messageType, source, options, type = HDR_TYPE_CHAN_DATA) {
 		const { flowControl, maxDataBytes, writeQueue, transport, token } = this.#_;
 		const { eom } = options;
 		let offset = 0, remaining = source.length;
-		while (true) {
-			// Process the next chunk of text
-			const dataSize = Math.min(remaining * 3, maxDataBytes);
-			const totalSize = dataSize + DATA_HEADER_BYTES;
-			await writeQueue.add(async () => {
+		return writeQueue.add(async () => {
+			for (let som = true; ; som = false) {
+				// Process the next chunk of text
+				const dataSize = Math.min(remaining * 3, maxDataBytes);
+				const totalSize = dataSize + DATA_HEADER_BYTES;
 				await flowControl.writable(totalSize); // Wait for channel sending budget
 				const sequence = flowControl.nextWriteSeq;
-				const header = { dataSize, flags: 0, sequence, messageType: type };
+				const header = { type, dataSize, flags: 0, sequence, messageType };
 				await transport.sendByteMessage(token, header, (buffer) => {
 					const { read, written } = buffer.encodeFrom(offset ? source.slice(offset) : source);
 					offset += read;
 					remaining -= read;
 					if (eom && remaining <= 0) header.flags |= FLAG_EOM;
 					flowControl.sent(written + DATA_HEADER_BYTES);
-				}, () => flowControl.getAckInfo());
-			});
-			if (remaining <= 0) break;
-		}
+				}, som, flowControl);
+				if (remaining <= 0) break;
+			}
+		});
 	}
 
 	/**
 	 * Write raw text
-	 * @param {number} type - The message-type id
+	 * @param {number} messageType - The message-type id
 	 * @param {string} source - The (UTF-16) string data
-	 * @param {Object} options 
+	 * @param {Object} options
 	 */
-	async #writeRawText (type, source, options) {
+	async #writeRawText (messageType, source, options, type = HDR_TYPE_CHAN_DATA) {
 		const { flowControl, maxDataBytes, writeQueue, transport, token } = this.#_;
 		const maxDataChars = maxDataBytes >>> 1;
 		const { eom } = options;
 		let offset = 0, remaining = source.length;
-		while (true) {
-			// Process the next chunk of text
-			const dataLen = Math.min(remaining, maxDataChars), dataSize = dataLen < 1;
-			const totalSize = dataSize + DATA_HEADER_BYTES;
-			const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
-			const data = (!offset && dataLen === remaining) ? source : source.slice(offset, offset + dataLen);
-			await writeQueue.add(async () => {
+		return writeQueue.add(async () => {
+			for (let som = true; ; som = false) {
+				// Process the next chunk of text
+				const dataLen = Math.min(remaining, maxDataChars), dataSize = dataLen < 1;
+				const totalSize = dataSize + DATA_HEADER_BYTES;
+				const flags = (eom && dataSize === remaining) ? FLAG_EOM : 0;
+				const data = (!offset && dataLen === remaining) ? source : source.slice(offset, offset + dataLen);
 				await flowControl.writable(totalSize); // Wait for channel sending budget (in *bytes*)
 				const sequence = flowControl.nextWriteSeq;
-				const header = { dataSize, flags, sequence, messageType: type };
-				await transport.sendTextMessage(token, header, data, () => flowControl.getAckInfo());
+				const header = { type, dataSize, flags, sequence, messageType };
+				await transport.sendTextMessage(token, header, data, som, flowControl);
 				flowControl.sent(totalSize);
-			});
-			offset += dataLen;
-			remaining -= dataLen;
-			if (remaining <= 0) break;
-		}
+				offset += dataLen;
+				remaining -= dataLen;
+				if (remaining <= 0) break;
+			}
+		});
 	}
 }
 

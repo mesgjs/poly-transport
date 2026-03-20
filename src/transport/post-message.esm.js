@@ -21,7 +21,7 @@ export class PostMessageTransport extends Transport {
 		sendHandshake () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			
+
 			// Prepare configuration object
 			const { id, c2cSymbol, minChannelId, minMessageTypeId } = _thys;
 			const config = {
@@ -31,7 +31,7 @@ export class PostMessageTransport extends Transport {
 				minChannelId,
 				minMessageTypeId,
 			};
-			
+
 			// Send handshake as structured object via postMessage
 			thys.#gateway.postMessage({
 				protocol: PROTOCOL,

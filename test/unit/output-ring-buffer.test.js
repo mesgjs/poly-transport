@@ -466,20 +466,20 @@ Deno.test('OutputRingBuffer - fill works across ring wrap', () => {
 	// Now writeHead is at 1000, readHead is at 1000
 	// Reserve 50 bytes - should wrap around (24 at end + 26 at start)
 	const reservation2 = ring.reserve(50);
-	
+
 	// Fill the entire reservation with a non-zero value
 	reservation2.fill(0x42);
-	
+
 	ring.commit();
 
 	// Get buffers and verify all bytes are filled with 0x42
 	const buffers = ring.getBuffers(50);
-	
+
 	// Should have 2 buffers due to wrap
 	assertEquals(buffers.length, 2);
 	assertEquals(buffers[0].length, 24); // From 1000 to 1023
 	assertEquals(buffers[1].length, 26); // From 0 to 25
-	
+
 	// Verify all bytes in both buffers are 0x42
 	assertEquals(Array.from(buffers[0]).every(b => b === 0x42), true);
 	assertEquals(Array.from(buffers[1]).every(b => b === 0x42), true);
@@ -490,10 +490,10 @@ Deno.test('OutputRingBuffer - partial shrink retains fill, zeros trimmed portion
 
 	// Reserve 200 bytes
 	const reservation1 = ring.reserve(200);
-	
+
 	// Fill entire reservation with 0xAA
 	reservation1.fill(0xAA);
-	
+
 	// Shrink to 100 bytes (trim 100 bytes)
 	reservation1.shrink(100);
 	ring.commit();
@@ -513,7 +513,7 @@ Deno.test('OutputRingBuffer - partial shrink retains fill, zeros trimmed portion
 	// Reserve 100 bytes (should be the previously trimmed portion)
 	const reservation2 = ring.reserve(100);
 	const buffer2 = reservation2.toUint8Array();
-	
+
 	// First 100 bytes should be zero (the trimmed portion from before)
 	assertEquals(Array.from(buffer2).every(b => b === 0), true);
 });
@@ -523,12 +523,12 @@ Deno.test('OutputRingBuffer - shrink(0) zeros buffer (no leftover fill)', () => 
 
 	// Reserve some space
 	const reservation1 = ring.reserve(1024);
-	
+
 	// Fill with non-zero value
 	reservation1.fill(0xFF);
 	const buffer1 = reservation1.toUint8Array();
 	assertEquals(Array.from(buffer1).every(b => b === 0xFF), true);
-	
+
 	// Shrink to 0 to cancel reservation
 	reservation1.shrink(0);
 	ring.commit();

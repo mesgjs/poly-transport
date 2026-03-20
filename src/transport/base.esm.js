@@ -9,10 +9,10 @@ import { Con2Channel } from '../con2-channel.esm.js';
 import { ControlChannel } from '../control-channel.esm.js';
 import { ChannelFlowControl } from '../channel-flow-control.esm.js';
 import {
-	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID
+	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID,
+	toEven, toOdd
 } from '../protocol.esm.js';
 import { Eventable } from '@eventable';
- import { TaskQueue } from '@task-queue';
 
 /**
  * Transport Base Class
@@ -48,7 +48,7 @@ export class Transport extends Eventable {
 		async onRemoteConfig (config) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			
+
 			// Negotiate consensus on minimum ids
 			const { minChannelId, minMessageTypeId } = _thys;
 			const { minChannelId: minRmtChanId, minMessageTypeId: minRmtMesgTypeId } = config;
@@ -205,22 +205,6 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Dispatch an event and await all handlers
-	 * @protected
-	 * @returns {Promise<void>}
-	 */
-	async dispatchEvent (...spec) {
-		if (typeof spec[0] === 'string') {
-			// Eventable expects an event object with type property
-			const [type, detail = null] = spec;
-			await super.dispatchEvent({ type, detail });
-		} else if (typeof spec[0] === 'object') {
-			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
-			await super.dispatchEvent(spec[0]);
-		}
-	}
-
-	/**
 	 * Create and register a new channel
 	 * @protected
 	 * @param {string} name - Channel name
@@ -230,7 +214,13 @@ export class Transport extends Eventable {
 	 */
 	#createChannel (name, id, options) {
 		const _thys = this.#_;
-		const { channels, channelTokens, pendingChannelRequests } = _thys;
+		const { channels, channelTokens, pendingChannelRequests, minMessageTypeId, role } = _thys;
+
+		// Calculate initial nextMessageTypeId based on role
+		// Even role: use even ID (e.g., 1024)
+		// Odd role: use odd ID (e.g., 1025)
+		const nextMessageTypeId = (role === Transport.ROLE_EVEN)
+			? toEven(minMessageTypeId) : toOdd(minMessageTypeId);
 
 		const token = Symbol(`channel-${name}`);
 		const newChannel = new Channel({
@@ -240,7 +230,8 @@ export class Transport extends Eventable {
 			token,
 			localLimit: options.localLimit,
 			remoteLimit: options.remoteLimit,
-			maxChunkBytes: options.maxChunkBytes
+			maxChunkBytes: options.maxChunkBytes,
+			nextMessageTypeId
 		});
 
 		// Register channel in maps
@@ -254,6 +245,22 @@ export class Transport extends Eventable {
 		pendingChannelRequests.delete(name);
 
 		return newChannel;
+	}
+
+	/**
+	 * Dispatch an event and await all handlers
+	 * @protected
+	 * @returns {Promise<void>}
+	 */
+	async dispatchEvent (...spec) {
+		if (typeof spec[0] === 'string') {
+			// Eventable expects an event object with type property
+			const [type, detail = null] = spec;
+			await super.dispatchEvent({ type, detail });
+		} else if (typeof spec[0] === 'object') {
+			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
+			await super.dispatchEvent(spec[0]);
+		}
 	}
 
 	/**
@@ -316,6 +323,13 @@ export class Transport extends Eventable {
 	get needsEncodedText () { return true; }
 
 	/**
+	 * 
+	 */
+	async onChannelRequest (token, message) {
+		//
+	}
+
+	/**
 	 * Request a new channel
 	 * @param {string} name - Channel name
 	 * @param {Object} options - Channel options
@@ -327,7 +341,7 @@ export class Transport extends Eventable {
 	async requestChannel (name, options = {}) {
 		const _thys = this.#_;
 		const { channels, state, pendingChannelRequests } = _thys;
-		
+
 		// Validate transport state
 		if (state !== Transport.STATE_ACTIVE) {
 			throw new StateError('Transport is not active');
