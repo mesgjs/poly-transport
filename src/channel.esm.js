@@ -540,7 +540,7 @@ export class Channel extends Eventable {
 			}
 			return acc;
 		}, undefined);
-		
+
 		// Aggregate text and decoded data chunks
 		const text = selected.reduce((acc, chunk) => {
 			if (typeof chunk.data === 'string') {

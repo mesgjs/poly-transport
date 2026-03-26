@@ -349,7 +349,7 @@ export class ChannelFlowControl {
 	#scheduleAcks () {
 		// Nothing more to do if there's no callback or ACKs are already pending
 		if (!this.#ackCallback || this.#acksPending) return;
-		
+
 		// Don't ACK yet if unprocessed reads are over the low-water mark
 		const lowWaterMark = this.#lowWaterMark;
 		if (lowWaterMark && this.#read > lowWaterMark) return;
