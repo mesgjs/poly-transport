@@ -1,0 +1,70 @@
+/*
+ * Con2Channel - Channel sub-class implementing the console-content channel (C2C)
+ *
+ * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
+ */
+
+import { Channel } from './channel.esm.js';
+import {
+	// Foundational console-content-channel types
+	C2C_MESG_TRACE,
+	C2C_MESG_DEBUG,
+	C2C_MESG_INFO,
+	C2C_MESG_WARN,
+	C2C_MESG_ERROR
+} from './protocol.esm.js';
+
+export class Con2Channel extends Channel {
+	#_;
+
+	constructor (options) {
+		super(options);
+		this._get_();
+		this.#preloadMessageTypes();
+	}
+
+	/*
+	 * Pre-load channel's message-type id <-> name mappings
+	 */
+	#preloadMessageTypes () {
+		const types = this.#_.messageTypes;
+		for (const [id, name] of [
+			C2C_MESG_TRACE,
+			C2C_MESG_DEBUG,
+			C2C_MESG_INFO,
+			C2C_MESG_WARN,
+			C2C_MESG_ERROR
+		]) {
+			types.set(id, name);
+			types.set(name, id);
+		}
+	}
+
+	// Subscribe to private state (called by base constructor)
+	_sub_ (subs) {
+		super._sub_(subs);
+		subs.add((prot) => this.#_ ||= prot);
+	}
+
+	// Helper methods to write with the appropriate message type
+
+	debug (text) {
+		return this.write(C2C_MESG_DEBUG[0], text);
+	}
+
+	error (text) {
+		return this.write(C2C_MESG_ERROR[0], text);
+	}
+
+	info (text) {
+		return this.write(C2C_MESG_INFO[0], text);
+	}
+
+	trace (text) {
+		return this.write(C2C_MESG_TRACE[0], text);
+	}
+
+	warn (text) {
+		return this.write(C2C_MESG_WARN[0], text);
+	}
+}

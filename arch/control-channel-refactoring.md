@@ -711,7 +711,7 @@ This refactoring requires approval before implementation because:
 # User Notes 2026-03-17-A
 
 - It was previously my expectation that chunks could only be interleaved at the transport level (with chunks from different channels being interleaved), not the channel level (ie chunks from different messages would not be interleaved)
-- This does not adequately support an important "streaming" use case or reflect that the UI already allows a user to `write` several data sets, possibly with different message types, with none of the data sets having the `eom` option set
+- That expectation was short-sighted and cannot be met, as it does not adequately support an important "streaming" use case or reflect that the UI already allows a user to `write` several data sets, possibly with different message types, with none of the data sets having the `eom` option set
 - The `write` method should support an addition `together: true` option to indicate whether chunks should be sent together in the same channel write-queue cycle (see below for additional details)
 - Control-message chunks (`HDR_TYPE_CHAN_CONTROL`) will not be interleaved with other control-message chunks
   - Control messages do not support streaming or interleaving (with each other, they could be interleaved with data messages)
@@ -759,6 +759,8 @@ This refactoring requires approval before implementation because:
 ### Data-Message Chunks
 
 #### Data Structures
+
+To efficiently support unfiltered and filtered reads in both message and chunk modes, and to account for the potential interleaving of message/stream chunks, the existing channel implementation should be updated to use the following new data structures:
 
 - `typeRemapping` will maintain a higher-id-to-lower-id mapping entry for message-type ids that settle to a lower value
 - `dataChunks` a Set of data-message chunk descriptors, in the order received: `{ activeType, header, data, eom, next, nextEOM }`

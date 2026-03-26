@@ -311,9 +311,6 @@ export class ByteTransport extends Transport {
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
 			throw new Error('Unauthorized');
 		}
-		// Don't queue more ACKs if they're already pending
-		if (flowControl.ackPending) return;
-		flowControl.ackPending = true;
 		const { writeQueue } = _thys;
 		const task = writeQueue.add(async () => {
 			await _thys.reservable(RESERVE_ACK_BYTES);

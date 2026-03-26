@@ -36,39 +36,43 @@ export { ProtocolViolationError };
  */
 export class ChannelFlowControl {
 	// Private inbound state
-	#ackable;      // Number of ACKable *read* sequence numbers
-	#nextReadSeq;  // Sequence number expected to be received next
-	#read;         // Total bytes received remaining to be locally ACK'd
-	#readAckInfo;  // Map<seq, {bytes, processed}> from receipt to ACK queued
-	#readLimit;    // Max read (local buffer) limit
+	#ackable = 0;              // Number of ACKable *read* sequence numbers
+	#ackBatchTime;             // ACK batching time (msec)
+	#ackBatchTimer = null;     // ACK batching timer
+	#ackCallback;              // Channel callback to send ACKs
+	#acksPending = false;      // ACKs are currently pending
+	#forceAckCount;            // Pending-ACK override of inter-ACK delay
+	#lowWaterMark;             // Low-water-mark bytes
+	#nextReadSeq = 1;          // Sequence number expected to be received next
+	#read = 0;                 // Total bytes received remaining to be locally ACK'd
+	#readAckInfo = new Map();  // Map<seq, {bytes, processed}> from receipt to ACK queued
+	#readLimit;                // Max read (local buffer) limit
 
 	// Private outbound state
-	#nextWriteSeq; // Sequence number to use on next send
-	#writeAckInfo; // Map<seq, {bytes}> of sent but not ACK'd chunks
-	#writeLimit;   // Max buffer bytes remote is willing to receive
-	#writer;       // { bytes, resolve } for TaskQueue-serialized waiting writer
-	#written;      // Total bytes sent remaining to be remotely ACK'd
+	#nextWriteSeq = 1;         // Sequence number to use on next send
+	#writeAckInfo = new Map(); // Map<seq, {bytes}> of sent but not ACK'd chunks
+	#writeLimit;               // Max buffer bytes remote is willing to receive
+	#writer = null;            // { bytes, resolve } for TaskQueue-serialized waiting writer
+	#written = 0;              // Total bytes sent remaining to be remotely ACK'd
 
 	/**
 	 * Create a new FlowControl instance.
 	 *
 	 * @param {number} readLimit - Max buffer bytes we're willing to receive (0 = unlimited)
 	 * @param {number} writeLimit - Max buffer bytes remote is willing to receive (0 = unlimited)
+	 * @param {Object} options
+	 * @param {number} options.ackBatchTime - standard time to wait between ACKs (msec)
+	 * @param {function} options.ackCallback - channel callback to send ACKs
+	 * @param {number} options.forceAckCount - number of ACKs that overrides ackBatchTime
+	 * @param {number} options.lowWaterMark - read-level below which to start sending ACKs
 	 */
-	constructor (readLimit, writeLimit) {
-		this.#ackable = 0;
-		this.#nextReadSeq = 1;  // Sequence numbers start at 1
-		this.#read = 0;
-		this.#readAckInfo = new Map();
+	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, forceAckCount, lowWaterMark } = {}) {
+		this.#ackBatchTime = ackBatchTime ?? 0; // Default 0 = no minimum delay between ACKs
+		this.#ackCallback = ackCallback;
+		this.#forceAckCount = forceAckCount ?? 0; // Default 0 = no delay override
+		this.#lowWaterMark = lowWaterMark ?? 0; // Default 0 = don't apply low-water mark
 		this.#readLimit = readLimit;
-
-		this.#nextWriteSeq = 1;  // Sequence numbers start at 1
-		this.#writeAckInfo = new Map();
 		this.#writeLimit = writeLimit;
-		this.#writer = null;
-		this.#written = 0;
-
-		this.ackPending = false;
 	}
 
 	/**
@@ -130,8 +134,17 @@ export class ChannelFlowControl {
 	 */
 	clearReadAckInfo (base, ranges) {
 		const result = this.#clearAckInfo(base, ranges, this.#readAckInfo, this.#nextReadSeq);
+		const batchTime = this.#ackBatchTime;
 		this.#ackable -= result.acks;
 		this.#read -= result.bytes;
+		this.#acksPending = false;
+		if (batchTime) {
+			clearTimeout(this.#ackBatchTimer);
+			this.#ackBatchTimer = setTimeout(() => {
+				this.#ackBatchTimer = null;
+				this.#scheduleAcks();
+			}, batchTime);
+		}
 		return result;
 	}
 
@@ -260,6 +273,8 @@ export class ChannelFlowControl {
 		const entry = this.#readAckInfo.get(seq);
 		if (entry !== undefined && !entry.processed) {
 			entry.processed = true;
+			++this.#ackable;
+			this.#scheduleAcks();
 			return true;
 		}
 		return false;
@@ -326,10 +341,31 @@ export class ChannelFlowControl {
 
 		// Record the chunk (not yet consumed)
 		this.#readAckInfo.set(seq, { bytes, processed: false });
-		++this.#ackable;
 		this.#read += bytes;
 		++this.#nextReadSeq;
 	}
+
+	// Determine when ACKs should be sent for data that have been processed
+	#scheduleAcks () {
+		// Nothing more to do if there's no callback or ACKs are already pending
+		if (!this.#ackCallback || this.#acksPending) return;
+		
+		// Don't ACK yet if unprocessed reads are over the low-water mark
+		const lowWaterMark = this.#lowWaterMark;
+		if (lowWaterMark && this.#read > lowWaterMark) return;
+
+		// Override the batching delay if we have sufficient ACKs waiting
+		const forceAckCount = this.#forceAckCount;
+		if (forceAckCount && this.#ackBatchTimer && this.#ackable >= forceAckCount) {
+			cancelTimeout(this.#ackBatchTimer);
+			this.#ackBatchTimer = null;
+		}
+		if (this.#ackBatchTimer) return; // Otherwise, defer if still in delay
+
+		this.#acksPending = true;
+		queueMicroTask(this.#ackCallback);
+	}
+
 	/**
 	 * Record sent bytes, attributed to the next sequence number
 	 * @param {number} bytes - The number of bytes in the chunk
