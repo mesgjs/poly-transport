@@ -9,9 +9,11 @@
 
 // Protocol constants (requirements.md:636-641, Update 2026-01-08-A)
 export const DATA_HEADER_BYTES = 18;
+export const MAX_HEADER_BYTES = 514; // 255 * 2 + 4 (biggest "additional" encoding)
 export const MIN_DATA_RES_BYTES = 4;
 export const MIN_ACK_BYTES = 14; // even(13) (base without ranges)
-export const MAX_ACK_BYTES = 268; // Base (13) + max 255 ranges
+export const MAX_ACK_BYTES = 514; // Same as MAX_HEADER_BYTeS
+export const MAX_ACK_RANGES = 501; // 514 - 13 = 501 for ranges
 export const RESERVE_ACK_BYTES = MAX_ACK_BYTES; // Reserved when sending control or data messages
 
 // Header type constants (requirements.md:415-421)
@@ -84,12 +86,12 @@ export const encAddlToTotal = (enc) => (enc << 1) + 4;
  * (Note: This is the *total* size, not additional bytes)
  * Formula: toEven(13 + rangeCount)
  *
- * @param {number} rangeCount - Number of range bytes (should be 0 or odd)
+ * @param {number} rangeCount - Number of *range* bytes (should be 0 or odd)
  * @returns {number} Header size in bytes
  */
 export function ackHeaderSize (rangeCount) {
-	if (!Number.isInteger(rangeCount) || rangeCount < 0 || rangeCount > 255) {
-		throw new RangeError('rangeCount must be an integer in [0, 255]');
+	if (!Number.isInteger(rangeCount) || rangeCount < 0 || rangeCount > MAX_ACK_RANGES) {
+		throw new RangeError(`rangeCount must be an integer in [0, ${MAX_ACK_RANGES}]`);
 	}
 	return toEven(13 + rangeCount);
 }
@@ -112,7 +114,7 @@ export function channelHeaderSize () {
  * - 2B: flags
  * - 4B: transport local channel number
  * - 4B: base remote sequence number
- * - 1B: range count (0 or odd)
+ * - 1B: include count (0 or # of *include* ranges); e.g. 5 => 5 include + 4 skip (9 range bytes)
  * - Variable: range bytes (alternating include/skip/include)
  * - Pad byte if needed (zeroed for security)
  *
@@ -140,12 +142,16 @@ export function encodeAckHeaderInto (target, offset, fields) {
 	const maxRanges = maxAckRanges(bytesAvailable);
 
 	if (rangeCount > maxRanges) {
-		throw new Error('Too many ranges for available space');
+		throw new RangeError('Too many ranges for available space');
+	}
+	if (rangeCount && !(rangeCount & 1)) {
+		throw new RangeError('Range count must be zero or odd');
 	}
 
 	// Calculate encoded remaining size
 	const headerSize = ackHeaderSize(rangeCount);
 	const remainingSize = totalToEncAddl(headerSize);
+	const includeCount = rangeCount ? ((rangeCount + 1) / 2) : 0;
 
 	let o = offset;
 	target.setUint8(o++, HDR_TYPE_ACK);
@@ -153,7 +159,7 @@ export function encodeAckHeaderInto (target, offset, fields) {
 	target.setUint16(o, flags); o += 2;
 	target.setUint32(o, channelId); o += 4;
 	target.setUint32(o, baseSequence); o += 4;
-	target.setUint8(o++, rangeCount);
+	target.setUint8(o++, includeCount);
 
 	for (const range of ranges) {
 		target.setUint8(o++, range);
@@ -227,7 +233,10 @@ export function decodeAckHeaderFrom (buffer, offset = 0) {
 	const flags = buffer.getUint16(o); o += 2;
 	const channelId = buffer.getUint32(o); o += 4;
 	const baseSequence = buffer.getUint32(o); o += 4;
-	const rangeCount = buffer.getUint8(o++);
+	const includeCount = buffer.getUint8(o++);
+	// Include count => range count
+	// 0 -> 0 bytes; 1 -> 1 include (1 byte); 2 -> include/skip/include (3 bytes)
+	const rangeCount = includeCount ? (includeCount * 2 - 1) : 0;
 
 	const ranges = [];
 	for (let i = 0; i < rangeCount; i++) {
@@ -347,11 +356,10 @@ export function encodeHandshakeInto (target, offset, config = {}) {
  * @returns
  */
 export function maxAckRanges (availableBytes) {
-	if (!Number.isInteger(availableBytes) || availableBytes < MIN_ACK_BYTES) {
+	if (!Number.isInteger(availableBytes) || availableBytes < MIN_ACK_BYTES || availableBytes > MAX_ACK_BYTES) {
 		throw new RangeError('Invalid available bytes for maxAckRanges');
 	}
 	const maxRanges = availableBytes - 13;
-	if (maxRanges > 255) return 255;
 	return ((maxRanges % 2) ? maxRanges : (maxRanges - 1));
 }
 

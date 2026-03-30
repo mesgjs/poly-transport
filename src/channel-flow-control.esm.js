@@ -7,7 +7,7 @@
  * and range-based acknowledgment processing.
  */
 
-import { ProtocolViolationError } from './protocol.esm.js';
+import { MAX_ACK_RANGES, ProtocolViolationError } from './protocol.esm.js';
 export { ProtocolViolationError };
 
 /**
@@ -36,13 +36,15 @@ export { ProtocolViolationError };
  */
 export class ChannelFlowControl {
 	// Private inbound state
-	#ackable = 0;              // Number of ACKable *read* sequence numbers
+	#ackableBytes = 0;         // Number of ACKable *read* bytes
+	#ackableChunks = 0         // Number of ACKable *read* chunks/sequence numbers
 	#ackBatchTime;             // ACK batching time (msec)
 	#ackBatchTimer = null;     // ACK batching timer
 	#ackCallback;              // Channel callback to send ACKs
 	#acksPending = false;      // ACKs are currently pending
-	#forceAckCount;            // Pending-ACK override of inter-ACK delay
-	#lowWaterMark;             // Low-water-mark bytes
+	#forceAckBytes;            // # of bytes to override inter-ACK delay
+	#forceAckChunks;           // # of chunks to override inter-ACK delay
+	#lowReadBytes;             // Low-water-mark bytes
 	#nextReadSeq = 1;          // Sequence number expected to be received next
 	#read = 0;                 // Total bytes received remaining to be locally ACK'd
 	#readAckInfo = new Map();  // Map<seq, {bytes, processed}> from receipt to ACK queued
@@ -55,6 +57,8 @@ export class ChannelFlowControl {
 	#writer = null;            // { bytes, resolve } for TaskQueue-serialized waiting writer
 	#written = 0;              // Total bytes sent remaining to be remotely ACK'd
 
+	#logger;
+
 	/**
 	 * Create a new FlowControl instance.
 	 *
@@ -63,23 +67,34 @@ export class ChannelFlowControl {
 	 * @param {Object} options
 	 * @param {number} options.ackBatchTime - standard time to wait between ACKs (msec)
 	 * @param {function} options.ackCallback - channel callback to send ACKs
-	 * @param {number} options.forceAckCount - number of ACKs that overrides ackBatchTime
-	 * @param {number} options.lowWaterMark - read-level below which to start sending ACKs
+	 * @param {number} options.forceAckBytes - number of ACKable bytes that overrides ackBatchTime
+	 * @param {number} options.forceAckChunks - number of ACKable chunks that overrides ackBatchTime
+	 * @param {number} options.lowReadBytes - read-level below which to start sending ACKs
 	 */
-	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, forceAckCount, lowWaterMark } = {}) {
+	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, forceAckBytes, forceAckChunks, logger, lowReadBytes } = {}) {
 		this.#ackBatchTime = ackBatchTime ?? 0; // Default 0 = no minimum delay between ACKs
 		this.#ackCallback = ackCallback;
-		this.#forceAckCount = forceAckCount ?? 0; // Default 0 = no delay override
-		this.#lowWaterMark = lowWaterMark ?? 0; // Default 0 = don't apply low-water mark
+		this.#forceAckBytes = forceAckBytes ?? 0; // Default 0 = no delay override
+		this.#forceAckChunks = forceAckChunks ?? 0; // Default 0 = no delay override
+		this.#lowReadBytes = lowReadBytes ?? 0; // Default 0 = don't apply low-water mark
 		this.#readLimit = readLimit;
 		this.#writeLimit = writeLimit;
+
+		this.#logger = logger || console;
 	}
 
 	/**
-	 * Return count of ACKable sequences
+	 * Return count of ACKable bytes
 	 */
-	get ackable () {
-		return this.#ackable;
+	get ackableBytes () {
+		return this.#ackableBytes;
+	}
+
+	/**
+	 * Return count of ACKable chunks/sequences
+	 */
+	get ackableChunks () {
+		return this.#ackableChunks;
 	}
 
 	/**
@@ -135,16 +150,11 @@ export class ChannelFlowControl {
 	clearReadAckInfo (base, ranges) {
 		const result = this.#clearAckInfo(base, ranges, this.#readAckInfo, this.#nextReadSeq);
 		const batchTime = this.#ackBatchTime;
-		this.#ackable -= result.acks;
+		this.#ackableBytes -= result.bytes;
+		this.#ackableChunks -= result.acks;
 		this.#read -= result.bytes;
 		this.#acksPending = false;
-		if (batchTime) {
-			clearTimeout(this.#ackBatchTimer);
-			this.#ackBatchTimer = setTimeout(() => {
-				this.#ackBatchTimer = null;
-				this.#scheduleAcks();
-			}, batchTime);
-		}
+		this.#scheduleAcks(true);
 		return result;
 	}
 
@@ -157,6 +167,14 @@ export class ChannelFlowControl {
 	clearWriteAckInfo (base, ranges) {
 		const result = this.#clearAckInfo(base, ranges, this.#writeAckInfo, this.#nextWriteSeq);
 		this.#written -= result.bytes;
+
+		// Wake up waiting writer if budget is now sufficient
+		if (this.#writer && this.writeBudget >= this.#writer.bytes) {
+			const { resolve } = this.#writer;
+			this.#writer = null;
+			resolve();
+		}
+
 		return result;
 	}
 
@@ -171,7 +189,7 @@ export class ChannelFlowControl {
 	 * @returns {{ base: number, ranges: number[] } | null} ACK info or null if nothing to ACK
 	 */
 	getAckInfo () {
-		if (!this.#ackable) return null;
+		if (!this.#ackableChunks) return null;
 
 		// Filter for consumed chunks only (no sorting needed - already in order)
 		const processed = [];
@@ -185,60 +203,56 @@ export class ChannelFlowControl {
 
 		// If only one sequence, return simple ACK
 		if (processed.length === 1) {
-			return { base, ranges: [] };
+			return { base, ranges: [], complete: true };
 		}
 
 		// Build range-based ACK with proper splitting for values >255
-		const ranges = [], MAX_RANGES = 255;
-		let rangeCount = 0;  // Track total ranges (must not exceed 255)
+		const ranges = [];
+		let length = 0; // *include*-based length
 
 		// Helper to add a count (additional or skip), splitting if >255
 		// Returns false if we hit the range limit
-		const addCount = (count) => {
-			while (count > 255) {
-				if (rangeCount + 2 > MAX_RANGES) {
-					return false;  // Would exceed limit
-				}
+		const addCount = (count, isInclude = true) => {
+			while (count > 255 && ranges.length + 2 <= MAX_ACK_RANGES) {
 				ranges.push(255, 0);
-				rangeCount += 2;
 				count -= 255;
+				if (isInclude) length = ranges.length - 1;
 			}
-			if (rangeCount + 1 > MAX_RANGES) {
+			if (ranges.length + 1 > MAX_ACK_RANGES) {
 				return false;  // Would exceed limit
 			}
-			ranges.push(count);
-			rangeCount++;
-			return true;
+			ranges.push(Math.min(count, 255));
+			if (isInclude) length = ranges.length;
+			return count <= 255;
 		};
 
-		let currentSeq = base + 1;  // Start after base
+		let sequential = base + 1;  // Start after base
 		let additional = 0; // Only base so far
 		let complete = true; // Is base + ranges complete?
 
 		for (let i = 1; i < processed.length; ++i) {
-			const seq = processed[i];
-			const gap = seq - currentSeq;
+			const sequence = processed[i];
+			const gap = sequence - sequential;
 
 			if (gap === 0) {
 				// Consecutive sequence
 				additional++;
 			} else {
 				// Gap detected - flush additional, add skip, start new additional
-				if (!addCount(additional) || !addCount(gap)) {
+				if (!addCount(additional) || !addCount(gap, false)) {
 					complete = false; // Hit range limit; result is incomplete
 					break;
 				}
 				additional = 1;
 			}
 
-			currentSeq = seq + 1;
+			sequential = sequence + 1;
 		}
 
-		// Add final additional count
-		if (additional > 0) {
-			addCount(additional);
-		}
+		// Try to add the final additional count
+		if (additional && !addCount(additional)) complete = false;
 
+		ranges.length = length; // In case we ended in the middle of a large skip range
 		return { base, ranges, complete };
 	}
 
@@ -248,6 +262,8 @@ export class ChannelFlowControl {
 	 */
 	getStats () {
 		return {
+			ackableBytes: this.#ackableBytes,
+			ackableChunks: this.#ackableChunks,
 			nextReadSeq: this.#nextReadSeq,
 			read: this.#read,
 			readAckInfo: this.#readAckInfo.size,
@@ -273,7 +289,8 @@ export class ChannelFlowControl {
 		const entry = this.#readAckInfo.get(seq);
 		if (entry !== undefined && !entry.processed) {
 			entry.processed = true;
-			++this.#ackable;
+			this.#ackableBytes += entry.bytes;
+			++this.#ackableChunks;
 			this.#scheduleAcks();
 			return true;
 		}
@@ -294,6 +311,14 @@ export class ChannelFlowControl {
 	 */
 	get nextWriteSeq () {
 		return this.#nextWriteSeq;
+	}
+
+	/**
+	 * Get the total bytes currently received but not yet ACK'd.
+	 * @returns {number} Bytes received
+	 */
+	get read () {
+		return this.#read;
 	}
 
 	/**
@@ -319,51 +344,53 @@ export class ChannelFlowControl {
 	 *
 	 * @param {number} seq - Sequence number of received chunk
 	 * @param {number} bytes - Number of bytes received
-	 * @throws {ProtocolViolationError} If sequence is out of order or over budget
+	 * @returns {boolean} - Whether received sequence is valid
 	 */
 	received (seq, bytes) {
 		// Validate sequence order
 		if (seq !== this.#nextReadSeq) {
-			throw new ProtocolViolationError('Sequence out of order', {
-				expected: this.#nextReadSeq,
-				received: seq,
-			});
+			this.#logger.error(`Sequence out of order (expected ${this.#nextReadSeq}, received ${seq})`);
+			return false;
 		}
 
 		// Validate budget
 		const available = this.readBudget;
 		if (bytes > available) {
-			throw new ProtocolViolationError('Over budget', {
-				available,
-				requested: bytes,
-			});
+			this.#logger.error(`Chunk over budget (available ${available}, received ${bytes})`);
+			return false;
 		}
 
 		// Record the chunk (not yet consumed)
 		this.#readAckInfo.set(seq, { bytes, processed: false });
 		this.#read += bytes;
 		++this.#nextReadSeq;
+		return true;
 	}
 
 	// Determine when ACKs should be sent for data that have been processed
-	#scheduleAcks () {
+	#scheduleAcks (justSent = false) {
 		// Nothing more to do if there's no callback or ACKs are already pending
 		if (!this.#ackCallback || this.#acksPending) return;
 
 		// Don't ACK yet if unprocessed reads are over the low-water mark
-		const lowWaterMark = this.#lowWaterMark;
-		if (lowWaterMark && this.#read > lowWaterMark) return;
+		const lowReadBytes = this.#lowReadBytes;
+		if (lowReadBytes && this.#read > lowReadBytes) return;
 
-		// Override the batching delay if we have sufficient ACKs waiting
-		const forceAckCount = this.#forceAckCount;
-		if (forceAckCount && this.#ackBatchTimer && this.#ackable >= forceAckCount) {
-			cancelTimeout(this.#ackBatchTimer);
-			this.#ackBatchTimer = null;
+		// ACK now if we didn't just ACK, there's no batching delay, or there's a delay-override
+		const ackBytes = this.#ackableBytes, ackChunks = this.#ackableChunks, batchTime = this.#ackBatchTime;
+		const forceBytes = this.#forceAckBytes, forceChunks = this.#forceAckChunks;
+		if (!justSent || (!batchTime && ackChunks) || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
+			this.#acksPending = true;
+			queueMicrotask(this.#ackCallback);
+			return;
 		}
-		if (this.#ackBatchTimer) return; // Otherwise, defer if still in delay
 
-		this.#acksPending = true;
-		queueMicroTask(this.#ackCallback);
+		if (justSent && batchTime) { // Start the batching timer if we just sent ACKs
+			this.#ackBatchTimer = setTimeout(() => {
+				this.#ackBatchTimer = null;
+				this.#scheduleAcks(); // Recheck after batching delay
+			}, batchTime);
+		}
 	}
 
 	/**
@@ -373,6 +400,7 @@ export class ChannelFlowControl {
 	sent (bytes) {
 		const seq = this.#nextWriteSeq++;
 		this.#writeAckInfo.set(seq, { bytes });
+		this.#written += bytes;
 	}
 
 	/**

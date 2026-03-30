@@ -42,8 +42,9 @@ export class Channel extends Eventable {
 	#flowControl;
 	#forceAckCount;             // ACK-count threshold to force early ACK
 	#ids;
-	#lowWaterMark;
+	#lowReadBytes;
 	#maxDataBytes;
+	#mesgTypeRemapping = new Map(); // Map<highId, lowId> message-type id remapping
 	#name;
 	#nextMessageTypeId;         // Private field for message-type ID assignment
 	#readyToAck = false;
@@ -52,7 +53,6 @@ export class Channel extends Eventable {
 	#token;
 	#transport;
 	#typeChain = new Map();     // Typed chunk chains within dataChunks
-	#typeRemapping = new Map(); // Map<highId, lowId> message-type id remapping
 	#writeQueue = new TaskQueue();
 
 	/**
@@ -61,6 +61,7 @@ export class Channel extends Eventable {
 	 * @param {boolean} config.dechunk - Default read dechunk setting
 	 * @param {number} config.id - Initial numeric channel id
 	 * @param {number} config.localLimit - Local buffer limit
+	 * @param {number} config.lowReadBytes - Unprocessed-read low-water mark
 	 * @param {number} config.maxChunkBytes - Maximum chunk size
 	 * @param {string} config.name - Channel name
 	 * @param {number} config.nextMessageTypeId - Initial message-type ID for assignment
@@ -68,13 +69,13 @@ export class Channel extends Eventable {
 	 * @param {symbol} config.token - Unique channel auth token
 	 * @param {Transport} config.transport - The associated transport
 	 */
-	constructor ({ ackBatchTime, dechunk = true, forceAckCount, id, localLimit, lowWaterMark, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
+	constructor ({ ackBatchTime, dechunk = true, forceAckCount, id, localLimit, lowReadBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
 		this.#ackBatchTime = ackBatchTime ?? 5; // msec
 		this.#dechunk = dechunk;
 		this.#forceAckCount = forceAckCount ?? 5; // # of ACKs
 		this.#ids = [id];
-		this.#lowWaterMark = lowWaterMark ?? (16 * 1024);
+		this.#lowReadBytes = lowReadBytes ?? (16 * 1024);
 		this.#maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
 		this.#name = name;
 		this.#nextMessageTypeId = nextMessageTypeId;
@@ -83,7 +84,7 @@ export class Channel extends Eventable {
 		this.#transport = transport;
 		this.#flowControl = new ChannelFlowControl(localLimit, remoteLimit, {
 			ackBatchTime: this.#ackBatchTime, ackCallback: () => this.#sendAckMessage(),
-			forceAckCount: this.#forceAckCount, lowWaterMark: this.#lowWaterMark
+			forceAckCount: this.#forceAckCount, lowReadBytes: this.#lowReadBytes
 		});
 
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
@@ -282,7 +283,7 @@ export class Channel extends Eventable {
 	 */
 	async #onMesgTypeRegRequest (request) {
 		const _thys = this.#_;
-		const { messageTypes, transport } = _thys;
+		const { messageTypes } = _thys;
 		const accept = {}, reject = [];
 
 		for (const name of request.request) {
@@ -345,10 +346,11 @@ export class Channel extends Eventable {
 				if (entry) {
 					// Add ID to existing entry (handles jitter settlement)
 					if (!Base.addRoleId(id, entry.ids)) {
-						// Protocol violation - close channel
+						this.#transport.logger.error(`Invalid additional id ${id} for message type "${name}"`);
 						this.close({ discard: true });
 						return;
 					}
+					this.#settleMessageType(...entry.ids);
 				} else {
 					// Create new entry
 					entry = { name, ids: [id] };
@@ -618,11 +620,12 @@ export class Channel extends Eventable {
 		case TCC_CTLM_MESG_TYPE_REG_RESP[0]: // Message-type registration response
 			break;
 		default:
-			throw new ProtocolViolationError('Unknown channel-control message-type', { messageType });
+		 	this.#transport.logger.error(`Unknown control message (type ${messageType})`);
+			this.close();
+			return;
 		}
 
-		const _thys = this.#_;
-		const { controlChunks, flowControl } = _thys;
+		const controlChunks = this.#controlChunks;
 
 		/*
 		 * Accumulate control-message chunks until EOM.
@@ -630,9 +633,15 @@ export class Channel extends Eventable {
 		 * of the same type, but we can if the message-type changes.
 		 */
 		if (controlChunks.length && controlChunks[0].header.messageType !== messageType) {
-			throw new ProtocolViolationError('Incomplete channel-control message', { messageType: controlChunks[0].header.messageType });
+			this.#transport.logger.error(`Incomplete control message (type ${controlChunks[0].header.messageType})`);
+			this.close();
+			return;
 		}
-		flowControl.received(sequence, headerSize + dataSize);
+		if (!this.#flowControl.received(sequence, headerSize + dataSize)) {
+			// Close channel on protocol violation
+			this.close({ discard: true });
+			return;
+		}
 		controlChunks.push({ header, data });
 		if (!eom) return;
 
@@ -668,25 +677,37 @@ export class Channel extends Eventable {
 	 */
 	#receiveDataMessage (header, data) {
 		const _thys = this.#_;
-		const { dataChunks, eomChunks, typedChain, typeRemapping } = _thys;
-		const { messageType, eom } = header;
-		const activeType = typeRemapping.get(messageType) ?? messageType;
+		const { mesgTypeRemapping } = _thys;
+		const { headerSize, dataSize, sequence, messageType, eom } = header;
+
+		if (!this.#flowControl.received(sequence, headerSize + dataSize)) {
+			// Close channel on protocol violation
+			this.close({ discard: true });
+			return;
+		}
+		if (this.#discard) {
+			// If we're closing in discard mode, prepare to ACK and skip everything else
+			this.#flowControl.markProcessed(sequence);
+			return;
+		}
+
+		const activeType = mesgTypeRemapping.get(messageType) ?? messageType;
 		const descriptor = { activeType, header, data, eom, next: null, nextEOM: null };
-		const stored = typedChain.get(activeType);
+		const stored = this.#typeChain.get(activeType);
 		const typed = stored ?? { read: null, readEOM: null, write: null, writeEOM: null };
 
 		// Standard processing for all chunks
-		dataChunks.add(descriptor); // Add to received data chunks
+		this.#dataChunks.add(descriptor); // Add to received data chunks
 		if (typed.write) { // Append to existing chain
 			typed.write.next = descriptor;
 			typed.write = descriptor;
 		} else { // Start new chain
 			typed.read = typed.write = descriptor;
 		}
-		if (!stored) typedChain.set(activeType, typed);
+		if (!stored) this.#typeChain.set(activeType, typed);
 
 		if (eom) { // Additional processing for EOM chunks
-			eomChunks.add(descriptor);
+			this.#eomChunks.add(descriptor);
 			if (typed.writeEOM) { // Append to existing EOM chain
 				typed.writeEOM.nextEOM = descriptor;
 				typed.writeEOM = descriptor;
@@ -724,7 +745,7 @@ export class Channel extends Eventable {
 			this.#receiveDataMessage(header, data);
 			break;
 		default:
-		 	this.#transport.logger.error(`Unknown header type ${header.type}`);
+		 	this.#transport.logger.error(`Unknown header (type ${header.type})`);
 			this.close();
 			break;
 		}
@@ -743,6 +764,20 @@ export class Channel extends Eventable {
 			this.#readyToAck = true;
 			return this.#writeQueue.add(this.#sendAckNow);
 		}
+	}
+
+	// Update various state when a message-type-id settles to a lower value
+	#settleMessageType (lower, higher) {
+		if (this.#mesgTypeRemapping.has(higher)) return; // Already done?!
+		this.#mesgTypeRemapping.set(higher, lower); // Add remapping entry
+
+		for (const chunk of this.#dataChunks) { // Fix data-chunk descriptors
+			if (chunk.activeType === higher) chunk.activeType = lower;
+		}
+
+		// Make sure an existing filtered reader is present under the new active type
+		const filteredReaders = this.#filteredReaders, reader = filteredReaders.get(higher);
+		if (reader) filteredReaders.set(lower, reader);
 	}
 
 	get state () { return this.#state; }
@@ -774,9 +809,10 @@ export class Channel extends Eventable {
 				throw new RangeError(`Unknown message type "${messageType}" for channel.write`);
 			}
 		}
-		const { flowControl, maxDataBytes, token, transport, writeQueue } = _thys;
+		const transport = this.#transport;
+		const maxDataBytes = this.#maxDataBytes;
 		let offset = 0, remaining = 0, chunkSize;
-		const standardTotalSize = () => {
+		const standardBytesToReserve = () => {
 			chunkSize = Math.min(remaining, maxDataBytes);
 			return DATA_HEADER_BYTES + chunksize;
 		};
@@ -785,7 +821,8 @@ export class Channel extends Eventable {
 			if (source instanceof VirtualBuffer) { // Chunks from VirtualBuffer (or normalized Uint8Array)
 				remaining = source.length;
 				return {
-					get nextBufferSize () { return chunkSize; },
+					get bufferSize () { return chunkSize; },
+					bytesToReserve: standardBytesToReserve,
 					nextChunk (buffer) {
 						buffer.set(source.slice(offset, offset + chunkSize));
 						offset += chunkSize;
@@ -793,14 +830,14 @@ export class Channel extends Eventable {
 						return buffer;
 					},
 					get remaining () { return remaining; },
-					totalSize: standardTotalSize
 				};
 			}
 			if (source == null) return null; // No source/empty source
 			if (typeof source === 'function') { // Chunks from function
 				remaining = options.byteLength ?? 0;
 				return {
-					get nextBufferSize () { return chunkSize; },
+					get bufferSize () { return chunkSize; },
+					bytesToReserve: standardReserveSize,
 					nextChunk (buffer) {
 						source(offset, offset + chunkSize, buffer);
 						offset += chunkSize;
@@ -808,14 +845,17 @@ export class Channel extends Eventable {
 						return buffer;
 					},
 					get remaining () { return remaining; },
-					totalSize: standardTotalSize,
 				};
 			}
 			if (typeof source === 'string' && !transport.needsEncodedText) { // Chunks from text (JS UTF-16)
 				const maxDataChars = maxDataBytes >>> 1; // Two bytes per UTF-16
 				remaining = source.length;
 				return {
-					get nextBufferSize () { return 0; },
+					get bufferSize () { return null; },
+					bytesToReserve () {
+						chunkSize = Math.min(remaining, maxDataChars);
+						return chunkSize * 2 + DATA_HEADER_BYTES;
+					},
 					nextChunk () {
 						chunkSize = Math.min(remaining, maxDataChars);
 						const slice = source.slice(offset, offset + chunkSize);
@@ -824,16 +864,16 @@ export class Channel extends Eventable {
 						return slice;
 					},
 					get remaining () { return remaining; },
-					totalSize () {
-						chunkSize = Math.min(remaining, maxDataChars);
-						return chunkSize * 2 + DATA_HEADER_BYTES;
-					}
 				};
 			}
 			if (typeof source === 'string') { // Chunks of bytes from UTF-8-encoded text
 				remaining = source.length;
 				return {
-					get nextBufferSize () { return chunkSize; },
+					get bufferSize () { return chunkSize; },
+					bytesToReserve () {
+						chunkSize = Math.min(remaining * 3, maxDataBytes);
+						return DATA_HEADER_BYTES + chunkSize;
+					},
 					nextChunk (buffer) {
 						const { read, written } = buffer.encodeFrom(source.slice(offset));
 						offset += read;
@@ -842,10 +882,6 @@ export class Channel extends Eventable {
 						return buffer;
 					},
 					get remaining () { return remaining; },
-					totalSize () {
-						chunkSize = Math.min(remaining * 3, maxDataBytes);
-						return DATA_HEADER_BYTES + chunkSize;
-					}
 				};
 			}
 			// undefined (default): unsupported source type
@@ -854,15 +890,17 @@ export class Channel extends Eventable {
 			throw new TypeError('Unsupported source type for channel write');
 		}
 
+		const flowControl = this.#flowControl;
+		const writeQueue = this.#writeQueue;
 		const { type, eom = true, together = true } = options;
 		const sendAChunk = async () => {
-			if (this.#readyToAck) this.#sendAckMessage(true);
-			const totalSize = chunker.totalSize();
-			await flowControl.writable(totalSize);
+			if (this.#readyToAck) await this.#sendAckMessage(true);
+			const bytesToReserve = chunker.bytesToReserve();
+			await flowControl.writable(bytesToReserve);
 			const sequence = flowControl.nextWriteSeq;
 			const header = { type, flags: 0, sequence, messageType };
-			await transport.sendChunk(token, header, chunker);
-			flowControl.sent(totalSize);
+			const sentBytes = await transport.sendChunk(this.#token, header, chunker, { eom });
+			flowControl.sent(sentBytes);
 		};
 		if (together) { // Send all chunks together in a single channel task
 			return writeQueue.add(async () => {

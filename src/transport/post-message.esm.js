@@ -8,7 +8,7 @@ import { Channel } from '../channel.esm.js';
 import { Transport } from './base.esm.js';
 import {
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, HDR_TYPE_HANDSHAKE,
-	DATA_HEADER_BYTES, PROTOCOL,
+	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL,
 	ackHeaderSize,
 } from '../protocol.esm.js';
 
@@ -35,9 +35,7 @@ export class PostMessageTransport extends Transport {
 			// Send handshake as structured object via postMessage
 			thys.#gateway.postMessage({
 				protocol: PROTOCOL,
-				header: {
-					type: HDR_TYPE_HANDSHAKE
-				},
+				header: { type: HDR_TYPE_HANDSHAKE },
 				data: config
 			});
 		}
@@ -85,43 +83,42 @@ export class PostMessageTransport extends Transport {
 	#onMessage (event) {
 		const _thys = this.#_;
 		const message = event?.data, proto = message?.protocol;
-		if (proto === PROTOCOL) {
-			const { header, data: rawData } = message, type = header?.type;
-			switch (type) {
-			case HDR_TYPE_HANDSHAKE:
-			{
-				// Process handshake configuration from remote endpoint
-				const config = rawData;
-				if (config && typeof config === 'object') {
-					_thys.onRemoteConfig(config);
-				}
-				break;
+		if (proto !== PROTOCOL) return;
+		const { header, data: rawData } = message, type = header?.type;
+		switch (type) {
+		case HDR_TYPE_HANDSHAKE:
+		{
+			// Process handshake configuration from remote endpoint
+			const config = rawData;
+			if (config && typeof config === 'object') {
+				_thys.onRemoteConfig(config);
 			}
-			case HDR_TYPE_ACK:
-			{
-				const ranges = header?.ranges || [], rangeSize = ranges?.length || 0;
-				header.headerSize = ackHeaderSize(rangeSize);
-				header.dataSize = 0;
-				_thys.receiveMessage(header);
-				break;
-			}
-			case HDR_TYPE_CHAN_CONTROL:
-			case HDR_TYPE_CHAN_DATA:
-			{
-				header.headerSize = DATA_HEADER_BYTES;
-				const data = (() => {
-					if (typeof rawData === 'string') return rawData;
-					if (rawData) return new VirtualBuffer(rawData);
-				})();
-				header.dataSize = (() => {
-					if (typeof data === 'string') return data.length() * 2;
-					if (data instanceof VirtualBuffer) return data.length;
-					return 0;
-				})();
-				_thys.receiveMessage(header, data);
-				break;
-			}
-			}
+			break;
+		}
+		case HDR_TYPE_ACK:
+		{
+			const ranges = header?.ranges || [], rangeSize = ranges?.length || 0;
+			header.headerSize = ackHeaderSize(rangeSize);
+			header.dataSize = 0;
+			_thys.receiveMessage(header);
+			break;
+		}
+		case HDR_TYPE_CHAN_CONTROL:
+		case HDR_TYPE_CHAN_DATA:
+		{
+			header.headerSize = DATA_HEADER_BYTES;
+			const data = (() => {
+				if (typeof rawData === 'string') return rawData;
+				if (rawData) return new VirtualBuffer(rawData);
+			})();
+			header.dataSize = (() => {
+				if (typeof data === 'string') return data.length() * 2;
+				if (data instanceof VirtualBuffer) return data.length;
+				return 0;
+			})();
+			_thys.receiveMessage(header, data);
+			break;
+		}
 		}
 	}
 	/**
@@ -145,40 +142,47 @@ export class PostMessageTransport extends Transport {
 	 * @param {ChannelFlowControl} flowControl - The associatec channel flow control
 	 */
 	#sendAckMessage (channelId, flowControl) {
-		for (;;) {
-			const { base, ranges } = flowControl.getAckInfo();
-			if (base === undefined) return;
-			const header = {
-				type: HDR_TYPE_ACK, channelId, baseSequence: base, ranges
-			};
-			this.#gateway.postMessage({ protocol: PROTOCOL, header });
-			// (caller is responsible for afterWrite)
-		}
+		const { base, ranges } = flowControl.getAckInfo();
+		if (base === undefined) return;
+		const header = {
+			type: HDR_TYPE_ACK, channelId, baseSequence: base, ranges
+		};
+		this.#gateway.postMessage({ protocol: PROTOCOL, header });
+		// (caller is responsible for afterWrite)
 	}
 
 	/**
 	 * Send a control or data message (optionally with byte data)
 	 * @param {symbol} token - The channel ID token
 	 * @param {Object} header - The message header
-	 * @param {Function} loader - The data-loader function: loader(buffer)
-	 * @param {ChannelFlowControl} flowControl - The associatec channel flow control
+	 * @param {Object} chunker - The chunking-strategy control-object
 	 */
-	sendByteMessage (token, header, loader, flowControl) {
+	sendChunk (token, header, chunker, { eom } = {}) {
 		const _thys = this.#_;
 		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
 			throw new Error('Unauthorized');
 		}
-		const buffer = this.#getPoolVRWB(header.dataSize);
-		if (buffer) loader(buffer);
+		const numBytesSent = chunker.bytesToReserve();
+		const bufferSize = chunker.buffersize;
 		const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
 		const channelId = channel.id, finalHeader = {
 			type, flags, channelId, sequence, messageType
 		};
-		const transfer = buffer ? buffer.segments.map((buffer) => buffer.buffer) : [];
-		this.#sendAckMessage(channelId, flowControl);
-		this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data: buffer?.segments }, transfer);
+
+		if (bufferSize === null) { // Sending UTF-16 string data
+			const data = chunker.nextChunk();
+			if (eom && chunker.remaining <= 0) finalHeader.flags |= FLAG_EOM;
+			this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data });
+		} else { // Sending byte data (or none at all)
+			const buffer = this.#getPoolVRWB(header.dataSize);
+			if (buffer) chunker.nextChunk(buffer);
+			const transfer = buffer ? buffer.segments.map((buffer) => buffer.buffer) : [];
+			if (eom && chunker.remaining <= 0) finalHeader.flags |= FLAG_EOM;
+			this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data: buffer?.segments }, transfer);
+		}
 		_thys.afterWrite(); // (no deferred write)
+		return numBytesSent; // Return byte-equivalent for flow control
 	}
 
 	/**

@@ -10,6 +10,8 @@ import {
 	DATA_HEADER_BYTES,
 	MIN_DATA_RES_BYTES,
 	RESERVE_ACK_BYTES,
+	MAX_ACK_BYTES,
+	MAX_ACK_RANGES,
 	HDR_TYPE_ACK,
 	HDR_TYPE_CHAN_CONTROL,
 	HDR_TYPE_CHAN_DATA,
@@ -26,8 +28,8 @@ import {
 	C2C_MESG_INFO,
 	C2C_MESG_WARN,
 	C2C_MESG_ERROR,
-	MIN_CHANNEL_ID, // Missing coverage
-	MIN_MESG_TYPE_ID, // Missing coverage
+	MIN_CHANNEL_ID,
+	MIN_MESG_TYPE_ID,
 	// Helper functions
 	totalToEncAddl,
 	addlToEncAddl,
@@ -35,6 +37,7 @@ import {
 	encAddlToTotal,
 	ackHeaderSize,
 	channelHeaderSize,
+	maxAckRanges,
 	// Encoding functions
 	encodeAckHeaderInto,
 	encodeChannelHeaderInto,
@@ -82,9 +85,13 @@ Deno.test('Protocol - constants are defined', () => {
 	assertEquals(typeof DATA_HEADER_BYTES, 'number');
 	assertEquals(typeof MIN_DATA_RES_BYTES, 'number');
 	assertEquals(typeof RESERVE_ACK_BYTES, 'number');
+	assertEquals(typeof MAX_ACK_BYTES, 'number');
+	assertEquals(typeof MAX_ACK_RANGES, 'number');
 	assertEquals(DATA_HEADER_BYTES, 18);
 	assertEquals(MIN_DATA_RES_BYTES, 4);
-	assertEquals(RESERVE_ACK_BYTES, 268);
+	assertEquals(RESERVE_ACK_BYTES, 514);
+	assertEquals(MAX_ACK_BYTES, 514);
+	assertEquals(MAX_ACK_RANGES, 501);
 });
 
 Deno.test('Protocol - message type constants', () => {
@@ -164,17 +171,36 @@ Deno.test('Protocol - ackHeaderSize validation', () => {
 	assertThrows(
 		() => ackHeaderSize(-1),
 		RangeError,
-		'rangeCount must be an integer in [0, 255]'
+		'rangeCount must be an integer in [0, 501]'
 	);
 	assertThrows(
-		() => ackHeaderSize(256),
+		() => ackHeaderSize(502),
 		RangeError,
-		'rangeCount must be an integer in [0, 255]'
+		'rangeCount must be an integer in [0, 501]'
 	);
 	assertThrows(
 		() => ackHeaderSize(1.5),
 		RangeError,
-		'rangeCount must be an integer in [0, 255]'
+		'rangeCount must be an integer in [0, 501]'
+	);
+});
+
+Deno.test('Protocol - maxAckRanges', () => {
+	assertEquals(maxAckRanges(14), 1);   // 14 - 13 = 1 (odd)
+	assertEquals(maxAckRanges(16), 3);   // 16 - 13 = 3 (odd)
+	assertEquals(maxAckRanges(514), 501); // 514 - 13 = 501 (odd)
+});
+
+Deno.test('Protocol - maxAckRanges validation', () => {
+	assertThrows(
+		() => maxAckRanges(13),  // Too small
+		RangeError,
+		'Invalid available bytes for maxAckRanges'
+	);
+	assertThrows(
+		() => maxAckRanges(515),  // Too large
+		RangeError,
+		'Invalid available bytes for maxAckRanges'
 	);
 });
 
@@ -203,7 +229,7 @@ Deno.test('Protocol - encodeAckHeader basic', () => {
 	const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
 	assertEquals(view.getUint32(4), 100);
 	assertEquals(view.getUint32(8), 200);
-	assertEquals(header[12], 0);  // rangeCount
+	assertEquals(header[12], 0);  // includeCount
 });
 
 Deno.test('Protocol - encodeAckHeader with flags', () => {
@@ -227,7 +253,7 @@ Deno.test('Protocol - encodeAckHeader with ranges', () => {
 	});
 
 	assertEquals(header.length, 16);  // toEven(13 + 3) = 16
-	assertEquals(header[12], 3);  // rangeCount
+	assertEquals(header[12], 2);  // includeCount = (3+1)/2 = 2
 	assertEquals(header[13], 10);
 	assertEquals(header[14], 20);
 	assertEquals(header[15], 30);
@@ -306,11 +332,18 @@ Deno.test('Protocol - encodeAckHeaderInto validation', () => {
 		'Ranges must be an array'
 	);
 
-	// Too many ranges
+	// Too many ranges for available space
 	assertThrows(
-		() => encodeAckHeaderInto(view, 0, { channelId: 100, baseSequence: 200, ranges: new Array(256).fill(0) }),
-		Error,
-		'Too many ranges'
+		() => encodeAckHeaderInto(view, 0, { channelId: 100, baseSequence: 200, ranges: new Array(502).fill(0) }),
+		RangeError,
+		'Too many ranges for available space'
+	);
+
+	// Even range count (must be odd or zero)
+	assertThrows(
+		() => encodeAckHeaderInto(view, 0, { channelId: 100, baseSequence: 200, ranges: [1, 2] }),
+		RangeError,
+		'Range count must be zero or odd'
 	);
 });
 
@@ -822,7 +855,7 @@ Deno.test('Protocol - decode ACK from multi-segment VirtualBuffer', () => {
 	const header = encodeAckHeader({
 		channelId: 100,
 		baseSequence: 200,
-		ranges: [10, 20]
+		ranges: [10, 20, 30]  // Must be odd number of ranges
 	});
 
 	// Split into two segments
@@ -837,7 +870,7 @@ Deno.test('Protocol - decode ACK from multi-segment VirtualBuffer', () => {
 	assertEquals(decoded.type, HDR_TYPE_ACK);
 	assertEquals(decoded.channelId, 100);
 	assertEquals(decoded.baseSequence, 200);
-	assertEquals(decoded.ranges, [10, 20]);
+	assertEquals(decoded.ranges, [10, 20, 30]);
 });
 
 Deno.test('Protocol - decode channel header from multi-segment VirtualBuffer', () => {

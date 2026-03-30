@@ -311,11 +311,7 @@ export class ByteTransport extends Transport {
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
 			throw new Error('Unauthorized');
 		}
-		const { writeQueue } = _thys;
-		const task = writeQueue.add(async () => {
-			await _thys.reservable(RESERVE_ACK_BYTES);
-			this.#sendAckMessage(channel.id, flowControl);
-		});
+		const task = _thys.writeQueue.add(() => this.#sendAckMessage(channel.id, flowControl));
 		return task;
 	}
 
@@ -327,42 +323,38 @@ export class ByteTransport extends Transport {
 	 */
 	async #sendAckMessage (channelId, flowControl) {
 		const _thys = this.#_;
-		const { outputBuffer, writeQueue } = _thys;
+		const { outputBuffer } = _thys;
 		// Wait until we're able to reserve space for a max-size ACK header
-		const vrwb = outputBuffer.reserve(RESERVE_ACK_BYTES);
-		if (!vrwb) throw new Error('Insufficient pre-reservation');
-		const { base, ranges, complete } = flowControl.getAckInfo();
+		await _thys.reservable(RESERVE_ACK_BYTES);
+		const ackBuffer = outputBuffer.reserve(RESERVE_ACK_BYTES);
+		if (!ackBuffer) throw new Error('Insufficient pre-reservation');
+		const { base, ranges } = flowControl.getAckInfo();
 		if (base !== undefined) {
-			const headerSize = encodeAckHeaderInto(vrwb, 0, { channelId, baseSequence: base, ranges });
-			vrwb.shrink(headerSize);
+			const headerSize = encodeAckHeaderInto(ackBuffer, 0, { channelId, baseSequence: base, ranges });
+			ackBuffer.shrink(headerSize);
 		} else {
 			// Nothing to ACK; cancel reservation
-			vrwb.shrink(0);
+			ackBuffer.shrink(0);
 		}
 		outputBuffer.commit();
 		flowControl.clearReadAckInfo(base, ranges);
 		_thys.scheduleWrite();
-		if (complete) {
-			// All currently ready ACKs have been written
-			flowControl.ackPending = false;
-		} else {
-			// Queue a request to process more ACKs
-			writeQueue.add(async () => {
-				await _thys.reservable(RESERVE_ACK_BYTES);
-				this.#sendAckMessage(channelId, flowControl);
-			});
-		}
 	}
 
 	/**
 	 * Send a control or data message (optionally with byte data)
 	 * @param {symbol} token - The channel ID token
 	 * @param {Object} header - The message header
-	 * @param {function} loader - The data-loader function: loader(buffer)
-	 * @param {boolean} som - Is start-of-message
-	 * @param {ChannelFlowControl} flowControl - Associated channel flow control
+	 * @param {Object} chunker - The chunking-strategy control-object
+	 * @param {number|null} chunker.bufferSize - Buffer size to request for next chunk (or null for UTF-16 text slices); depends on bytesToReserve()
+	 * @param {number} chunker.bytesToReserve() - Total max header + data bytes to reserve for chunk
+	 * @param {function} chunker.nextChunk() - Returns the next slice of UTF-16 text
+	 * @param {function} chunker.nextChunk(buffer) - Fills the supplied buffer with the next chunk's Uint8 data; returns buffer
+	 * @param {number} chunker.remaining - Bytes remaining to write (before or) after most recent nextChunk
+	 * @param {boolean} eom - Whether to add EOM_FLAG when remaining (after nextChunk) <= 0
+	 * @returns {Promise<number>} - Returns a Promise that resolves to the number of bytes sent
 	 */
-	sendByteMessage (token, header, loader, som, flowControl) {
+	/* async */ sendChunk (token, header, chunker, { eom } = {}) {
 		const _thys = this.#_;
 		const { outputBuffer, writeQueue } = _thys;
 		const channel = _thys.channelTokens.get(token);
@@ -370,34 +362,35 @@ export class ByteTransport extends Transport {
 			throw new Error('Unauthorized');
 		}
 		const channelId = channel.id;
-		const task = writeQueue.add(async () => {
+		const taskResult = writeQueue.add(async () => {
 			const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0, dataSize = 0 } = header;
-			const ackPending = flowControl.ackPending, ackBytes = (!som || ackPending) ? 0 : RESERVE_ACK_BYTES;
-			const maxSize = ackBytes + DATA_HEADER_BYTES + dataSize;
-			await _thys.reservable(maxSize);
-			if (som && !ackPending) this.#sendAckMessage(channelId, flowControl);
-			const messageSize = DATA_HEADER_BYTES + dataSize;
-			const message = outputBuffer.reserve(messageSize);
-			if (!message) throw new Error('Insufficient pre-reservation');
+			const bytesToReserve = chunker.bytesToReserve();
+			await _thys.reservable(bytesToReserve);
+			const chunkBuffer = outputBuffer.reserve(bytesToReserve);
+			if (!chunkBuffer) throw new Error('Insufficient pre-reservation');
 			const finalHeader = {
 				type, dataSize, flags, channelId, sequence, messageType
 			};
 			if (dataSize) {
-				const data = message.slice(DATA_HEADER_BYTES);
-				loader(data);
-				const length = data.length;
-				finalHeader.dataSize = length;
-				message.shrink(DATA_HEADER_BYTES + length);
+				const dataBuffer = chunkBuffer.slice(DATA_HEADER_BYTES);
+				chunker.nextChunk(dataBuffer);
+				const finalDataSize = dataBuffer.length;
+				finalHeader.dataSize = finalDataSize;
+				chunkBuffer.shrink(DATA_HEADER_BYTES + finalDataSize);
 			}
-			encodeChannelHeaderInto(message);
+			// Add EOM flag on final chunk header when indicated
+			if (eom && chunker.remaining <= 0) finalHeader.flags |= FLAG_EOM;
+			encodeChannelHeaderInto(chunkBuffer, 0, type, finalHeader);
+			const numBytesSent = chunkBuffer.length;
 			outputBuffer.commit();
 			_thys.scheduleWrite();
+			return numBytesSent;
 		});
-		return task;
+		return taskResult;
 	}
 
 	/**
-	 * Subscribe to private state
+	 * Subscribe to protected state
 	 * @param {Set} subs - Subscribers Set
 	 */
 	_sub_ (subs) {

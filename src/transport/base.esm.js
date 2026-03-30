@@ -128,6 +128,7 @@ export class Transport extends Eventable {
 
 	#_; // Base-class view of protected state (sub-classes must have one also)
 	#_subs = new Set(); // Protected-state subscriptions (setter functions)
+	#logger;
 
 	/**
 	 * Create a new Transport instance
@@ -154,7 +155,6 @@ export class Transport extends Eventable {
 			channelTokens: new Map(), // token <-> channel
 			disconnected: false,
 			id: crypto.randomUUID(),
-			logger: options.logger || console,
 			logSymbol: Symbol('log'),
 			lowBufferBytes: options.lowBufferBytes ?? 16 * 1024,
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
@@ -168,6 +168,7 @@ export class Transport extends Eventable {
 			tcc: options.tcc ?? {},
 			tccSymbol: Symbol('TCC'),
 		});
+		this.#logger = options.logger || console;
 		this._sub_(this.#_subs);
 	}
 
@@ -307,7 +308,7 @@ export class Transport extends Eventable {
 	 * @returns {Object}
 	 */
 	get logger () {
-		return this.#_.logger;
+		return this.#logger;
 	}
 
 	/**
@@ -485,7 +486,7 @@ export class Transport extends Eventable {
 		for (const channel of _thys.channels.values()) {
 			channelClosePromises.push(
 				channel.close({ discard }).catch(err => {
-					_thys.logger.error('Error closing channel:', err);
+					this.#logger.error('Error closing channel:', err);
 				})
 			);
 		}
