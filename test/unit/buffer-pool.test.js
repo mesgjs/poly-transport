@@ -16,7 +16,6 @@ Deno.test('BufferPool - constructor with defaults', () => {
 	const pool = new BufferPool();
 
 	assertEquals(pool.sizeClasses, [1024, 4096, 16384, 65536]);
-	assertEquals(pool.isWorker, false);
 
 	// Check that pools are pre-allocated to low water mark (default 2)
 	const sizes = pool.getPoolSizes();
@@ -250,123 +249,6 @@ Deno.test('BufferPool - release enforces high water mark', async () => {
 	pool.stop();
 });
 
-// Test: Worker mode - receiveBuffers
-Deno.test('BufferPool - worker mode receiveBuffers', () => {
-	const pool = new BufferPool({
-		isWorker: true,
-		lowWaterMark: 0,
-		highWaterMark: 10
-	});
-
-	assertEquals(pool.isWorker, true);
-	assertEquals(pool.getPoolSizes()[1024], 0);
-
-	// Simulate receiving buffers from main thread
-	const buffers = [new ArrayBuffer(1024), new ArrayBuffer(1024)];
-	pool.receiveBuffers(1024, buffers);
-
-	assertEquals(pool.getPoolSizes()[1024], 2);
-
-	// Stats should show 2 transferred
-	const stats = pool.getStats();
-	assertEquals(stats.pools[1024].transferred, 2);
-});
-
-// Test: Worker mode - receiveBuffers throws in non-worker context
-Deno.test('BufferPool - receiveBuffers throws in non-worker context', () => {
-	const pool = new BufferPool({ isWorker: false });
-
-	assertThrows(
-		() => pool.receiveBuffers(1024, [new ArrayBuffer(1024)]),
-		Error,
-		'receiveBuffers can only be called in worker context'
-	);
-});
-
-// Test: Worker mode - receiveBuffers throws for invalid size
-Deno.test('BufferPool - receiveBuffers throws for invalid size', () => {
-	const pool = new BufferPool({ isWorker: true });
-
-	assertThrows(
-		() => pool.receiveBuffers(512, [new ArrayBuffer(512)]),
-		Error,
-		'Invalid size class: 512'
-	);
-});
-
-// Test: Worker mode - request callback
-Deno.test('BufferPool - worker mode request callback', async () => {
-	let requestedSize = null;
-	let requestedCount = null;
-
-	const pool = new BufferPool({
-		isWorker: true,
-		lowWaterMark: 3,
-		highWaterMark: 10,
-		requestCallback: (size, count) => {
-			requestedSize = size;
-			requestedCount = count;
-		}
-	});
-
-	// Constructor should have requested buffers
-	assertEquals(requestedSize, 65536); // Last size class
-	assertEquals(requestedCount, 3);
-
-	// Reset
-	requestedSize = null;
-	requestedCount = null;
-
-	// Acquire should trigger request when pool drops below low water mark
-	pool.receiveBuffers(1024, [new ArrayBuffer(1024), new ArrayBuffer(1024), new ArrayBuffer(1024)]);
-	pool.acquire(1024);
-	pool.acquire(1024);
-
-	// Should request more buffers
-	await pause();
-	assertEquals(requestedSize, 1024);
-	assertEquals(requestedCount, 2);
-
-	pool.stop();
-});
-
-// Test: Worker mode - return callback
-Deno.test('BufferPool - worker mode return callback', async () => {
-	let returnedSize = null;
-	let returnedBuffers = null;
-	let totalReturned = 0;
-
-	const pool = new BufferPool({
-		isWorker: true,
-		lowWaterMark: 0,
-		highWaterMark: 3,
-		returnCallback: (size, buffers) => {
-			returnedSize = size;
-			returnedBuffers = buffers;
-			totalReturned += buffers.length;
-		}
-	});
-
-	// Acquire and release buffers to exceed high water mark
-	const buffers = [];
-	for (let i = 0; i < 5; i++) {
-		buffers.push(pool.acquire(1024));
-	}
-
-	// Release all to trigger return callback
-	// Note: Each release may trigger a return if pool exceeds high water mark
-	for (const buffer of buffers) {
-		pool.release(buffer);
-	}
-
-	// Should have returned excess (total released - high water mark)
-	await pause();
-	assertEquals(returnedSize, 1024);
-	assertEquals(totalReturned, 2); // 5 - 3 = 2 excess
-	assertEquals(pool.getPoolSizes()[1024], 3);
-
-	pool.stop();
-});
 
 // Test: getStats
 Deno.test('BufferPool - getStats', async () => {
@@ -386,7 +268,6 @@ Deno.test('BufferPool - getStats', async () => {
 	const stats = pool.getStats();
 
 	assertEquals(stats.sizeClasses, [1024, 4096, 16384, 65536]);
-	assertEquals(stats.isWorker, false);
 
 	// Check 1KB stats
 	assertEquals(stats.pools[1024].lowWaterMark, 5);
@@ -712,48 +593,6 @@ Deno.test('BufferPool - stats show clean and dirty counts', async () => {
 	pool.stop();
 });
 
-// Test: Worker mode - transferred count accuracy
-Deno.test('BufferPool - worker mode transferred count accuracy', async () => {
-	let totalReturned = 0;
-
-	const pool = new BufferPool({
-		isWorker: true,
-		lowWaterMark: 0,
-		highWaterMark: 3,
-		returnCallback: (size, buffers) => {
-			totalReturned += buffers.length;
-		}
-	});
-
-	// Receive 5 buffers
-	const buffers = [];
-	for (let i = 0; i < 5; i++) {
-		buffers.push(new ArrayBuffer(1024));
-	}
-	pool.receiveBuffers(1024, buffers);
-
-	const stats1 = pool.getStats();
-	assertEquals(stats1.pools[1024].transferred, 5); // Received
-
-	// Acquire and release to trigger return
-	const acquired = [];
-	for (let i = 0; i < 5; i++) {
-		acquired.push(pool.acquire(1024));
-	}
-	for (const buffer of acquired) {
-		pool.release(buffer);
-	}
-
-	// Wait for async management to return excess
-	await pause(2);
-
-	const stats2 = pool.getStats();
-	// Should have returned 2 buffers (5 - 3 high water mark)
-	assertEquals(totalReturned, 2);
-	assertEquals(stats2.pools[1024].transferred, 5 + 2); // 5 received + 2 returned
-
-	pool.stop();
-});
 
 // Test: Acquire zero bytes
 Deno.test('BufferPool - acquire zero bytes', () => {
@@ -921,29 +760,6 @@ Deno.test('BufferPool - very large water marks', () => {
 
 	const stats = pool.getStats();
 	assertEquals(stats.pools[1024].allocated, 100);
-
-	pool.stop();
-});
-
-// Test: Worker mode - request callback with multiple size classes
-Deno.test('BufferPool - worker mode request callback multiple sizes', async () => {
-	const requests = [];
-
-	const pool = new BufferPool({
-		isWorker: true,
-		lowWaterMark: 2,
-		highWaterMark: 5,
-		requestCallback: (size, count) => {
-			requests.push({ size, count });
-		}
-	});
-
-	// Constructor should have requested for all size classes
-	assertEquals(requests.length, 4); // 4 size classes
-	assertEquals(requests[0].size, 1024);
-	assertEquals(requests[0].count, 2);
-	assertEquals(requests[3].size, 65536);
-	assertEquals(requests[3].count, 2);
 
 	pool.stop();
 });

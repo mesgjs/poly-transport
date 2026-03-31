@@ -5,7 +5,7 @@
  */
 
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
-import { Base, TimeoutError } from './transport/base.esm.js';
+import { Transport } from './transport/base.esm.js';
 import {
 	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
@@ -70,6 +70,7 @@ export class Channel extends Eventable {
 	 * @param {Transport} config.transport - The associated transport
 	 */
 	constructor ({ ackBatchTime, dechunk = true, forceAckCount, id, localLimit, lowReadBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
+		super();
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
 		this.#ackBatchTime = ackBatchTime ?? 5; // msec
 		this.#dechunk = dechunk;
@@ -345,7 +346,7 @@ export class Channel extends Eventable {
 
 				if (entry) {
 					// Add ID to existing entry (handles jitter settlement)
-					if (!Base.addRoleId(id, entry.ids)) {
+					if (!Transport.addRoleId(id, entry.ids)) {
 						this.#transport.logger.error(`Invalid additional id ${id} for message type "${name}"`);
 						this.close({ discard: true });
 						return;
@@ -375,7 +376,7 @@ export class Channel extends Eventable {
 			for (const name of response.reject) {
 				const entry = messageTypes.get(name);
 				if (entry?.reject) {
-					entry.reject(null); // Non-Error rejection (no stack trace overhead)
+					entry.reject('Type rejected'); // Non-Error rejection (no stack trace overhead)
 					messageTypes.delete(name);
 				}
 			}
@@ -434,7 +435,7 @@ export class Channel extends Eventable {
 		const promise = new Promise((...r) => [reader.resolve, reader.reject] = r);
 
 		if (typeof timeout === 'number' && timeout > 0) {
-			reader.timer = setTimeout(() => reader.reject(new TimeoutError()), timeout);
+			reader.timer = setTimeout(() => reader.reject('Reader timeout'), timeout);
 		}
 
 		// Register reader for specific or any/all types, as appropriate

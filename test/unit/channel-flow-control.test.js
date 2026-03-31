@@ -185,12 +185,14 @@ Deno.test('ChannelFlowControl - read construction with unlimited budget', () => 
 
 Deno.test('ChannelFlowControl - received consumes buffer', () => {
 	const fc = new ChannelFlowControl(10000, 10000);
-	fc.received(1, 3000);
+	const result1 = fc.received(1, 3000);
+	assertEquals(result1, true);
 	assertEquals(fc.read, 3000);
 	assertEquals(fc.readBudget, 7000);
 	assertEquals(fc.nextReadSeq, 2);
 
-	fc.received(2, 2000);
+	const result2 = fc.received(2, 2000);
+	assertEquals(result2, true);
 	assertEquals(fc.read, 5000);
 	assertEquals(fc.readBudget, 5000);
 	assertEquals(fc.nextReadSeq, 3);
@@ -204,26 +206,20 @@ Deno.test('ChannelFlowControl - received with unlimited budget', () => {
 	assertEquals(fc.readBudget, Infinity);
 });
 
-Deno.test('ChannelFlowControl - received throws on out-of-order', () => {
+Deno.test('ChannelFlowControl - received returns false on out-of-order', () => {
 	const fc = new ChannelFlowControl(10000, 10000);
 	fc.received(1, 1000);
 
-	assertThrows(
-		() => fc.received(3, 1000),  // Expected 2, got 3
-		ProtocolViolationError,
-		'Sequence out of order'
-	);
+	const result = fc.received(3, 1000);  // Expected 2, got 3
+	assertEquals(result, false);
 });
 
-Deno.test('ChannelFlowControl - received throws on over-budget', () => {
+Deno.test('ChannelFlowControl - received returns false on over-budget', () => {
 	const fc = new ChannelFlowControl(10000, 10000);
 	fc.received(1, 8000);
 
-	assertThrows(
-		() => fc.received(2, 3000),  // Would exceed budget (8000 + 3000 > 10000)
-		ProtocolViolationError,
-		'Over budget'
-	);
+	const result = fc.received(2, 3000);  // Would exceed budget (8000 + 3000 > 10000)
+	assertEquals(result, false);
 });
 
 Deno.test('ChannelFlowControl - markProcessed marks chunk as processed', () => {
@@ -456,7 +452,7 @@ Deno.test('ChannelFlowControl - ACK batching with callback', async () => {
 	const fc = new ChannelFlowControl(10000, 10000, {
 		ackCallback,
 		ackBatchTime: 0,  // No delay
-		lowWaterMark: 0   // Always ACK
+		lowReadBytes: 0   // Always ACK
 	});
 
 	fc.received(1, 1000);
@@ -475,7 +471,7 @@ Deno.test('ChannelFlowControl - ACK batching respects low water mark', async () 
 	const fc = new ChannelFlowControl(10000, 10000, {
 		ackCallback,
 		ackBatchTime: 0,
-		lowWaterMark: 5000  // Don't ACK until below 5000
+		lowReadBytes: 5000  // Don't ACK until below 5000
 	});
 
 	fc.received(1, 6000);
@@ -496,7 +492,7 @@ Deno.test('ChannelFlowControl - ACK batching with force bytes', async () => {
 		ackCallback,
 		ackBatchTime: 100,  // 100ms delay
 		forceAckBytes: 5000,  // Force ACK at 5000 bytes
-		lowWaterMark: 0
+		lowReadBytes: 0
 	});
 
 	fc.received(1, 6000);
@@ -515,7 +511,7 @@ Deno.test('ChannelFlowControl - ACK batching with force chunks', async () => {
 		ackCallback,
 		ackBatchTime: 100,  // 100ms delay
 		forceAckChunks: 3,  // Force ACK at 3 chunks
-		lowWaterMark: 0
+		lowReadBytes: 0
 	});
 
 	fc.received(1, 1000);
@@ -528,4 +524,96 @@ Deno.test('ChannelFlowControl - ACK batching with force chunks', async () => {
 	// Should ACK immediately (exceeds forceAckChunks)
 	await new Promise(resolve => setTimeout(resolve, 0));
 	assertEquals(ackCallCount, 1);
+});
+
+Deno.test('ChannelFlowControl - ACK batching with delay', async () => {
+	let ackCallCount = 0;
+	const ackCallback = () => { ackCallCount++; };
+
+	const fc = new ChannelFlowControl(10000, 10000, {
+		ackCallback,
+		ackBatchTime: 50,  // 50ms delay
+		lowReadBytes: 0
+	});
+
+	fc.received(1, 1000);
+	fc.markProcessed(1);
+
+	// Should ACK immediately (first ACK)
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assertEquals(ackCallCount, 1);
+
+	// Clear the ACK
+	const ackInfo = fc.getAckInfo();
+	fc.clearReadAckInfo(ackInfo.base, ackInfo.ranges);
+
+	// Receive and process another chunk
+	fc.received(2, 1000);
+	fc.markProcessed(2);
+
+	// Should not ACK immediately (batching delay)
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assertEquals(ackCallCount, 1);
+
+	// Wait for batching delay
+	await new Promise(resolve => setTimeout(resolve, 60));
+	assertEquals(ackCallCount, 2);
+});
+
+Deno.test('ChannelFlowControl - ACK batching prevents duplicate pending', async () => {
+	let ackCallCount = 0;
+	const ackCallback = () => {
+		ackCallCount++;
+		// Simulate real callback behavior: get ACK info and clear it
+		const ackInfo = fc.getAckInfo();
+		if (ackInfo) {
+			fc.clearReadAckInfo(ackInfo.base, ackInfo.ranges);
+		}
+	};
+
+	const fc = new ChannelFlowControl(10000, 10000, {
+		ackCallback,
+		ackBatchTime: 0,
+		lowReadBytes: 0
+	});
+
+	fc.received(1, 1000);
+	fc.markProcessed(1);
+
+	// Wait for first ACK
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assertEquals(ackCallCount, 1);
+
+	// Mark another chunk processed before first ACK callback runs
+	// (This is a race condition test - in practice, markProcessed happens
+	// after scheduleAcks queues the microtask but before it runs)
+	fc.received(2, 1000);
+	fc.markProcessed(2);
+
+	// Wait for second ACK (should be scheduled by clearReadAckInfo in first callback)
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assertEquals(ackCallCount, 2);
+});
+
+Deno.test('ChannelFlowControl - ackableBytes and ackableChunks getters', () => {
+	const fc = new ChannelFlowControl(10000, 10000);
+
+	assertEquals(fc.ackableBytes, 0);
+	assertEquals(fc.ackableChunks, 0);
+
+	fc.received(1, 1000);
+	fc.received(2, 2000);
+
+	assertEquals(fc.ackableBytes, 0);
+	assertEquals(fc.ackableChunks, 0);
+
+	fc.markProcessed(1);
+
+	assertEquals(fc.ackableBytes, 1000);
+	assertEquals(fc.ackableChunks, 1);
+
+	fc.markProcessed(2);
+
+	assertEquals(fc.ackableBytes, 3000);
+	assertEquals(fc.ackableChunks, 2);
 });

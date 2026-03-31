@@ -57,13 +57,15 @@ export class Transport extends Eventable {
 
 			// Compute even/odd role
 			const { transportId } = _thys;
-			const { transportId: rmtTranspId } = config;
-			if (transportId < rmtTranspId) {
+			const { transportId: remoteId } = config;
+			if (transportId < remoteId) {
 				_thys.role = Transport.ROLE_EVEN;
-			} else if (transportId > rmtTranspId) {
+			} else if (transportId > remoteId) {
 				_thys.role = Transport.ROLE_ODD;
 			} else {
-				throw new Error('Received own transport ID in remote config');
+				_thys.state = Transport.STATE_CREATED;
+				_thys.started.reject(new Error('Received own transport ID in remote config'));
+				return;
 			}
 
 			// Always include the transport control channel (TCC)
@@ -154,7 +156,6 @@ export class Transport extends Eventable {
 			channels: new Map(), // ids / name / token -> channel
 			channelTokens: new Map(), // token <-> channel
 			disconnected: false,
-			id: crypto.randomUUID(),
 			logSymbol: Symbol('log'),
 			lowBufferBytes: options.lowBufferBytes ?? 16 * 1024,
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
@@ -163,10 +164,11 @@ export class Transport extends Eventable {
 			pendingChannelRequests: new Map(), // name -> { channelPromise, channelResolve, channelReject, responsePromise, options }
 			role: undefined, // even/odd role not yet determined
 			started: null, // startup promise
-			status: Transport.STATE_CREATED,
+			state: Transport.STATE_CREATED,
 			stopped: null, // shutdown promise
 			tcc: options.tcc ?? {},
 			tccSymbol: Symbol('TCC'),
+			transportId: crypto.randomUUID(),
 		});
 		this.#logger = options.logger || console;
 		this._sub_(this.#_subs);
@@ -292,7 +294,7 @@ export class Transport extends Eventable {
 	/**
 	 * Return the transport ID (UUID)
 	 */
-	get id () { return this.#_.id; }
+	get id () { return this.#_.transportId; }
 
 	/**
 	 * Returns the log channel id (symbol)
@@ -483,8 +485,8 @@ export class Transport extends Eventable {
 
 		// Close all channels
 		const channelClosePromises = [];
-		for (const channel of _thys.channels.values()) {
-			channelClosePromises.push(
+		for (const [token, channel] of _thys.channels) {
+			if (typeof token === 'symbol') channelClosePromises.push(
 				channel.close({ discard }).catch(err => {
 					this.#logger.error('Error closing channel:', err);
 				})
@@ -497,7 +499,7 @@ export class Transport extends Eventable {
 			await Promise.race([
 				Promise.all(channelClosePromises),
 				new Promise((_, reject) =>
-					timer = setTimeout(() => reject(new TimeoutError('Transport shutdown timeout')), timeout)
+					timer = setTimeout(() => reject('Transport shutdown timeout'), timeout)
 				)
 			]);
 			clearTimeout(timer);
@@ -509,6 +511,7 @@ export class Transport extends Eventable {
 		await _thys.stop();
 
 		_thys.state = Transport.STATE_STOPPED;
+		stopped.resolve();
 
 		// Emit stopped event
 		await this.dispatchEvent('stopped', {});
@@ -523,19 +526,6 @@ export class Transport extends Eventable {
  */
 export class StateError extends Error {
 	constructor (message = 'Wrong state for request', details) {
-		super(message);
-		this.details = details;
-	}
-
-	get name () { return this.constructor.name; }
-}
-
-
-/**
- * Timeout error
- */
-export class TimeoutError extends Error {
-	constructor (message = 'Operation timed out', details) {
 		super(message);
 		this.details = details;
 	}

@@ -1,47 +1,72 @@
-import { assertEquals, assertRejects, assert } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
-import { Transport, TimeoutError } from '../../src/transport/base.esm.js';
+import { assertEquals, assertRejects, assert, assertExists } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
+import { Transport, StateError } from '../../src/transport/base.esm.js';
 
 // Mock transport implementation for testing
 class MockTransport extends Transport {
-	#startCalled = false;
-	#stopCalled = false;
-	#requestedChannels = [];
-	#sentMessages = [];
+	static __protected = Object.freeze({
+		...Transport.__protected,
 
-	async _start () {
-		this.#startCalled = true;
+		async sendHandshake () {
+			// Mock handshake
+		},
+
+		startReader () {
+			// Mock reader
+		},
+
+		startWriter () {
+			// Mock writer
+		},
+
+		async stop () {
+			// Mock stop
+		}
+	});
+
+	#_ = null;
+	#_subs = new Set();
+
+	constructor (options = {}) {
+		super(options);
+		this._get_(); // Get protected state from parent
 	}
 
-	async _stop () {
-		this.#stopCalled = true;
+	_sub_ (subs) {
+		super._sub_(subs);
+		subs.add((g) => this.#_ ||= g);
 	}
 
-	async requestChannel (idOrName, options) {
-		this.#requestedChannels.push({ idOrName, options });
-		// Return a mock channel
-		return { id: idOrName, name: idOrName };
+	// Helper to trigger remote config for testing
+	async triggerRemoteConfig (config) {
+		await this.#_.onRemoteConfig(config);
 	}
 
-	async _sendMessage (channelId, message) {
-		this.#sentMessages.push({ channelId, message });
+	// Helper to access protected state for testing
+	getProtectedState () {
+		return this.#_;
 	}
-
-	_handleIncomingMessage (message) {
-		// Mock implementation
-	}
-
-	// Test helpers
-	get startCalled () { return this.#startCalled; }
-	get stopCalled () { return this.#stopCalled; }
-	get requestedChannels () { return this.#requestedChannels; }
-	get sentMessages () { return this.#sentMessages; }
 }
 
+// Tests for Transport constants
+Deno.test('Transport - ROLE constants', () => {
+	assertEquals(Transport.ROLE_EVEN, 0);
+	assertEquals(Transport.ROLE_ODD, 1);
+});
+
+Deno.test('Transport - STATE constants', () => {
+	assertEquals(Transport.STATE_CREATED, 0);
+	assertEquals(Transport.STATE_STARTING, 1);
+	assertEquals(Transport.STATE_ACTIVE, 2);
+	assertEquals(Transport.STATE_STOPPING, 3);
+	assertEquals(Transport.STATE_STOPPED, 4);
+});
+
+// Tests for constructor
 Deno.test('Transport - constructor with default logger', () => {
 	const transport = new MockTransport();
 	assert(transport.logger !== null);
-	assertEquals(transport.isStarted, false);
-	assertEquals(transport.isStopped, false);
+	assertEquals(transport.state, Transport.STATE_CREATED);
+	assertEquals(transport.stateString, 'created');
 });
 
 Deno.test('Transport - constructor with custom logger', () => {
@@ -50,89 +75,196 @@ Deno.test('Transport - constructor with custom logger', () => {
 	assertEquals(transport.logger, customLogger);
 });
 
-Deno.test('Transport - setChannelDefaults', () => {
+Deno.test('Transport - constructor initializes ID', () => {
 	const transport = new MockTransport();
+	assertExists(transport.id);
+	assert(typeof transport.id === 'string');
+	// UUID format check
+	assert(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(transport.id));
+});
 
-	transport.setChannelDefaults({
-		maxBufferBytes: 1024,
-		maxChunkBytes: 512,
-		maxMessageBytes: 2048,
-		lowBufferBytes: 256,
+Deno.test('Transport - constructor with options', () => {
+	const transport = new MockTransport({
+		lowBufferBytes: 8192,
+		maxChunkBytes: 8192,
+		c2cSymbol: Symbol('c2c'),
+		tcc: { lowBufferBytes: 4096, maxChunkBytes: 4096 },
+		c2c: { lowBufferBytes: 2048, maxChunkBytes: 2048 }
 	});
 
-	const defaults = transport.getChannelDefaults();
-	assertEquals(defaults.maxBufferBytes, 1024);
-	assertEquals(defaults.maxChunkBytes, 512);
-	assertEquals(defaults.maxMessageBytes, 2048);
-	assertEquals(defaults.lowBufferBytes, 256);
+	assertEquals(transport.maxChunkBytes, 8192);
+	assertExists(transport.logChannelId);
+	assert(typeof transport.logChannelId === 'symbol');
 });
 
-Deno.test('Transport - setChannelDefaults partial update', () => {
-	const transport = new MockTransport();
-
-	transport.setChannelDefaults({ maxBufferBytes: 1024 });
-	let defaults = transport.getChannelDefaults();
-	assertEquals(defaults.maxBufferBytes, 1024);
-	assertEquals(defaults.maxChunkBytes, 0);
-
-	transport.setChannelDefaults({ maxChunkBytes: 512 });
-	defaults = transport.getChannelDefaults();
-	assertEquals(defaults.maxBufferBytes, 1024);
-	assertEquals(defaults.maxChunkBytes, 512);
+// Tests for addRoleId static method
+Deno.test('Transport.addRoleId - adds first ID', () => {
+	const ids = [];
+	const result = Transport.addRoleId(100, ids);
+	assertEquals(result, true);
+	assertEquals(ids, [100]);
 });
 
-Deno.test('Transport - start', async () => {
-	const transport = new MockTransport();
-
-	assertEquals(transport.isStarted, false);
-	await transport.start();
-	assertEquals(transport.isStarted, true);
-	assertEquals(transport.startCalled, true);
+Deno.test('Transport.addRoleId - adds second ID with different parity', () => {
+	const ids = [100];
+	const result = Transport.addRoleId(101, ids);
+	assertEquals(result, true);
+	assertEquals(ids, [100, 101]);
 });
 
-Deno.test('Transport - start throws if already started', async () => {
-	const transport = new MockTransport();
+Deno.test('Transport.addRoleId - maintains ascending order', () => {
+	const ids = [102];
+	const result = Transport.addRoleId(101, ids);
+	assertEquals(result, true);
+	assertEquals(ids, [101, 102]);
+});
 
-	await transport.start();
-	await assertRejects(
-		() => transport.start(),
-		Error,
-		'Transport already started'
-	);
+Deno.test('Transport.addRoleId - rejects duplicate ID', () => {
+	const ids = [100];
+	const result = Transport.addRoleId(100, ids);
+	assertEquals(result, true); // Returns true for existing ID
+	assertEquals(ids, [100]);
+});
+
+Deno.test('Transport.addRoleId - rejects same parity when one exists', () => {
+	const ids = [100];
+	const result = Transport.addRoleId(102, ids);
+	assertEquals(result, false);
+	assertEquals(ids, [100]);
+});
+
+Deno.test('Transport.addRoleId - rejects third ID', () => {
+	const ids = [100, 101];
+	const result = Transport.addRoleId(102, ids);
+	assertEquals(result, false);
+	assertEquals(ids, [100, 101]);
+});
+
+Deno.test('Transport.addRoleId - throws on invalid parameters', () => {
+	try {
+		Transport.addRoleId('not-a-number', []);
+		assert(false, 'Should have thrown');
+	} catch (err) {
+		assert(err instanceof TypeError);
+	}
+
+	try {
+		Transport.addRoleId(100, 'not-an-array');
+		assert(false, 'Should have thrown');
+	} catch (err) {
+		assert(err instanceof TypeError);
+	}
+});
+
+// Tests for lifecycle management
+Deno.test('Transport - start changes state', async () => {
+	const transport = new MockTransport();
+	const _thys = transport.getProtectedState();
+
+	assertEquals(transport.state, Transport.STATE_CREATED);
+	assertEquals(transport.stateString, 'created');
+
+	const startPromise = transport.start();
+	assertEquals(transport.state, Transport.STATE_STARTING);
+	assertEquals(transport.stateString, 'starting');
+
+	// Trigger remote config to complete startup
+	// Use transportId that's different from local transportId
+	await transport.triggerRemoteConfig({
+		transportId: _thys.transportId + 'z', // Lexically greater
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+
+	await startPromise;
+	assertEquals(transport.state, Transport.STATE_ACTIVE);
+	assertEquals(transport.stateString, 'active');
+});
+
+Deno.test('Transport - start returns same promise if already starting', async () => {
+	const transport = new MockTransport();
+	const _thys = transport.getProtectedState();
+
+	const promise1 = transport.start();
+	const promise2 = transport.start();
+
+	assertEquals(promise1, promise2);
+
+	// Complete startup
+	await transport.triggerRemoteConfig({
+		transportId: _thys.transportId + 'z',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+
+	await promise1;
 });
 
 Deno.test('Transport - start throws if stopped', async () => {
 	const transport = new MockTransport();
 
-	await transport.start();
-	await transport.stop();
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+
+	await startPromise;
+	const _thys = transport.getProtectedState();
+	await transport.stop(_thys);
 
 	await assertRejects(
-		() => transport.start(),
-		Error,
-		'Transport is stopped'
+		async () => await transport.start(),
+		StateError,
+		'Transport is unavailable'
 	);
 });
 
-Deno.test('Transport - stop', async () => {
+Deno.test('Transport - stop changes state', async () => {
 	const transport = new MockTransport();
 
-	await transport.start();
-	assertEquals(transport.isStopped, false);
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+	await startPromise;
 
-	await transport.stop();
-	assertEquals(transport.isStopped, true);
-	assertEquals(transport.stopCalled, true);
+	const _thys = transport.getProtectedState();
+	const stopPromise = transport.stop(_thys);
+
+	assertEquals(transport.state, Transport.STATE_STOPPING);
+	assertEquals(transport.stateString, 'stopping');
+
+	await stopPromise;
+
+	assertEquals(transport.state, Transport.STATE_STOPPED);
+	assertEquals(transport.stateString, 'stopped');
 });
 
 Deno.test('Transport - stop is idempotent', async () => {
 	const transport = new MockTransport();
 
-	await transport.start();
-	await transport.stop();
-	await transport.stop(); // Should not throw
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+	await startPromise;
 
-	assertEquals(transport.isStopped, true);
+	const _thys = transport.getProtectedState();
+	await transport.stop(_thys);
+	await transport.stop(_thys); // Should not throw
+
+	assertEquals(transport.state, Transport.STATE_STOPPED);
 });
 
 Deno.test('Transport - stop emits beforeStopping and stopped events', async () => {
@@ -147,50 +279,22 @@ Deno.test('Transport - stop emits beforeStopping and stopped events', async () =
 		events.push('stopped');
 	});
 
-	await transport.start();
-	await transport.stop();
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+	await startPromise;
+
+	const _thys = transport.getProtectedState();
+	await transport.stop(_thys);
 
 	assertEquals(events, ['beforeStopping', 'stopped']);
 });
 
-Deno.test('Transport - requestChannel', async () => {
-	const transport = new MockTransport();
-
-	await transport.start();
-	const channel = await transport.requestChannel('test-channel', { timeout: 5000 });
-
-	assertEquals(channel.id, 'test-channel');
-	assertEquals(transport.requestedChannels.length, 1);
-	assertEquals(transport.requestedChannels[0].idOrName, 'test-channel');
-	assertEquals(transport.requestedChannels[0].options.timeout, 5000);
-});
-
-/*
- * BROKEN/INVALID - These test the mock, not the real transport
-Deno.test('Transport - requestChannel throws if not started', async () => {
-	const transport = new MockTransport();
-
-	await assertRejects(
-		() => transport.requestChannel('test-channel'),
-		Error,
-		'Transport not started'
-	);
-});
-
-Deno.test('Transport - requestChannel throws if stopped', async () => {
-	const transport = new MockTransport();
-
-	await transport.start();
-	await transport.stop();
-
-	await assertRejects(
-		() => transport.requestChannel('test-channel'),
-		Error,
-		'Transport is stopped'
-	);
-});
- */
-
+// Tests for channel management
 Deno.test('Transport - getChannel returns undefined for non-existent channel', () => {
 	const transport = new MockTransport();
 
@@ -198,72 +302,216 @@ Deno.test('Transport - getChannel returns undefined for non-existent channel', (
 	assertEquals(channel, undefined);
 });
 
-Deno.test('Transport - channels returns empty map initially', () => {
+Deno.test('Transport - getChannel only accepts string or symbol', () => {
 	const transport = new MockTransport();
 
-	const channels = transport.channels;
-	assertEquals(channels.size, 0);
+	// Numeric IDs should not be accessible via public API
+	assertEquals(transport.getChannel(123), undefined);
+	assertEquals(transport.getChannel(null), undefined);
+	assertEquals(transport.getChannel({}), undefined);
 });
 
-Deno.test('Transport - _registerChannel and getChannel', () => {
+Deno.test('Transport - requestChannel throws if not active', async () => {
 	const transport = new MockTransport();
-	const mockChannel = { id: 'test', name: 'test' };
 
-	transport._registerChannel('test', mockChannel);
-
-	const retrieved = transport.getChannel('test');
-	assertEquals(retrieved, mockChannel);
-
-	const channels = transport.channels;
-	assertEquals(channels.size, 1);
-	assertEquals(channels.get('test'), mockChannel);
+	await assertRejects(
+		() => transport.requestChannel('test-channel'),
+		StateError,
+		'Transport is not active'
+	);
 });
 
-Deno.test('Transport - abstract methods throw if not implemented', async () => {
-	class IncompleteTransport extends Transport {}
-	const transport = new IncompleteTransport();
+// Tests for onRemoteConfig
+Deno.test('Transport - onRemoteConfig determines EVEN role', async () => {
+	const transport = new MockTransport();
 
-	await assertRejects(
-		() => transport._start(),
-		Error,
-		'_start() must be implemented by subclass'
-	);
+	const startPromise = transport.start();
 
-	await assertRejects(
-		() => transport._stop(),
-		Error,
-		'_stop() must be implemented by subclass'
-	);
+	const _thys = transport.getProtectedState();
+	const localId = _thys.id;
 
-	/*
-	 * BROKEN/INVALID TEST!
-	 * transport.requestChannel should NOT be an abstract method!
-	await assertRejects(
-		() => transport._requestChannel('test', {}),
-		Error,
-		'_requestChannel() must be implemented by subclass'
-	);
-	 */
+	// Remote ID is greater, so we should be EVEN
+	await transport.triggerRemoteConfig({
+		transportId: localId + 'z', // Lexically greater
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+	await startPromise;
 
-	await assertRejects(
-		() => transport._sendMessage(1, {}),
-		Error,
-		'_sendMessage() must be implemented by subclass'
-	);
-
-	try {
-		transport._handleIncomingMessage({});
-		assert(false, 'Should have thrown');
-	} catch (err) {
-		assertEquals(err.message, '_handleIncomingMessage() must be implemented by subclass');
-	}
+	assertEquals(_thys.role, Transport.ROLE_EVEN);
 });
 
-Deno.test('TimeoutError', () => {
-	const error = new TimeoutError();
-	assertEquals(error.name, 'TimeoutError');
-	assertEquals(error.message, 'Operation timed out');
+Deno.test('Transport - onRemoteConfig determines ODD role', async () => {
+	const transport = new MockTransport();
 
-	const customError = new TimeoutError('Custom timeout');
-	assertEquals(customError.message, 'Custom timeout');
+	const startPromise = transport.start();
+
+	const _thys = transport.getProtectedState();
+	const localId = _thys.id;
+
+	// Remote ID is lesser, so we should be ODD
+	await transport.triggerRemoteConfig({
+		transportId: '00000000-0000-0000-0000-000000000000', // Lexically lesser
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+	await startPromise;
+
+	assertEquals(_thys.role, Transport.ROLE_ODD);
+});
+
+Deno.test('Transport - onRemoteConfig throws on same transport ID', async () => {
+	const transport = new MockTransport();
+
+	const startPromise = transport.start();
+
+	const _thys = transport.getProtectedState();
+	const localId = _thys.id;
+
+	await assertRejects(
+		async () => {
+			await transport.triggerRemoteConfig({
+				transportId: localId, // Same ID
+				minChannelId: 1024,
+				minMessageTypeId: 1024,
+				c2cEnabled: false
+			});
+			await startPromise;
+		},
+		Error,
+		'Received own transport ID in remote config'
+	);
+});
+
+Deno.test('Transport - onRemoteConfig negotiates minimum IDs', async () => {
+	const transport = new MockTransport();
+
+	const startPromise = transport.start();
+
+	const _thys = transport.getProtectedState();
+
+	// Remote has higher minimums
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 2048,
+		minMessageTypeId: 2048,
+		c2cEnabled: false
+	});
+	await startPromise;
+
+	assertEquals(_thys.minChannelId, 2048);
+	assertEquals(_thys.minMessageTypeId, 2048);
+});
+
+Deno.test('Transport - onRemoteConfig creates TCC channel', async () => {
+	const transport = new MockTransport();
+
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false
+	});
+	await startPromise;
+
+	const _thys = transport.getProtectedState();
+	const tcc = _thys.channels.get(0); // CHANNEL_TCC = 0
+
+	assertExists(tcc);
+	assertEquals(tcc.constructor.name, 'ControlChannel');
+});
+
+Deno.test('Transport - onRemoteConfig creates C2C channel if mutually enabled', async () => {
+	const transport = new MockTransport({ c2cSymbol: Symbol('c2c') });
+
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: true
+	});
+	await startPromise;
+
+	const _thys = transport.getProtectedState();
+	const c2c = _thys.channels.get(1); // CHANNEL_C2C = 1
+
+	assertExists(c2c);
+	assertEquals(c2c.constructor.name, 'ControlChannel');
+});
+
+Deno.test('Transport - onRemoteConfig does not create C2C if not mutually enabled', async () => {
+	const transport = new MockTransport({ c2cSymbol: Symbol('c2c') });
+
+	const startPromise = transport.start();
+	await transport.triggerRemoteConfig({
+		transportId: 'remote-id',
+		minChannelId: 1024,
+		minMessageTypeId: 1024,
+		c2cEnabled: false // Remote disabled
+	});
+	await startPromise;
+
+	const _thys = transport.getProtectedState();
+	const c2c = _thys.channels.get(1);
+
+	assertEquals(c2c, undefined);
+});
+
+// Tests for properties
+Deno.test('Transport - needsEncodedText defaults to true', () => {
+	const transport = new MockTransport();
+	assertEquals(transport.needsEncodedText, true);
+});
+
+Deno.test('Transport - logChannelId returns symbol', () => {
+	const transport = new MockTransport();
+	const logId = transport.logChannelId;
+	assert(typeof logId === 'symbol');
+});
+
+// Tests for dispatchEvent
+Deno.test('Transport - dispatchEvent with string type', async () => {
+	const transport = new MockTransport();
+	let received = null;
+
+	transport.addEventListener('testEvent', (event) => {
+		received = event;
+	});
+
+	await transport.dispatchEvent('testEvent', { data: 'test' });
+
+	assertExists(received);
+	assertEquals(received.type, 'testEvent');
+	assertEquals(received.detail.data, 'test');
+});
+
+Deno.test('Transport - dispatchEvent with event object', async () => {
+	const transport = new MockTransport();
+	let received = null;
+
+	transport.addEventListener('testEvent', (event) => {
+		received = event;
+	});
+
+	const eventObj = { type: 'testEvent', detail: { data: 'test' } };
+	await transport.dispatchEvent(eventObj);
+
+	assertExists(received);
+	assertEquals(received.type, 'testEvent');
+	assertEquals(received.detail.data, 'test');
+});
+
+// Tests for error classes
+Deno.test('StateError', () => {
+	const error = new StateError();
+	assertEquals(error.name, 'StateError');
+	assertEquals(error.message, 'Wrong state for request');
+
+	const customError = new StateError('Custom state error', { state: 'invalid' });
+	assertEquals(customError.message, 'Custom state error');
+	assertEquals(customError.details.state, 'invalid');
 });

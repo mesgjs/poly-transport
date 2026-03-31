@@ -376,10 +376,10 @@ export class ChannelFlowControl {
 		const lowReadBytes = this.#lowReadBytes;
 		if (lowReadBytes && this.#read > lowReadBytes) return;
 
-		// ACK now if we didn't just ACK, there's no batching delay, or there's a delay-override
+		// ACK now if we didn't just ACK (and no batch timer running), there's no batching delay, or there's a delay-override
 		const ackBytes = this.#ackableBytes, ackChunks = this.#ackableChunks, batchTime = this.#ackBatchTime;
 		const forceBytes = this.#forceAckBytes, forceChunks = this.#forceAckChunks;
-		if (!justSent || (!batchTime && ackChunks) || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
+		if ((!justSent && !this.#ackBatchTimer) || (!batchTime && ackChunks) || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
 			this.#acksPending = true;
 			queueMicrotask(this.#ackCallback);
 			return;
