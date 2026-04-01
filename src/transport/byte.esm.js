@@ -11,13 +11,14 @@
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
-import { Channel } from '../channel.esm.js';
-import { OutputRingBuffer } from '../output-ring-bffer.esm.js';
 import { Transport } from './base.esm.js';
+import { Channel } from '../channel.esm.js';
+import { OutputRingBuffer } from '../output-ring-buffer.esm.js';
+import { VirtualRWBuffer } from '../virtual-buffer.esm.js';
 import {
 	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
-	RESERVE_ACK_BYTES, DATA_HEADER_BYTES,
+	RESERVE_ACK_BYTES, DATA_HEADER_BYTES, FLAG_EOM,
 	decodeAckHeaderFrom, decodeChannelHeaderFrom,
 	encAddlToTotal, encodeAckHeaderInto, encodeChannelHeaderInto,
 } from '../protocol.esm.js';
@@ -27,6 +28,7 @@ export class ByteTransport extends Transport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
 		/**
 		 * Handle any post-write actions
+		 * (Call from concrete sub-class writeBytes)
 		 */
 		afterWrite () {
 			super.afterWrite();
@@ -73,21 +75,21 @@ export class ByteTransport extends Transport {
 		scheduleWrite (now = false) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			const { autoWriteBytes, autoWriteTime, outputBuffer } = _thys;
+			const { outputBuffer } = _thys;
 			const committed = outputBuffer.committed;
 			if (committed === 0 || _thys.writing) {
 				return; // Nothing to write, or writing in progress
 			}
-			if (committed >= (now ? 1 : autoWriteBytes)) {
+			if (committed >= (now ? 1 : thys.#autoWriteBytes)) {
 				// Send if forced or over byte threshold
 				if (_thys.writeTimer) {
 					clearTimeout(_thys.writeTimer);
 					_thys.writeTimer = null;
 				}
 				_thys.writeBytes();
-			} else if (Number.isInteger(autoWriteTime) && !_thys.writeTimer) {
+			} else if (Number.isInteger(thys.#autoWriteTime) && !_thys.writeTimer) {
 				// Send when we've waited the maximum batching time
-				_thys.writeTimer = setTimeout(() => _thys.scheduleWrite(true), autoWriteTime);
+				_thys.writeTimer = setTimeout(() => _thys.scheduleWrite(true), thys.#autoWriteTime);
 			}
 		},
 
@@ -99,11 +101,11 @@ export class ByteTransport extends Transport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 
-			const { id, c2cSymbol, minChannelId, minMessageTypeId, outputBuffer } = _thys;
+			const { transportId, c2cSymbol, minChannelId, minMessageTypeId, outputBuffer } = _thys;
 
 			// Prepare configuration object
 			const config = {
-				transportId: id,
+				transportId,
 				version: 1,
 				c2cEnabled: typeof c2cSymbol === 'symbol',
 				minChannelId,
@@ -161,11 +163,19 @@ export class ByteTransport extends Transport {
 		},
 
 		// Transport-specific startup - start the byte-stream reader
-		startReader () {
+		/* async */ startReader () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			super.startReader();
 			thys.#byteReader();
+		},
+
+		/**
+		 * Write bytes from output buffer to underlying transport
+		 * Abstract method - must be implemented by subclasses
+		 */
+		/* async */ writeBytes () {
+			throw new Error('writeBytes() must be implemented by subclass');
 		}
 	}, super.__protected));
 
@@ -178,7 +188,8 @@ export class ByteTransport extends Transport {
 		this._get_();
 		this.#autoWriteBytes = options.autoWriteBytes ?? 16 * 1024;
 		this.#autoWriteTime = options.autoWriteTime ?? 5; // msec
-		Object.assign(_thys, {
+		Object.assign(this.#_, {
+			inputBuffer: new VirtualRWBuffer(),
 			outputBuffer: new OutputRingBuffer(options.outputBufferSize),
 			writeQueue: new TaskQueue(),
 		});
@@ -198,7 +209,7 @@ export class ByteTransport extends Transport {
 		let offset = 0;
 
 		// Line-based config/handshake loop
-		while (!_thys.stopped) {
+		while (!(_thys.state === Transport.STATE_STOPPED)) {
 			if (offset === inputBuffer.length) {
 				await this.#readable(offset + 1);
 			}
@@ -207,19 +218,19 @@ export class ByteTransport extends Transport {
 
 			if (nextByte === stx && offset > 0) {
 				const line = inputBuffer.decode({ end: offset });
-				input.release(offset);
+				inputBuffer.release(offset);
 				offset = 0;
 				await this.dispatchEvent('outOfBandData', { data: line });
 				continue;
 			}
 
 			if (nextByte === newLine) {
-				const line = inputBuffer.decode({ end: offset });
+				const line = inputBuffer.decode({ end: ++offset });
 				inputBuffer.release(offset);
 				offset = 0;
 
 				if (line === START_BYTE_STREAM) break;
-				if (line.startswith(GREET_CONFIG_PREFIX) && line.endsWith(GREET_CONFIG_SUFFIX) && firstConfig) {
+				if (line.startsWith(GREET_CONFIG_PREFIX) && line.endsWith(GREET_CONFIG_SUFFIX) && firstConfig) {
 					try {
 						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
 						firstConfig = false;
@@ -235,7 +246,7 @@ export class ByteTransport extends Transport {
 		}
 
 		// Byte-stream-based message loop
-		while (_thys.status != Transport.STATUS_STOPPED) {
+		while (_thys.state !== Transport.STATE_STOPPED) {
 			// Read a message header
 			if (inputBuffer.length < 2) {
 				await this.#readable(2);
@@ -270,7 +281,7 @@ export class ByteTransport extends Transport {
 
 			inputBuffer.release(totalHeaderSize, bufferPool);
 			const dataSize = header.dataSize ?? 0;
-			if (dataSize > 0 && !state.stopped) {
+			if (dataSize > 0 && _thys.state !== Transport.STATE_STOPPED) {
 				if (dataSize > inputBuffer.length) {
 					await this.#readable(dataSize);
 				}
@@ -309,7 +320,7 @@ export class ByteTransport extends Transport {
 		const _thys = this.#_;
 		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized');
+			return Promise.reject(new Error('Unauthorized'));
 		}
 		const task = _thys.writeQueue.add(() => this.#sendAckMessage(channel.id, flowControl));
 		return task;
@@ -359,7 +370,7 @@ export class ByteTransport extends Transport {
 		const { outputBuffer, writeQueue } = _thys;
 		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized');
+			return Promise.reject(new Error('Unauthorized'));
 		}
 		const channelId = channel.id;
 		const taskResult = writeQueue.add(async () => {
@@ -387,6 +398,12 @@ export class ByteTransport extends Transport {
 			return numBytesSent;
 		});
 		return taskResult;
+	}
+
+	/* async */ stop () {
+		const writeTimer = this.#_.writeTimer;
+		if (writeTimer) clearTimeout(writeTimer);
+		return super.stop(this.#_);
 	}
 
 	/**

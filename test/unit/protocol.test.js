@@ -4,7 +4,7 @@
  * Tests for message encoding/decoding, handshake, and protocol utilities.
  */
 
-import { assertEquals, assertThrows } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
+import { assertEquals, assertThrows, assert } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
 import {
 	// Constants
 	DATA_HEADER_BYTES,
@@ -38,6 +38,7 @@ import {
 	ackHeaderSize,
 	channelHeaderSize,
 	maxAckRanges,
+	addRoleId,
 	// Encoding functions
 	encodeAckHeaderInto,
 	encodeChannelHeaderInto,
@@ -207,6 +208,66 @@ Deno.test('Protocol - maxAckRanges validation', () => {
 Deno.test('Protocol - channelHeaderSize', () => {
 	assertEquals(channelHeaderSize(), 18);
 	assertEquals(channelHeaderSize(), DATA_HEADER_BYTES);
+});
+
+// ============================================================================
+// addRoleId Function Tests
+// ============================================================================
+
+Deno.test('Protocol - addRoleId adds first ID', () => {
+	const ids = [];
+	const result = addRoleId(100, ids);
+	assertEquals(result, true);
+	assertEquals(ids, [100]);
+});
+
+Deno.test('Protocol - addRoleId adds second ID with different parity', () => {
+	const ids = [100];
+	const result = addRoleId(101, ids);
+	assertEquals(result, true);
+	assertEquals(ids, [100, 101]);
+});
+
+Deno.test('Protocol - addRoleId maintains ascending order', () => {
+	const ids = [102];
+	const result = addRoleId(101, ids);
+	assertEquals(result, true);
+	assertEquals(ids, [101, 102]);
+});
+
+Deno.test('Protocol - addRoleId rejects duplicate ID', () => {
+	const ids = [100];
+	const result = addRoleId(100, ids);
+	assertEquals(result, true); // Returns true for existing ID
+	assertEquals(ids, [100]);
+});
+
+Deno.test('Protocol - addRoleId rejects same parity when one exists', () => {
+	const ids = [100];
+	const result = addRoleId(102, ids);
+	assertEquals(result, false);
+	assertEquals(ids, [100]);
+});
+
+Deno.test('Protocol - addRoleId rejects third ID', () => {
+	const ids = [100, 101];
+	const result = addRoleId(102, ids);
+	assertEquals(result, false);
+	assertEquals(ids, [100, 101]);
+});
+
+Deno.test('Protocol - addRoleId throws on invalid parameters', () => {
+	assertThrows(
+		() => addRoleId('not-a-number', []),
+		TypeError,
+		'Invalid addRoleId parameter'
+	);
+
+	assertThrows(
+		() => addRoleId(100, 'not-an-array'),
+		TypeError,
+		'Invalid addRoleId parameter'
+	);
 });
 
 // ============================================================================

@@ -9,7 +9,7 @@ import { Transport } from './transport/base.esm.js';
 import {
 	FLAG_EOM, HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
-	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED, StateError,
+	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED, StateError, addRoleId,
 } from './protocol.esm.js';
 import { AsyncAppEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
@@ -248,6 +248,17 @@ export class Channel extends Eventable {
 		// Transition to closed state
 		this.#state = Channel.STATE_CLOSED;
 
+		// Reject any message-type registrations still pending
+		for (const [_type, entry] of this.#_.messageTypes) {
+			entry.reject('Closed');
+		}
+
+		// Reject any pending readers
+		if (this.#_.allReader?.reject) this.#allReader.reject('Closed');
+		for (const [_type, entry] of this.#filteredReaders) {
+			if (entry.reject) entry.reject('Closed');
+		}
+
 		// Clear message type registrations
 		const { messageTypes } = this.#_;
 		messageTypes.clear();
@@ -445,7 +456,7 @@ export class Channel extends Eventable {
 
 				if (entry) {
 					// Add ID to existing entry (handles jitter settlement)
-					if (!Transport.addRoleId(id, entry.ids)) {
+					if (!addRoleId(id, entry.ids)) {
 						this.#_.transport.logger.error(`Invalid additional id ${id} for message type "${name}"`);
 						this.close({ discard: true });
 						return;
@@ -799,7 +810,6 @@ export class Channel extends Eventable {
 	 */
 	#receiveDataMessage (header, data) {
 		const _thys = this.#_;
-		const { mesgTypeRemapping } = _thys;
 		const { headerSize, dataSize, sequence, messageType, eom } = header;
 
 		if (!this.#flowControl.received(sequence, headerSize + dataSize)) {
@@ -813,7 +823,7 @@ export class Channel extends Eventable {
 			return;
 		}
 
-		const activeType = mesgTypeRemapping.get(messageType) ?? messageType;
+		const activeType = this.#mesgTypeRemapping.get(messageType) ?? messageType;
 		const descriptor = { activeType, header, data, eom, next: null, nextEOM: null };
 		const stored = this.#typeChain.get(activeType);
 		const typed = stored ?? { read: null, readEOM: null, write: null, writeEOM: null };
@@ -881,7 +891,7 @@ export class Channel extends Eventable {
 		if (immediate) {
 			// Remove dedicated task and send ACK now
 			this.#writeQueue.cancel(this.#sendAckNow, { resolve: null });
-			return transport.sendAckMessage(this.#token, this.#flowControl);
+			return this.#_.transport.sendAckMessage(this.#token, this.#flowControl);
 		}
 		if (!this.#readyToAck) {
 			// We'll piggy-back on an existing write task if possible,
@@ -945,7 +955,7 @@ export class Channel extends Eventable {
 		let offset = 0, remaining = 0, chunkSize;
 		const standardBytesToReserve = () => {
 			chunkSize = Math.min(remaining, maxDataBytes);
-			return DATA_HEADER_BYTES + chunksize;
+			return DATA_HEADER_BYTES + chunkSize;
 		};
 		const chunker = (() => { // Determine chunking strategy based on source type
 			if (source instanceof Uint8Array) source = new VirtualBuffer(source); // Normalize to VirtualBuffer
@@ -968,7 +978,7 @@ export class Channel extends Eventable {
 				remaining = options.byteLength ?? 0;
 				return {
 					get bufferSize () { return chunkSize; },
-					bytesToReserve: standardReserveSize,
+					bytesToReserve: standardBytesToReserve,
 					nextChunk (buffer) {
 						source(offset, offset + chunkSize, buffer);
 						offset += chunkSize;

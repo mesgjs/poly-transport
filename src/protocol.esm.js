@@ -72,6 +72,39 @@ export const toEven = (v) => (v & 1) ? (v + 1) : v;
 export const toOdd = (v) => (v & 1) ? v : (v + 1);
 
 /**
+ * Helper to add an even or odd role id (stored in ascending order, allowing one of each)
+ * @param {number} id - Id candidate to be added
+ * @param {number[]} ids - 0/1/2-element set of ids
+ * @returns {boolean} Success (true) or error (false)
+ */
+export function addRoleId (id, ids) {
+	if (!Array.isArray(ids) || typeof id !== 'number') {
+		throw new TypeError('Invalid addRoleId parameter');
+	}
+	if (ids.length === 0) {
+		ids[0] = id; // First id
+		return true;
+	}
+	// There are 1 or 2 already
+	if (id === ids[0] || id === ids[1]) {
+		return true; // Existing id
+	}
+	if (ids.length > 1) {
+		return false; // Too many!
+	}
+	// There's only 1 right now
+	if (id % 2 === ids[0] % 2) {
+		return false; // Only one id allowed per even/odd parity
+	}
+	if (id < ids[0]) {
+		ids.unshift(id); // New id is smaller: insert
+	} else {
+		ids[1] = id; // New id is larger: append
+	}
+	return true;
+}
+
+/**
  * Additional-bytes helpers
  * totalToEncAddl: *total* bytes (including type + remaining-size bytes) to encoded-additional
  * addlToEncAddl: *additional* bytes to encoded-additional

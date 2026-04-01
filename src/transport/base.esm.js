@@ -13,7 +13,7 @@ import {
 	TCC_DTAM_TRAN_STOP, TCC_DTAM_CHAN_REQUEST, TCC_DTAM_CHAN_RESPONSE,
 	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
-	StateError, toEven, toOdd
+	StateError, toEven, toOdd, addRoleId
 } from '../protocol.esm.js';
 import { Eventable } from '@eventable';
 export { StateError };
@@ -55,9 +55,9 @@ export class Transport extends Eventable {
 
 			// Negotiate consensus on minimum ids
 			const { minChannelId, minMessageTypeId } = _thys;
-			const { minChannelId: minRmtChanId, minMessageTypeId: minRmtMesgTypeId } = config;
-			if (minRmtChanId > minChannelId) _thys.minChannelId = minRmtChanId;
-			if (minRmtMesgTypeId > minMessageTypeId) _thys.minMessageTypeId = minRmtMesgTypeId;
+			const { minChannelId: minRemoteChannelId, minMessageTypeId: minRemoteMessageTypeId } = config;
+			if (minRemoteChannelId > minChannelId) _thys.minChannelId = minRemoteChannelId;
+			if (minRemoteMessageTypeId > minMessageTypeId) _thys.minMessageTypeId = minRemoteMessageTypeId;
 
 			// Compute even/odd role
 			const { transportId } = _thys;
@@ -80,8 +80,8 @@ export class Transport extends Eventable {
 
 			// Always include the transport control channel (TCC)
 			const { channels, channelTokens } = _thys;
-			const tccLowBuffer = _thys.tcc?.lowBufferBytes ?? _thys.lowBufferBytes;
-			const tccMaxChunk = _thys.tcc?.maxChunkBytes ?? _thys.maxChunkBytes;
+			const tccLowBuffer = _thys.tccOptions?.lowBufferBytes ?? _thys.lowBufferBytes;
+			const tccMaxChunk = _thys.tccOptions?.maxChunkBytes ?? _thys.maxChunkBytes;
 			const tccToken = Symbol('TCC');
 			const tcc = new ControlChannel({ token: tccToken, lowBufferBytes: tccLowBuffer, maxChunkBytes: tccMaxChunk });
 			channels.set(CHANNEL_TCC, tcc);
@@ -91,10 +91,10 @@ export class Transport extends Eventable {
 
 			// Include console-content channel (C2C) if mutually enabled in config
 			const { c2cSymbol } = _thys;
-			const { c2cEnabled: rmtC2C } = config;
-			if (typeof c2cSymbol === 'symbol' && rmtC2C) {
-				const c2cLowBuffer = _thys.c2c?.lowBufferBytes ?? _thys.lowBufferBytes;
-				const c2cMaxChunk = _thys.c2c?.maxChunkBytes ?? _thys.maxChunkBytes;
+			const { c2cEnabled: remoteC2C } = config;
+			if (typeof c2cSymbol === 'symbol' && remoteC2C) {
+				const c2cLowBuffer = _thys.c2cOptions?.lowBufferBytes ?? _thys.lowBufferBytes;
+				const c2cMaxChunk = _thys.c2cOptions?.maxChunkBytes ?? _thys.maxChunkBytes;
 				const c2cToken = Symbol('c2c');
 				const c2c = new ControlChannel({ token: c2cToken, lowBufferBytes: c2cLowBuffer, maxChunkBytes: c2cMaxChunk });
 				channels.set(CHANNEL_C2C, c2c);
@@ -165,7 +165,7 @@ export class Transport extends Eventable {
 		Object.assign(this.#_ = Object.create(this.constructor.__protected), {
 			__this: this,
 			bufferPool: options.bufferPool,
-			c2c: options.c2c ?? {},
+			c2cOptions: options.c2c ?? {},
 			c2cSymbol: options.c2cSymbol,
 			channels: new Map(), // ids / name / token -> channel
 			channelTokens: new Map(), // token <-> channel
@@ -180,45 +180,12 @@ export class Transport extends Eventable {
 			started: null, // startup promise
 			state: Transport.STATE_CREATED,
 			stopped: null, // shutdown promise
-			tcc: options.tcc ?? {},
+			tccOptions: options.tcc ?? {},
 			tccSymbol: Symbol('TCC'),
 			transportId: crypto.randomUUID(),
 		});
 		this.#logger = options.logger || console;
 		this._sub_(this.#_subs);
-	}
-
-	/**
-	 * Helper to add an even or odd role id (stored in ascending order, allowing one of each)
-	 * @param {number} id Id candidate to be added
-	 * @param {number[]} ids 0/1/2-element set of ids
-	 * @returns {boolean} Success (true) or error (false)
-	 */
-	static addRoleId (id, ids) {
-		if (!Array.isArray(ids) || typeof id !== 'number') {
-			throw new TypeError('Invalid addRoleId parameter')
-		}
-		if (ids.length === 0) {
-			ids[0] = id; // First id
-			return true;
-		}
-		// There are 1 or 2 already
-		if (id === ids[0] || id === ids[1]) {
-			return true; // Existing id
-		}
-		if (ids.length > 1) {
-			return false; // Too many!
-		}
-		// There's only 1 right now
-		if (id % 2 === ids[0] % 2) {
-			return false; // Only one id allowed per even/odd parity
-		}
-		if (id < ids[0]) {
-			ids.unshift(id); // New id is smaller: insert
-		} else {
-			ids[1] = id; // New id is larger: append
-		}
-		return true;
 	}
 
 	/**
@@ -545,7 +512,7 @@ export class Transport extends Eventable {
 				// Add the second role ID (perform ID switch if remote ID is lower)
 				const token = channelTokens.get(existing);
 				const ids = existing.idsRW(token);
-				if (ids && !Transport.addRoleId(id, ids)) {
+				if (ids && !addRoleId(id, ids)) {
 					const error = new Error('Failed to add role ID - duplicate or invalid');
 					pending.reject(error);
 					pendingChannelRequests.delete(name);
@@ -632,10 +599,7 @@ export class Transport extends Eventable {
 
 		// 5. Create promise and store in #pendingChannelRequests
 		const request = { options: channelOptions };
-		request.promise = new Promise((resolve, reject) => {
-			request.resolve = resolve;
-			request.reject = reject;
-		});
+		request.promise = new Promise((resolve, reject) => [request.resolve, request.reject] = [resolve, reject]);
 		pendingChannelRequests.set(name, request);
 
 		// 6. Send control message via TCC
@@ -708,6 +672,11 @@ export class Transport extends Eventable {
 
 		// Emit beforeStopping event
 		await this.dispatchEvent('beforeStopping', {});
+
+		// Reject pending channel requests
+		for (const [_name, request] of _thys.pendingChannelRequests) {
+			if (request.reject) request.reject('Transport stopping');
+		}
 
 		// Close all channels
 		const channelClosePromises = [];
@@ -790,6 +759,7 @@ export class Transport extends Eventable {
 						await this.#onTransportStop(parsed);
 						break;
 					case TCC_CTLM_MESG_TYPE_REG_REQ[0]:
+						// Message-type registration currently unsupported on TCC
 						break;
 					case TCC_CTLM_MESG_TYPE_REG_RESP[0]:
 						break;

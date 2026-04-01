@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
-import { ChannelFlowControl, ProtocolViolationError } from '../../src/channel-flow-control.esm.js';
+import { ChannelFlowControl } from '../../src/channel-flow-control.esm.js';
 
 // ============================================================================
 // ChannelFlowControl - Write (Send) Tests

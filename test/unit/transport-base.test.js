@@ -97,65 +97,6 @@ Deno.test('Transport - constructor with options', () => {
 	assert(typeof transport.logChannelId === 'symbol');
 });
 
-// Tests for addRoleId static method
-Deno.test('Transport.addRoleId - adds first ID', () => {
-	const ids = [];
-	const result = Transport.addRoleId(100, ids);
-	assertEquals(result, true);
-	assertEquals(ids, [100]);
-});
-
-Deno.test('Transport.addRoleId - adds second ID with different parity', () => {
-	const ids = [100];
-	const result = Transport.addRoleId(101, ids);
-	assertEquals(result, true);
-	assertEquals(ids, [100, 101]);
-});
-
-Deno.test('Transport.addRoleId - maintains ascending order', () => {
-	const ids = [102];
-	const result = Transport.addRoleId(101, ids);
-	assertEquals(result, true);
-	assertEquals(ids, [101, 102]);
-});
-
-Deno.test('Transport.addRoleId - rejects duplicate ID', () => {
-	const ids = [100];
-	const result = Transport.addRoleId(100, ids);
-	assertEquals(result, true); // Returns true for existing ID
-	assertEquals(ids, [100]);
-});
-
-Deno.test('Transport.addRoleId - rejects same parity when one exists', () => {
-	const ids = [100];
-	const result = Transport.addRoleId(102, ids);
-	assertEquals(result, false);
-	assertEquals(ids, [100]);
-});
-
-Deno.test('Transport.addRoleId - rejects third ID', () => {
-	const ids = [100, 101];
-	const result = Transport.addRoleId(102, ids);
-	assertEquals(result, false);
-	assertEquals(ids, [100, 101]);
-});
-
-Deno.test('Transport.addRoleId - throws on invalid parameters', () => {
-	try {
-		Transport.addRoleId('not-a-number', []);
-		assert(false, 'Should have thrown');
-	} catch (err) {
-		assert(err instanceof TypeError);
-	}
-
-	try {
-		Transport.addRoleId(100, 'not-an-array');
-		assert(false, 'Should have thrown');
-	} catch (err) {
-		assert(err instanceof TypeError);
-	}
-});
-
 // Tests for lifecycle management
 Deno.test('Transport - start changes state', async () => {
 	const transport = new MockTransport();

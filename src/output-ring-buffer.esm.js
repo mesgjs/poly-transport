@@ -285,7 +285,7 @@ export class OutputRingBuffer {
 	// Basic cleanup on shutdown (e.g. for testing)
 	stop () {
 		if (this.#waiter) {
-			this.#waiter.reject(new Error('Stopping'));
+			this.#waiter.reject('Stopping');
 		}
 	}
 }

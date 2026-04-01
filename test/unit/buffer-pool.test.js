@@ -383,7 +383,7 @@ Deno.test('BufferPool - multiple acquire/release cycles', async () => {
 });
 
 // Test: Acquire from dirty pool when clean pool is empty
-Deno.test('BufferPool - acquire from dirty pool when clean pool empty', async () => {
+Deno.test('BufferPool - acquire from dirty pool when clean pool empty', () => {
 	const pool = new BufferPool({ lowWaterMark: 0, highWaterMark: 10 });
 
 	// Acquire and release to populate dirty pool
