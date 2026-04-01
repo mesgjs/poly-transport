@@ -51,6 +51,7 @@ export class ChannelFlowControl {
 	#readLimit;                // Max read (local buffer) limit
 
 	// Private outbound state
+	#allWritesAcked = null;    // Promise for all pending writes ACKed
 	#nextWriteSeq = 1;         // Sequence number to use on next send
 	#writeAckInfo = new Map(); // Map<seq, {bytes}> of sent but not ACK'd chunks
 	#writeLimit;               // Max buffer bytes remote is willing to receive
@@ -95,6 +96,21 @@ export class ChannelFlowControl {
 	 */
 	get ackableChunks () {
 		return this.#ackableChunks;
+	}
+
+	/**
+	 * Wait for all pending writes to be ACKed (e.g. when channel is closing)
+	 * @returns {undefined|Promise} - Resolves when no writes are pending ACKs
+	 */
+	/* async */ allWritesAcked () {
+		if (!this.#writeAckInfo.size) return; // Nothing pending right now
+		const existing = this.#allWritesAcked;
+		if (existing) return existing.promise;
+		const promise = {
+			promise: new Promise(([...r]) => [promise.resolve, promise.reject] = r)
+		};
+		this.#allWritesAcked = promise;
+		return promise.promise;
 	}
 
 	/**
@@ -165,8 +181,15 @@ export class ChannelFlowControl {
 	 * @returns {{ acks, bytes, duplicate, premature }}
 	 */
 	clearWriteAckInfo (base, ranges) {
-		const result = this.#clearAckInfo(base, ranges, this.#writeAckInfo, this.#nextWriteSeq);
+		const writeAckInfo = this.#writeAckInfo;
+		const result = this.#clearAckInfo(base, ranges, writeAckInfo, this.#nextWriteSeq);
 		this.#written -= result.bytes;
+
+		if (!writeAckInfo.size && this.#allWritesAcked) {
+			const resolve = this.#allWritesAcked.resolve;
+			this.#allWritesAcked = null;
+			resolve();
+		}
 
 		// Wake up waiting writer if budget is now sufficient
 		if (this.#writer && this.writeBudget >= this.#writer.bytes) {

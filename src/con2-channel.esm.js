@@ -23,6 +23,11 @@ export class Con2Channel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
+	close () {
+		const logger = this.#_.transport.logger;
+		logger.warn('Console Content Channel .close ignored');
+	}
+
 	/*
 	 * Pre-load channel's message-type id <-> name mappings
 	 */

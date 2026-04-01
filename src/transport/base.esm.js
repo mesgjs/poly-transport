@@ -10,9 +10,13 @@ import { ControlChannel } from '../control-channel.esm.js';
 import { ChannelFlowControl } from '../channel-flow-control.esm.js';
 import {
 	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID,
-	toEven, toOdd
+	TCC_DTAM_TRAN_STOP, TCC_DTAM_CHAN_REQUEST, TCC_DTAM_CHAN_RESPONSE,
+	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED,
+	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
+	StateError, toEven, toOdd
 } from '../protocol.esm.js';
 import { Eventable } from '@eventable';
+export { StateError };
 
 /**
  * Transport Base Class
@@ -68,6 +72,12 @@ export class Transport extends Eventable {
 				return;
 			}
 
+			// Initialize nextChannelId based on role
+			const { role } = _thys;
+			_thys.nextChannelId = (role === Transport.ROLE_EVEN)
+				? toEven(minChannelId)
+				: toOdd(minChannelId);
+
 			// Always include the transport control channel (TCC)
 			const { channels, channelTokens } = _thys;
 			const tccLowBuffer = _thys.tcc?.lowBufferBytes ?? _thys.lowBufferBytes;
@@ -95,6 +105,10 @@ export class Transport extends Eventable {
 			}
 
 			await _thys.startByteStream();
+
+			// Start TCC reader loop (moved from ControlChannel)
+			thys.#tccReader();
+
 			_thys.started.resolve();
 		},
 
@@ -326,10 +340,257 @@ export class Transport extends Eventable {
 	get needsEncodedText () { return true; }
 
 	/**
-	 * 
+	 * Null a channel record for reopening support
+	 * @param {symbol} token - Channel token
 	 */
-	async onChannelRequest (token, message) {
-		//
+	async nullChannel (token) {
+		const _thys = this.#_;
+		const { channels, channelTokens } = _thys;
+
+		// Get channel by token
+		const channel = channelTokens.get(token);
+		if (!channel) return;
+
+		// Get channel ID and name
+		const channelId = channels.get(channel);
+		const channelName = channel.name;
+
+		// Create nulled record
+		const nulledRecord = {
+			name: channelName,
+			id: channelId,
+			token,
+			state: Channel.STATE_CLOSED
+		};
+
+		// Remove channel object from maps
+		channelTokens.delete(token);
+		channelTokens.delete(channel);
+		channels.delete(channel);
+
+		// Keep name and ID mappings pointing to nulled record
+		channels.set(channelName, nulledRecord);
+		channels.set(channelId, nulledRecord);
+	}
+
+	/**
+	 * Handle incoming channel close message
+	 * @private
+	 * @param {Object} request - Parsed request: { channelId, discard }
+	 */
+	async #onChannelClose (request) {
+		const { channelId, discard } = request;
+		const _thys = this.#_;
+		const { channels } = _thys;
+
+		// Find channel by ID
+		const channel = channels.get(channelId);
+		if (!channel || typeof channel.close !== 'function') {
+			// Unknown channel or nulled record - protocol violation, stop transport
+			this.#logger.error(`Received chanClose for unknown or closed channel ${channelId}`);
+			await this.stop();
+			return;
+		}
+
+		// Fire and forget - don't block TCC reader
+		channel.close({ discard }).catch((err) => {
+			this.#logger.error('Error closing channel:', err);
+		});
+	}
+
+	/**
+	 * Handle incoming channel closed message
+	 * @private
+	 * @param {Object} request - Parsed request: { channelId }
+	 */
+	async #onChannelClosed (request) {
+		const { channelId } = request;
+		const _thys = this.#_;
+		const { channels, channelTokens } = _thys;
+
+		// Find channel by ID
+		const channel = channels.get(channelId);
+		if (!channel || typeof channel.onRemoteChanClosed !== 'function') {
+			// Unknown channel or nulled record - protocol violation, stop transport
+			this.#logger.error(`Received chanClosed for unknown or closed channel ${channelId}`);
+			await this.stop();
+			return;
+		}
+
+		// Get token and call channel's onRemoteChanClosed (fire and forget)
+		const token = channelTokens.get(channel);
+		channel.onRemoteChanClosed(token).catch((err) => {
+			this.#logger.error('Error handling chanClosed:', err);
+		});
+	}
+
+	/**
+	 * Handle incoming channel request (remote request from other side)
+	 * @private
+	 * @param {Object} request - Parsed request: { channelName, maxBufferBytes, maxChunkBytes }
+	 */
+	async #onChannelRequest (request) {
+		const { channelName, maxBufferBytes, maxChunkBytes } = request;
+		const _thys = this.#_;
+		const { channels, pendingChannelRequests } = _thys;
+
+		// 1. Check if channel already exists
+		const existing = channels.get(channelName);
+		if (existing && existing.state === Channel.STATE_OPEN) {
+			// Channel already exists - send rejection
+			const response = JSON.stringify({
+				name: channelName,
+				accepted: false
+			});
+			const tcc = channels.get(CHANNEL_TCC);
+			await tcc.write(TCC_DTAM_CHAN_RESPONSE[1], response);
+			return;
+		}
+
+		// 2. Emit 'newChannel' event with accept/reject methods
+		let accepted = false;
+		const event = Object.freeze({
+			channelName,
+			remoteLimits: Object.freeze({ maxBufferBytes, maxChunkBytes }),
+			accept: () => { accepted = true; },
+			reject: () => { accepted = false; }
+		});
+		await this.dispatchEvent('newChannel', event);
+
+		// 3. Check if channel was added while waiting for event handlers
+		const existingAfterEvent = channels.get(channelName);
+
+		// 4. Send response based on event handlers
+		const tcc = channels.get(CHANNEL_TCC);
+		if (accepted) {
+			let channel, channelId;
+
+			if (existingAfterEvent) {
+				// Channel was created while waiting - use its existing ID
+				channel = existingAfterEvent;
+				channelId = channel.id;
+			} else {
+				// Create new channel with new ID
+				channelId = _thys.nextChannelId;
+				_thys.nextChannelId += 2; // Increment by 2 for even/odd separation
+
+				channel = this.#createChannel(channelName, channelId, {
+					localLimit: _thys.maxBufferBytes,
+					remoteLimit: maxBufferBytes,
+					maxChunkBytes: Math.min(_thys.maxChunkBytes, maxChunkBytes)
+				});
+			}
+
+			// Send acceptance response
+			const response = JSON.stringify({
+				name: channelName,
+				accepted: true,
+				id: channelId,
+				maxBufferBytes: _thys.maxBufferBytes,
+				maxChunkBytes: _thys.maxChunkBytes
+			});
+			await tcc.write(TCC_DTAM_CHAN_RESPONSE[1], response);
+
+			// Resolve local pending request if exists
+			// NOTE: Remote request = remote approval, so channel is ready now
+			const pending = pendingChannelRequests.get(channelName);
+			if (pending) {
+				pending.resolve(channel);
+				// DON'T delete pending request yet - we still need to receive response to OUR request
+				// The pending request tracks OUR outgoing request lifecycle, not channel availability
+			}
+		} else {
+			// Send rejection response
+			const response = JSON.stringify({
+				name: channelName,
+				accepted: false
+			});
+			await tcc.write(TCC_DTAM_CHAN_RESPONSE[1], response);
+
+			// DON'T reject local pending request here!
+			// "First accept or last reject" rule: Even if we reject the remote request,
+			// the remote might still accept OUR request (messages are in-order, so they
+			// will see our request before our reject response).
+			// We must wait for the response to OUR request to complete the lifecycle.
+		}
+	}
+
+	/**
+	 * Handle incoming channel response (response to our local request)
+	 * @private
+	 * @param {Object} response - Parsed response: { name, accepted, id?, maxBufferBytes?, maxChunkBytes? }
+	 */
+	async #onChannelResponse (response) {
+		const { name, accepted, id, maxBufferBytes, maxChunkBytes } = response;
+		const _thys = this.#_;
+		const { channels, channelTokens, pendingChannelRequests } = _thys;
+
+		// 1. Lookup pending request
+		const pending = pendingChannelRequests.get(name);
+		if (!pending) {
+			// No pending request - protocol violation
+			await this.dispatchEvent('protocolViolation', {
+				type: 'unexpectedChannelResponse',
+				channelName: name
+			});
+			return;
+		}
+
+		// 2. Handle response
+		if (accepted) {
+			// Check if channel already exists (created by accepting remote request)
+			const existing = channels.get(name);
+			if (existing) {
+				// Channel was created by accepting remote request while we waited
+				// Add the second role ID (perform ID switch if remote ID is lower)
+				const token = channelTokens.get(existing);
+				const ids = existing.idsRW(token);
+				if (ids && !Transport.addRoleId(id, ids)) {
+					const error = new Error('Failed to add role ID - duplicate or invalid');
+					pending.reject(error);
+					pendingChannelRequests.delete(name);
+					return;
+				}
+				// Register new ID in channels map
+				channels.set(id, existing);
+				// NOTE: Promise already resolved when we accepted remote request
+				// This response just adds the second ID
+			} else {
+				// Channel doesn't exist yet - create it now
+				const channel = this.#createChannel(name, id, {
+					localLimit: pending.options.maxBufferBytes,
+					remoteLimit: maxBufferBytes,
+					maxChunkBytes: Math.min(pending.options.maxChunkBytes, maxChunkBytes)
+				});
+				// Resolve promise with new channel
+				pending.resolve(channel);
+			}
+		} else {
+			// Request rejected by remote
+			// Check if channel already exists (we accepted their request, they rejected ours)
+			const existing = channels.get(name);
+			if (existing) {
+				// "First accept" rule: Channel exists because we accepted their request
+				// Even though they rejected ours, the channel is valid and promise already resolved
+				// Just clean up - don't reject the promise
+			} else {
+				// No channel exists - both sides rejected or we rejected and they rejected
+				pending.reject(new Error('Channel request rejected by remote'));
+			}
+		}
+
+		// 3. Clean up pending request (NOW we can delete it - response received)
+		pendingChannelRequests.delete(name);
+	}
+
+	/**
+	 * Handle transport stop request
+	 * @private
+	 * @param {Object} request - Parsed request
+	 */
+	async #onTransportStop (request) {
+		// Stop the transport
+		await this.stop();
 	}
 
 	/**
@@ -345,86 +606,51 @@ export class Transport extends Eventable {
 		const _thys = this.#_;
 		const { channels, state, pendingChannelRequests } = _thys;
 
-		// Validate transport state
+		// 1. Validate transport state
 		if (state !== Transport.STATE_ACTIVE) {
 			throw new StateError('Transport is not active');
 		}
 
-		// Check if channel already exists and is open
+		// 2. Check if channel already exists and is open
 		const existing = channels.get(name);
-		if (existing && existing.state === 'open') {
+		if (existing && existing.state === Channel.STATE_OPEN) {
 			return existing;
 		}
 
-		// Check if request already pending - return existing channel promise
+		// 3. Check if request already pending - return existing promise
 		const pending = pendingChannelRequests.get(name);
 		if (pending) {
-			return pending.channelPromise;
+			return pending.promise;
 		}
 
-		// Merge options with defaults
+		// 4. Merge options with defaults
 		const channelOptions = {
 			maxBufferBytes: options.maxBufferBytes ?? _thys.maxBufferBytes,
 			maxChunkBytes: options.maxChunkBytes ?? _thys.maxChunkBytes,
 			lowBufferBytes: options.lowBufferBytes ?? _thys.lowBufferBytes
 		};
 
-		// Create TWO promises:
-		// 1. channelPromise - resolves when channel is ready (either direction)
-		// 2. responsePromise - resolves when remote response arrives
+		// 5. Create promise and store in #pendingChannelRequests
 		const request = { options: channelOptions };
-		request.channelPromise = new Promise((resolve, reject) => {
-			request.channelResolve = resolve;
-			request.channelReject = reject;
-		});
-		request.responsePromise = new Promise((resolve, reject) => {
-			request.responseResolve = resolve;
-			request.responseReject = reject;
+		request.promise = new Promise((resolve, reject) => {
+			request.resolve = resolve;
+			request.reject = reject;
 		});
 		pendingChannelRequests.set(name, request);
 
-		// Send request via TCC
+		// 6. Send control message via TCC
 		const tcc = channels.get(CHANNEL_TCC);
-		await tcc.requestChannel(name, channelOptions, request.responsePromise, request.responseResolve, request.responseReject);
-
-		// Handle response when it arrives
-		request.responsePromise.then((channelInfo) => {
-			// Response accepted - create or update channel
-			const { remoteLimits } = channelInfo;
-			const existingChannel = channels.get(name);
-
-			if (existingChannel) {
-				// Channel was created by accepting remote request while we waited
-				// Add the second role ID
-				const token = _thys.channelTokens.get(existingChannel);
-				const ids = existingChannel.idsRW(token);
-				if (ids && !Transport.addRoleId(channelInfo.id, ids)) {
-					const error = new Error('Failed to add role ID - duplicate or invalid');
-					request.channelReject(error);
-					throw error;
-				}
-				// Register new ID in channels map
-				channels.set(channelInfo.id, existingChannel);
-				// Channel promise resolved at creation
-			} else {
-				// Channel doesn't exist yet - create it now
-				const newChannel = this.#createChannel(name, channelInfo.id, {
-					localLimit: channelOptions.maxBufferBytes,
-					remoteLimit: remoteLimits.maxBufferBytes,
-					maxChunkBytes: Math.min(channelOptions.maxChunkBytes, remoteLimits.maxChunkBytes)
-				});
-
-				// Resolve channel promise
-				request.channelResolve(newChannel);
-			}
-		}).catch((error) => {
-			// Response rejected - reject channel promise
-			request.channelReject(error);
-			// Remove pending request
-			pendingChannelRequests.delete(name);
+		const requestData = JSON.stringify({
+			channelName: name,
+			maxBufferBytes: channelOptions.maxBufferBytes,
+			maxChunkBytes: channelOptions.maxChunkBytes
 		});
+		await tcc.write(TCC_DTAM_CHAN_REQUEST[1], requestData);
 
-		return request.channelPromise;
+		// 7. Return promise
+		// NOTE: Promise resolves as soon as channel is ready (or rejected)
+		// This can happen locally (accepting remote request) before remote response arrives
+		return request.promise;
 	}
 
 	/**
@@ -467,7 +693,7 @@ export class Transport extends Eventable {
 	 * @returns {Promise<void>} Promise resolving when the transport is stopped
 	 */
 	async stop (_thys, options = {}) {
-		if (_thys !== this.#_) throw new Error('stop not called from sub-class')
+		if (_thys !== this.#_) throw new Error('stop not called from sub-class');
 		switch (_thys.state) {
 		case Transport.STATE_STOPPING: // Already stopping/stopped - return stopping promise
 		case Transport.STATE_STOPPED:
@@ -486,6 +712,7 @@ export class Transport extends Eventable {
 		// Close all channels
 		const channelClosePromises = [];
 		for (const [token, channel] of _thys.channels) {
+			if (channel.id === CHANNEL_TCC || channel.id === CHANNEL_C2C) continue;
 			if (typeof token === 'symbol') channelClosePromises.push(
 				channel.close({ discard }).catch(err => {
 					this.#logger.error('Error closing channel:', err);
@@ -519,16 +746,67 @@ export class Transport extends Eventable {
 
 	// Subscribe to protected state (base stub)
 	_sub_ () { }
-}
 
-/**
- * State error
- */
-export class StateError extends Error {
-	constructor (message = 'Wrong state for request', details) {
-		super(message);
-		this.details = details;
+	/**
+	 * Execute the control-channel reader loop
+	 * Reads TCC messages (de-chunked by default), parses JSON, handles messages
+	 *
+	 * NOTE: No manual chunk accumulation needed - Channel de-chunks by default
+	 *
+	 * @private
+	 */
+	async #tccReader () {
+		const _thys = this.#_;
+		const tcc = _thys.channels.get(CHANNEL_TCC);
+		const { logger } = this;
+
+		for (;;) {
+			try {
+				// Read complete message (de-chunked by default, decoded to text)
+				const message = await tcc.read({ decode: true });
+				if (!message) break; // Channel closed
+
+				const { messageTypeId, text } = message;
+
+				try {
+					// Parse JSON data (already complete message thanks to default de-chunking)
+					const parsed = JSON.parse(text);
+
+					// Handle control messages
+					switch (messageTypeId) {
+					case TCC_DTAM_CHAN_REQUEST[0]:
+						await this.#onChannelRequest(parsed);
+						break;
+					case TCC_DTAM_CHAN_RESPONSE[0]:
+						await this.#onChannelResponse(parsed);
+						break;
+					case TCC_DTAM_CHAN_CLOSE[0]:
+						await this.#onChannelClose(parsed);
+						break;
+					case TCC_DTAM_CHAN_CLOSED[0]:
+						await this.#onChannelClosed(parsed);
+						break;
+					case TCC_DTAM_TRAN_STOP[0]:
+						await this.#onTransportStop(parsed);
+						break;
+					case TCC_CTLM_MESG_TYPE_REG_REQ[0]:
+						break;
+					case TCC_CTLM_MESG_TYPE_REG_RESP[0]:
+						break;
+					default:
+						// Unknown message type - protocol violation
+						logger.error(`PolyTransport protocol violation (unknown TCC message type ${messageTypeId}); stopping transport`);
+						await this.stop();
+					}
+				} finally {
+					// Always mark message as processed (enables backpressure)
+					message.done();
+				}
+			} catch (err) {
+				// Channel closed or error - exit reader loop
+				logger.error('TCC reader error:', err);
+				break;
+			}
+		}
 	}
-
-	get name () { return this.constructor.name; }
 }

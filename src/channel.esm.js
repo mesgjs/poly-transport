@@ -7,8 +7,9 @@
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
 import { Transport } from './transport/base.esm.js';
 import {
-	FLAG_EOM, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
+	FLAG_EOM, HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
+	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED, StateError,
 } from './protocol.esm.js';
 import { AsyncAppEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
@@ -33,6 +34,7 @@ export class Channel extends Eventable {
 	#ackBatchTime;              // Standard ACK batching time (msec)
 	#ackBatchTimer = null;
 	#allReader = { waiting: false };
+	#closingPromise = null;
 	#controlChunks = [];        // { header, data }[] Assembly area for channel control messages
 	#dataChunks = new Set();    // Set<{ activeType, header, data, eom, next, nextEOM }>
 	#dechunk;                   // Default de-chunking behavior
@@ -51,7 +53,6 @@ export class Channel extends Eventable {
 	#sendAckNow;
 	#state = Channel.STATE_OPEN;
 	#token;
-	#transport;
 	#typeChain = new Map();     // Typed chunk chains within dataChunks
 	#writeQueue = new TaskQueue();
 
@@ -82,7 +83,6 @@ export class Channel extends Eventable {
 		this.#nextMessageTypeId = nextMessageTypeId;
 		this.#sendAckNow = () => this.#sendAckMessage(true);
 		this.#token = token;
-		this.#transport = transport;
 		this.#flowControl = new ChannelFlowControl(localLimit, remoteLimit, {
 			ackBatchTime: this.#ackBatchTime, ackCallback: () => this.#sendAckMessage(),
 			forceAckCount: this.#forceAckCount, lowReadBytes: this.#lowReadBytes
@@ -90,6 +90,7 @@ export class Channel extends Eventable {
 
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
+			transport,
 		});
 		this._sub_(this.#_subs);
 	}
@@ -99,6 +100,13 @@ export class Channel extends Eventable {
 	 * @param {string[]} rawTypes - The requested message-types
 	 */
 	async addMessageTypes (rawTypes) {
+		// Reject if channel is closing or closed
+		if (this.#state !== Channel.STATE_OPEN) {
+			throw new StateError('Cannot register message types on closing or closed channel', {
+				state: this.#state
+			});
+		}
+
 		const types = Array.isArray(rawTypes) && rawTypes.filter((type) => typeof type === string && type !== '');
 		if (!types?.length) {
 			return Promise.resolve();
@@ -140,10 +148,81 @@ export class Channel extends Eventable {
 	 * Close the channel
 	 * @param {Object} options
 	 * @param {boolean} options.discard - Discard incoming data
+	 * @returns {Promise<void>} Resolves when channel is fully closed
 	 */
 	async close ({ discard = false } = {}) {
-		if (discard) this.#discard = true;
-		// TO DO: IMPLEMENT
+		// If already closed, return immediately
+		if (this.#state === Channel.STATE_CLOSED) {
+			return this.#closingPromise.promise;
+		}
+
+		// If already closing, switch to discard mode if requested and wait for completion
+		if (this.#state !== Channel.STATE_OPEN) {
+			if (discard && !this.#discard) {
+				this.#discard = true;
+				await this.#discardExistingInput();
+			}
+			// Wait for closure to complete
+			return this.#closingPromise.promise;
+		}
+
+		// Set discard mode if requested
+		if (discard) {
+			this.#discard = true;
+		}
+
+		// Transition to closing state
+		this.#state = Channel.STATE_CLOSING;
+		const closingPromise = this.#closingPromise = new Promise(([...r]) => [closingPromise.resolve] = r);
+
+		// Send chanClose message to remote
+		const messageType = TCC_DTAM_CHAN_CLOSE[0];
+		const data = JSON.stringify({ channelId: this.id, discard: this.#discard });
+		await this.#write(messageType, data);
+
+		// Emit beforeClose event
+		await this.dispatchEvent('beforeClose', { discard: this.#discard });
+
+		// If in discard mode, immediately ACK and discard all buffered input
+		if (this.#discard) {
+			await this.#discardExistingInput();
+		}
+
+		// Wait for all in-flight writes to be ACK'd
+		await this.#flowControl.allWritesAcked();
+
+		// Send chanClosed message
+		const closedData = JSON.stringify({ channelId: this.id });
+		await this.#write(TCC_DTAM_CHAN_CLOSED[0], closedData);
+
+		// Update state based on whether we've received remote's chanClosed
+		if (this.#state === Channel.STATE_CLOSING) {
+			this.#state = Channel.STATE_REMOTE_CLOSING;
+			// Wait for remote's chanClosed
+		} else if (this.#state === Channel.STATE_LOCAL_CLOSING) {
+			// Both sides have sent chanClosed - fully closed
+			await this.#finalizeClosure();
+		}
+		return closingPromise;
+	}
+
+	/**
+	 * Discard all existing buffered input and ACK immediately
+	 * Used when closing in discard mode
+	 */
+	async #discardExistingInput () {
+		// Mark all buffered chunks as processed
+		for (const chunk of this.#dataChunks) {
+			this.#flowControl.markProcessed(chunk.header.sequence);
+		}
+
+		// Clear all data structures
+		this.#dataChunks.clear();
+		this.#eomChunks.clear();
+		this.#typeChain.clear();
+
+		// Send ACK immediately
+		await this.#sendAckMessage(true);
 	}
 
 	/**
@@ -160,6 +239,26 @@ export class Channel extends Eventable {
 			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AsyncAppEvent)
 			await super.dispatchEvent(spec[0]);
 		}
+	}
+
+	/**
+	 * Finalize channel closure - transition to closed state and clean up
+	 */
+	async #finalizeClosure () {
+		// Transition to closed state
+		this.#state = Channel.STATE_CLOSED;
+
+		// Clear message type registrations
+		const { messageTypes } = this.#_;
+		messageTypes.clear();
+
+		// Dispatch closed event
+		await this.dispatchEvent('closed');
+
+		// Notify transport to null the channel record
+		await this.#_.transport.nullChannel(this.#token);
+
+		this.#closingPromise.resolve();
 	}
 
 	/**
@@ -203,7 +302,7 @@ export class Channel extends Eventable {
 	 * @param {undefined|null|number|string|Array|Set} spec - ID specification
 	 * @returns {IdSet|null}
 	 */
-	_getTypeIdSet (spec) {
+	#getTypeIdSet (spec) {
 		if (spec instanceof IdSet) return spec; // Already normalized
 		if (spec == null) return null;
 		const { messageTypes } = this.#_;
@@ -236,7 +335,7 @@ export class Channel extends Eventable {
 	 * @returns {boolean}
 	 */
 	hasReader (only = null) {
-		const idSet = this._getTypeIdSet(only);
+		const idSet = this.#getTypeIdSet(only);
 		const readers = this.#filteredReaders;
 
 		if (!idSet) {
@@ -347,7 +446,7 @@ export class Channel extends Eventable {
 				if (entry) {
 					// Add ID to existing entry (handles jitter settlement)
 					if (!Transport.addRoleId(id, entry.ids)) {
-						this.#transport.logger.error(`Invalid additional id ${id} for message type "${name}"`);
+						this.#_.transport.logger.error(`Invalid additional id ${id} for message type "${name}"`);
 						this.close({ discard: true });
 						return;
 					}
@@ -381,6 +480,26 @@ export class Channel extends Eventable {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Handle remote chanClosed message (called by transport)
+	 * @param {symbol} token - Transport verification token
+	 */
+	async onRemoteChanClosed (token) {
+		if (!token || token !== this.#token) {
+			throw new Error('Unauthorized');
+		}
+
+		// Update state based on current state
+		if (this.#state === Channel.STATE_CLOSING) {
+			// We're still working on our side - transition to localClosing
+			this.#state = Channel.STATE_LOCAL_CLOSING;
+		} else if (this.#state === Channel.STATE_REMOTE_CLOSING) {
+			// We already sent chanClosed, remote just sent theirs - fully closed
+			await this.#finalizeClosure();
+		}
+		// If state is OPEN or LOCAL_CLOSING, this is unexpected but we'll handle it gracefully
 	}
 
 	/**
@@ -419,7 +538,7 @@ export class Channel extends Eventable {
 	 * @returns
 	 */
 	async read ({ dechunk = true, decode = false, only, timeout } = {}) {
-		const idSet = this._getTypeIdSet(only);
+		const idSet = this.#getTypeIdSet(only);
 		if (this.hasReader(idSet)) {
 			throw new Error('Conflicting readers');
 		}
@@ -467,7 +586,7 @@ export class Channel extends Eventable {
 	 * @returns
 	 */
 	readSync (options = {}) {
-		const idSet = this._getTypeIdSet(options.only);
+		const idSet = this.#getTypeIdSet(options.only);
 		if (this.hasReader(idSet)) {
 			throw new Error('Conflicting readers');
 		}
@@ -614,6 +733,7 @@ export class Channel extends Eventable {
 	 * @param {*} data
 	 */
 	#receiveControlMessage (header, data) {
+		const logger = this.#_.transport.logger;
 		const { dataSize, eom, headerSize, messageType, sequence } = header;
 		switch (messageType) {
 		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
@@ -621,12 +741,13 @@ export class Channel extends Eventable {
 		case TCC_CTLM_MESG_TYPE_REG_RESP[0]: // Message-type registration response
 			break;
 		default:
-		 	this.#transport.logger.error(`Unknown control message (type ${messageType})`);
+		 	logger.error(`Unknown control message (type ${messageType})`);
 			this.close();
 			return;
 		}
 
 		const controlChunks = this.#controlChunks;
+		const flowControl = this.#flowControl;
 
 		/*
 		 * Accumulate control-message chunks until EOM.
@@ -634,11 +755,11 @@ export class Channel extends Eventable {
 		 * of the same type, but we can if the message-type changes.
 		 */
 		if (controlChunks.length && controlChunks[0].header.messageType !== messageType) {
-			this.#transport.logger.error(`Incomplete control message (type ${controlChunks[0].header.messageType})`);
+			logger.error(`Incomplete control message (type ${controlChunks[0].header.messageType})`);
 			this.close();
 			return;
 		}
-		if (!this.#flowControl.received(sequence, headerSize + dataSize)) {
+		if (!flowControl.received(sequence, headerSize + dataSize)) {
 			// Close channel on protocol violation
 			this.close({ discard: true });
 			return;
@@ -736,17 +857,20 @@ export class Channel extends Eventable {
 			throw new Error('Unauthorized');
 		}
 
+		const transport = this.#_.transport;
+
 		switch (header.type) {
 		case HDR_TYPE_ACK:
 			this.#receiveAckMessage(header);
 			break;
 		case HDR_TYPE_CHAN_CONTROL:
 			this.#receiveControlMessage(header, data);
+			break;
 		case HDR_TYPE_CHAN_DATA:
 			this.#receiveDataMessage(header, data);
 			break;
 		default:
-		 	this.#transport.logger.error(`Unknown header (type ${header.type})`);
+		 	transport.logger.error(`Unknown header (type ${header.type})`);
 			this.close();
 			break;
 		}
@@ -757,7 +881,7 @@ export class Channel extends Eventable {
 		if (immediate) {
 			// Remove dedicated task and send ACK now
 			this.#writeQueue.cancel(this.#sendAckNow, { resolve: null });
-			return this.#transport.sendAckMessage(this.#token, this.#flowControl);
+			return transport.sendAckMessage(this.#token, this.#flowControl);
 		}
 		if (!this.#readyToAck) {
 			// We'll piggy-back on an existing write task if possible,
@@ -796,6 +920,12 @@ export class Channel extends Eventable {
 	 * @param {Object} options.options - Additional options
 	 */
 	/* async */ write (messageType, source, options = {}) {
+		// Reject if channel is closing or closed
+		if (this.#state !== Channel.STATE_OPEN) {
+			throw new StateError('Cannot write to closing or closed channel', {
+				state: this.#state
+			});
+		}
 		return this.#write(messageType, source, { ...options, type: HDR_TYPE_CHAN_DATA });
 	}
 
@@ -810,7 +940,7 @@ export class Channel extends Eventable {
 				throw new RangeError(`Unknown message type "${messageType}" for channel.write`);
 			}
 		}
-		const transport = this.#transport;
+		const transport = this.#_.transport;
 		const maxDataBytes = this.#maxDataBytes;
 		let offset = 0, remaining = 0, chunkSize;
 		const standardBytesToReserve = () => {

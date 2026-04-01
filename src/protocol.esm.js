@@ -54,6 +54,8 @@ export const TCC_DTAM_CHAN_REQUEST = [1, 'chanReq'];
 export const TCC_DTAM_CHAN_RESPONSE = [2, 'chanResp'];
 export const TCC_CTLM_MESG_TYPE_REG_REQ = [3, 'mesgTypeReq']; // message-type registration request
 export const TCC_CTLM_MESG_TYPE_REG_RESP = [4, 'mesgTypeResp']; // message-type registration response
+export const TCC_DTAM_CHAN_CLOSE = [5, 'chanClose']; // channel close initiation
+export const TCC_DTAM_CHAN_CLOSED = [6, 'chanClosed']; // channel close completion
 
 // C2C pre-defined (foundational) message types (requirements.md:495-505)
 // (Message-types not required at transport start should be registered/mapped)
@@ -375,6 +377,23 @@ export class ProtocolViolationError extends Error {
 	constructor (description, details) {
 		super(`Protocol violation: ${description}`);
 		this.description = this.reason = description;
+		this.details = details;
+	}
+
+	get name () { return this.constructor.name; }
+}
+
+/**
+ * State error for operations incompatible with current channel/transport state.
+ */
+export class StateError extends Error {
+	/**
+	 * Create a new StateError.
+	 * @param {string} message - Error message
+	 * @param {object} details - Additional context (state, operation, etc.)
+	 */
+	constructor (message = 'Wrong state for request', details) {
+		super(message);
 		this.details = details;
 	}
 
