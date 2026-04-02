@@ -29,9 +29,10 @@ export class ControlChannel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	close () {
+	/* async */ close () {
 		const logger = this.#_.transport.logger;
 		logger.warn('Transport Control Channel .close ignored');
+		return Promise.resolve();
 	}
 
 	/**

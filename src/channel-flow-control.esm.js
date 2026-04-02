@@ -143,7 +143,7 @@ export class ChannelFlowControl {
 		clearSequence(base); // Always!
 		// Process additional + skip ranges, if any
 		let current = base;
-		for (let i = 0; i < ranges.length; i += 2) {
+		if (ranges) for (let i = 0; i < ranges.length; i += 2) {
 			const [additional, skip = 0] = ranges.slice(i, i + 2);
 
 			// Additional range: clear these sequences

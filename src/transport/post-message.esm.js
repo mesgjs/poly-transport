@@ -11,6 +11,7 @@ import {
 	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL,
 	ackHeaderSize,
 } from '../protocol.esm.js';
+import { VirtualBuffer, VirtualRWBuffer } from '../virtual-buffer.esm.js';
 
 export class PostMessageTransport extends Transport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
@@ -23,9 +24,9 @@ export class PostMessageTransport extends Transport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 
 			// Prepare configuration object
-			const { id, c2cSymbol, minChannelId, minMessageTypeId } = _thys;
+			const { transportId, c2cSymbol, minChannelId, minMessageTypeId } = _thys;
 			const config = {
-				transportId: id,
+				transportId,
 				version: 1,
 				c2cEnabled: typeof c2cSymbol === 'symbol',
 				minChannelId,
@@ -112,7 +113,7 @@ export class PostMessageTransport extends Transport {
 				if (rawData) return new VirtualBuffer(rawData);
 			})();
 			header.dataSize = (() => {
-				if (typeof data === 'string') return data.length() * 2;
+				if (typeof data === 'string') return data.length * 2;
 				if (data instanceof VirtualBuffer) return data.length;
 				return 0;
 			})();
@@ -124,13 +125,14 @@ export class PostMessageTransport extends Transport {
 	/**
 	 * Send an ACK message by itself
 	 * @param {symbol} token - The channel ID token
-	 * @param {ChannelFlowControl} flowControl - The associatec channel flow control
+	 * @param {ChannelFlowControl} flowControl - The associated channel flow control
+	 * @returns {Promise<void>}
 	 */
-	sendAckMessage (token, flowControl) {
+	/* async */ sendAckMessage (token, flowControl) {
 		const _thys = this.#_;
 		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized');
+			return Promise.reject(new Error('Unauthorized'));
 		}
 		this.#sendAckMessage(channel.id, flowControl);
 		_thys.afterWrite(); // (no deferred write)
@@ -156,12 +158,14 @@ export class PostMessageTransport extends Transport {
 	 * @param {symbol} token - The channel ID token
 	 * @param {Object} header - The message header
 	 * @param {Object} chunker - The chunking-strategy control-object
+	 * @param {boolean} [eom] - Whether to add EOM flag when remaining <= 0
+	 * @returns {Promise<number>} Byte-equivalent count for flow control
 	 */
-	sendChunk (token, header, chunker, { eom } = {}) {
+	/* async */ sendChunk (token, header, chunker, { eom } = {}) {
 		const _thys = this.#_;
 		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized');
+			return Promise.reject(new Error('Unauthorized'));
 		}
 		const numBytesSent = chunker.bytesToReserve();
 		const bufferSize = chunker.buffersize;
@@ -183,25 +187,6 @@ export class PostMessageTransport extends Transport {
 		}
 		_thys.afterWrite(); // (no deferred write)
 		return numBytesSent; // Return byte-equivalent for flow control
-	}
-
-	/**
-	 * Send a control or data message with UTF-16 textual (string) data
-	 * @param {symbol} token - The channel ID token
-	 * @param {Object} header - The message header
-	 * @param {string} data
-	 */
-	sendTextMessage (token, header, data, getAckInfo) {
-		const channel = this.#_.channelTokens.get(token);
-		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
-			throw new Error('Unauthorized');
-		}
-		const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
-		const channelId = channel.id, finalHeader = {
-			type, flags, channelId, sequence, messageType
-		};
-		this.#sendAckMessage(channelId, getAckInfo());
-		this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data });
 	}
 
 	/*

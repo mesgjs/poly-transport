@@ -4,9 +4,7 @@
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
-import { Channel } from '../channel.esm.js';
-import { Con2Channel } from '../con2-channel.esm.js';
-import { ControlChannel } from '../control-channel.esm.js';
+import { Eventable } from '@eventable';
 import { ChannelFlowControl } from '../channel-flow-control.esm.js';
 import {
 	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID,
@@ -15,7 +13,9 @@ import {
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
 	StateError, toEven, toOdd, addRoleId
 } from '../protocol.esm.js';
-import { Eventable } from '@eventable';
+import { Channel } from '../channel.esm.js';
+import { ControlChannel } from '../control-channel.esm.js';
+import { Con2Channel } from '../con2-channel.esm.js';
 export { StateError };
 
 /**
@@ -83,7 +83,7 @@ export class Transport extends Eventable {
 			const tccLowBuffer = _thys.tccOptions?.lowBufferBytes ?? _thys.lowBufferBytes;
 			const tccMaxChunk = _thys.tccOptions?.maxChunkBytes ?? _thys.maxChunkBytes;
 			const tccToken = Symbol('TCC');
-			const tcc = new ControlChannel({ token: tccToken, lowBufferBytes: tccLowBuffer, maxChunkBytes: tccMaxChunk });
+			const tcc = new ControlChannel({ id: CHANNEL_TCC, token: tccToken, lowBufferBytes: tccLowBuffer, maxChunkBytes: tccMaxChunk, transport: thys });
 			channels.set(CHANNEL_TCC, tcc);
 			channels.set(tcc, CHANNEL_TCC);
 			channelTokens.set(tccToken, tcc);
@@ -96,7 +96,7 @@ export class Transport extends Eventable {
 				const c2cLowBuffer = _thys.c2cOptions?.lowBufferBytes ?? _thys.lowBufferBytes;
 				const c2cMaxChunk = _thys.c2cOptions?.maxChunkBytes ?? _thys.maxChunkBytes;
 				const c2cToken = Symbol('c2c');
-				const c2c = new ControlChannel({ token: c2cToken, lowBufferBytes: c2cLowBuffer, maxChunkBytes: c2cMaxChunk });
+				const c2c = new Con2Channel({ id: CHANNEL_C2C, token: c2cToken, lowBufferBytes: c2cLowBuffer, maxChunkBytes: c2cMaxChunk, transport: thys });
 				channels.set(CHANNEL_C2C, c2c);
 				channels.set(c2cSymbol, c2c);
 				channels.set(c2c, CHANNEL_C2C);
@@ -618,6 +618,35 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Send a TCC message on behalf of a channel (e.g. chanClose, chanClosed)
+	 * @param {symbol} token - Channel token (for authorization and ID lookup)
+	 * @param {number} messageType - TCC message type id (must be TCC_DTAM_CHAN_CLOSE or TCC_DTAM_CHAN_CLOSED)
+	 * @param {Object} options - Additional message fields (e.g. { discard })
+	 */
+	async sendTccMessage (token, messageType, options = {}) {
+		// Validate message type
+		if (messageType !== TCC_DTAM_CHAN_CLOSE[0] && messageType !== TCC_DTAM_CHAN_CLOSED[0]) {
+			throw new RangeError(`Invalid TCC message type for sendTccMessage: ${messageType}`);
+		}
+
+		const _thys = this.#_;
+		const { channels, channelTokens } = _thys;
+
+		// Verify token and look up channel
+		const channel = channelTokens.get(token);
+		if (!channel) throw new Error('Unauthorized: unknown channel token');
+
+		// Look up channel ID
+		const channelId = channels.get(channel);
+		if (typeof channelId !== 'number') throw new Error('Channel ID not found');
+
+		// Format and send message via TCC
+		const tcc = channels.get(CHANNEL_TCC);
+		const data = JSON.stringify({ channelId, ...options });
+		await tcc.write(messageType, data);
+	}
+
+	/**
 	 * Common code to start the transport (begin reading and writing)
 	 * @returns {Promise<void>} Promise resolving when the transport is started
 	 */
@@ -656,8 +685,8 @@ export class Transport extends Eventable {
 	 * @param {number} options.timeout - Timeout in milliseconds
 	 * @returns {Promise<void>} Promise resolving when the transport is stopped
 	 */
-	async stop (_thys, options = {}) {
-		if (_thys !== this.#_) throw new Error('stop not called from sub-class');
+	async stop (options = {}) {
+		const _thys = this.#_;
 		switch (_thys.state) {
 		case Transport.STATE_STOPPING: // Already stopping/stopped - return stopping promise
 		case Transport.STATE_STOPPED:

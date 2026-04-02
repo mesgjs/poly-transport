@@ -5,7 +5,6 @@
  */
 
 import { ChannelFlowControl } from './channel-flow-control.esm.js';
-import { Transport } from './transport/base.esm.js';
 import {
 	FLAG_EOM, HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
@@ -173,12 +172,11 @@ export class Channel extends Eventable {
 
 		// Transition to closing state
 		this.#state = Channel.STATE_CLOSING;
-		const closingPromise = this.#closingPromise = new Promise(([...r]) => [closingPromise.resolve] = r);
+		const closingPromise = this.#closingPromise = {};
+		closingPromise.promise = new Promise((...r) => [closingPromise.resolve] = r);
 
-		// Send chanClose message to remote
-		const messageType = TCC_DTAM_CHAN_CLOSE[0];
-		const data = JSON.stringify({ channelId: this.id, discard: this.#discard });
-		await this.#write(messageType, data);
+		// Send chanClose message to remote via TCC
+		await this.#_.transport.sendTccMessage(this.#token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
 
 		// Emit beforeClose event
 		await this.dispatchEvent('beforeClose', { discard: this.#discard });
@@ -191,9 +189,8 @@ export class Channel extends Eventable {
 		// Wait for all in-flight writes to be ACK'd
 		await this.#flowControl.allWritesAcked();
 
-		// Send chanClosed message
-		const closedData = JSON.stringify({ channelId: this.id });
-		await this.#write(TCC_DTAM_CHAN_CLOSED[0], closedData);
+		// Send chanClosed message via TCC
+		await this.#_.transport.sendTccMessage(this.#token, TCC_DTAM_CHAN_CLOSED[0], {});
 
 		// Update state based on whether we've received remote's chanClosed
 		if (this.#state === Channel.STATE_CLOSING) {
@@ -203,7 +200,7 @@ export class Channel extends Eventable {
 			// Both sides have sent chanClosed - fully closed
 			await this.#finalizeClosure();
 		}
-		return closingPromise;
+		return closingPromise.promise;
 	}
 
 	/**
@@ -254,7 +251,7 @@ export class Channel extends Eventable {
 		}
 
 		// Reject any pending readers
-		if (this.#_.allReader?.reject) this.#allReader.reject('Closed');
+		if (this.#allReader?.reject) this.#allReader.reject('Closed');
 		for (const [_type, entry] of this.#filteredReaders) {
 			if (entry.reject) entry.reject('Closed');
 		}
@@ -279,10 +276,10 @@ export class Channel extends Eventable {
 	 */
 	#findReader (type) {
 		const allReader = this.#allReader;
-		if (allReader.waiting) return allReader;
+		if (allReader?.waiting) return allReader;
 
 		const filtered = this.#filteredReaders.get(type);
-		if (filtered.waiting) return filtered;
+		if (filtered?.waiting) return filtered;
 	}
 
 	// Distribute protected state object to subscribed sub-classes
@@ -318,7 +315,7 @@ export class Channel extends Eventable {
 		if (spec == null) return null;
 		const { messageTypes } = this.#_;
 		const ids = new IdSet();
-		const iterable = spec?.prototype[Symbol.iterator];
+		const iterable = spec?.[Symbol.iterator];
 		for (const value of iterable ? spec : [spec]) {
 			switch (typeof value) {
 			case 'number':
@@ -652,6 +649,7 @@ export class Channel extends Eventable {
 			let best = null;
 			for (const type of idSet) {
 				const chain = typeChain.get(type);
+				if (!chain) continue;
 				const candidate = dechunk ? chain.readEOM : chain.read;
 				if (candidate && (!best || candidate.sequence < best.sequence)) best = candidate;
 			}
@@ -863,7 +861,7 @@ export class Channel extends Eventable {
 	 * @param {VirtualRWBuffer} data - Optional message data
 	 */
 	receiveMessage (token, header, data) {
-		if (!token || token !== this.#_.token) {
+		if (!token || token !== this.#token) {
 			throw new Error('Unauthorized');
 		}
 

@@ -23,9 +23,10 @@ export class Con2Channel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	close () {
+	/* async */ close () {
 		const logger = this.#_.transport.logger;
 		logger.warn('Console Content Channel .close ignored');
+		return Promise.resolve();
 	}
 
 	/*

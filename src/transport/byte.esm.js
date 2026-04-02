@@ -27,6 +27,19 @@ import { TaskQueue } from '@task-queue';
 export class ByteTransport extends Transport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
 		/**
+		 * Transport-specific stop: clear write timer
+		 */
+		stop () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const { writeTimer } = _thys;
+			if (writeTimer) {
+				clearTimeout(writeTimer);
+				_thys.writeTimer = null;
+			}
+		},
+
+		/**
 		 * Handle any post-write actions
 		 * (Call from concrete sub-class writeBytes)
 		 */
@@ -398,12 +411,6 @@ export class ByteTransport extends Transport {
 			return numBytesSent;
 		});
 		return taskResult;
-	}
-
-	/* async */ stop () {
-		const writeTimer = this.#_.writeTimer;
-		if (writeTimer) clearTimeout(writeTimer);
-		return super.stop(this.#_);
 	}
 
 	/**

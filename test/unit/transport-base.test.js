@@ -381,7 +381,7 @@ Deno.test('Transport - onRemoteConfig creates C2C channel if mutually enabled', 
 	const c2c = _thys.channels.get(1); // CHANNEL_C2C = 1
 
 	assertExists(c2c);
-	assertEquals(c2c.constructor.name, 'ControlChannel');
+	assertEquals(c2c.constructor.name, 'Con2Channel');
 });
 
 Deno.test('Transport - onRemoteConfig does not create C2C if not mutually enabled', async () => {
