@@ -58,7 +58,9 @@ export class ChannelFlowControl {
 	#writer = null;            // { bytes, resolve } for TaskQueue-serialized waiting writer
 	#written = 0;              // Total bytes sent remaining to be remotely ACK'd
 
+	#channel;
 	#logger;
+	#stopped = false;
 
 	/**
 	 * Create a new FlowControl instance.
@@ -72,7 +74,7 @@ export class ChannelFlowControl {
 	 * @param {number} options.forceAckChunks - number of ACKable chunks that overrides ackBatchTime
 	 * @param {number} options.lowReadBytes - read-level below which to start sending ACKs
 	 */
-	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, forceAckBytes, forceAckChunks, logger, lowReadBytes } = {}) {
+	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, channel, forceAckBytes, forceAckChunks, logger, lowReadBytes } = {}) {
 		this.#ackBatchTime = ackBatchTime ?? 0; // Default 0 = no minimum delay between ACKs
 		this.#ackCallback = ackCallback;
 		this.#forceAckBytes = forceAckBytes ?? 0; // Default 0 = no delay override
@@ -81,6 +83,7 @@ export class ChannelFlowControl {
 		this.#readLimit = readLimit;
 		this.#writeLimit = writeLimit;
 
+		this.#channel = channel;
 		this.#logger = logger || console;
 	}
 
@@ -106,10 +109,8 @@ export class ChannelFlowControl {
 		if (!this.#writeAckInfo.size) return; // Nothing pending right now
 		const existing = this.#allWritesAcked;
 		if (existing) return existing.promise;
-		const promise = {
-			promise: new Promise(([...r]) => [promise.resolve, promise.reject] = r)
-		};
-		this.#allWritesAcked = promise;
+		const promise = this.#allWritesAcked = {};
+		promise.promise = new Promise((...r) => [promise.resolve, promise.reject] = r);
 		return promise.promise;
 	}
 
@@ -165,7 +166,6 @@ export class ChannelFlowControl {
 	 */
 	clearReadAckInfo (base, ranges) {
 		const result = this.#clearAckInfo(base, ranges, this.#readAckInfo, this.#nextReadSeq);
-		const batchTime = this.#ackBatchTime;
 		this.#ackableBytes -= result.bytes;
 		this.#ackableChunks -= result.acks;
 		this.#read -= result.bytes;
@@ -209,10 +209,10 @@ export class ChannelFlowControl {
 	 *
 	 * Note: Sequences are guaranteed to be in order (`received` enforces this).
 	 *
-	 * @returns {{ base: number, ranges: number[] } | null} ACK info or null if nothing to ACK
+	 * @returns {{ base: number, ranges: number[], complete: boolean } | { complete: true}} ACK info
 	 */
 	getAckInfo () {
-		if (!this.#ackableChunks) return null;
+		if (!this.#ackableChunks) return { complete: true };
 
 		// Filter for consumed chunks only (no sorting needed - already in order)
 		const processed = [];
@@ -403,14 +403,21 @@ export class ChannelFlowControl {
 		const ackBytes = this.#ackableBytes, ackChunks = this.#ackableChunks, batchTime = this.#ackBatchTime;
 		const forceBytes = this.#forceAckBytes, forceChunks = this.#forceAckChunks;
 		if ((!justSent && !this.#ackBatchTimer) || (!batchTime && ackChunks) || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
+			if (this.#ackBatchTimer) {
+				console.log(`cancelling ${this.#channel?.name} batch timer`);
+				clearTimeout(this.#ackBatchTimer);
+				this.#ackBatchTimer = null;
+			}
 			this.#acksPending = true;
 			queueMicrotask(this.#ackCallback);
 			return;
 		}
 
-		if (justSent && batchTime) { // Start the batching timer if we just sent ACKs
+		if (justSent && batchTime && !this.#ackBatchTimer && !this.#stopped) { // Start the batching timer if we just sent ACKs
+			console.log(`starting ${this.#channel?.name} batch timer`);
 			this.#ackBatchTimer = setTimeout(() => {
 				this.#ackBatchTimer = null;
+				console.log(`batch timer for ${this.#channel?.name} expired; scheduling`);
 				this.#scheduleAcks(); // Recheck after batching delay
 			}, batchTime);
 		}
@@ -424,6 +431,23 @@ export class ChannelFlowControl {
 		const seq = this.#nextWriteSeq++;
 		this.#writeAckInfo.set(seq, { bytes });
 		this.#written += bytes;
+	}
+
+	/**
+	 * Allow updating ackBatchTime for channel-close in discard mode
+	 * @param {number} time 
+	 */
+	setAckBatchTime (time) {
+		this.#ackBatchTime = time;
+	}
+
+	/**
+	 * Stop any running batch timer when finalizing channel closure
+	 */
+	stop () {
+		const timer = this.#ackBatchTimer;
+		if (timer) clearTimeout(timer);
+		this.#stopped = true;
 	}
 
 	/**

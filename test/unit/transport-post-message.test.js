@@ -5,7 +5,7 @@ import { BufferPool } from '../../src/buffer-pool.esm.js';
 import {
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, HDR_TYPE_HANDSHAKE,
 	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL,
-	ackHeaderSize,
+	ackHeaderSize, TCC_DTAM_CHAN_REQUEST,
 } from '../../src/protocol.esm.js';
 
 /**
@@ -13,16 +13,16 @@ import {
  * Captures outgoing messages and allows simulating incoming messages.
  */
 class MockGateway {
-	#listeners = new Map();
-	#sentMessages = [];
+	listeners = new Map();
+	sentMessages = [];
 
 	addEventListener (type, handler) {
-		if (!this.#listeners.has(type)) this.#listeners.set(type, []);
-		this.#listeners.get(type).push(handler);
+		if (!this.listeners.has(type)) this.listeners.set(type, []);
+		this.listeners.get(type).push(handler);
 	}
 
 	removeEventListener (type, handler) {
-		const handlers = this.#listeners.get(type);
+		const handlers = this.listeners.get(type);
 		if (handlers) {
 			const idx = handlers.indexOf(handler);
 			if (idx >= 0) handlers.splice(idx, 1);
@@ -30,29 +30,34 @@ class MockGateway {
 	}
 
 	postMessage (data, transfer) {
-		this.#sentMessages.push({ data, transfer });
+		this.sentMessages.push({ data, transfer });
 	}
 
 	// Simulate receiving a message from the remote side
 	simulateMessage (data) {
-		const handlers = this.#listeners.get('message') || [];
+		const handlers = this.listeners.get('message') || [];
 		const event = { data };
 		for (const handler of handlers) handler(event);
 	}
 
 	// Get all messages sent via postMessage
 	getSentMessages () {
-		return [...this.#sentMessages];
+		return [...this.sentMessages];
 	}
 
 	// Clear sent messages
 	clearSentMessages () {
-		this.#sentMessages = [];
+		this.sentMessages = [];
 	}
 
 	// Get the most recently sent message
 	getLastSentMessage () {
-		return this.#sentMessages[this.#sentMessages.length - 1];
+		return this.sentMessages[this.sentMessages.length - 1];
+	}
+
+	// Get count of registered listeners for a given event type
+	getListenerCount (type) {
+		return this.listeners.get(type)?.length ?? 0;
 	}
 }
 
@@ -110,13 +115,10 @@ Deno.test('PostMessageTransport - constructor creates transport with gateway', (
 
 Deno.test('PostMessageTransport - constructor registers message listener on gateway', () => {
 	const gateway = new MockGateway();
-	// If no listener was registered, simulateMessage would have no effect
-	// We verify indirectly: sending a non-PolyTransport message should not throw
 	const transport = new MockPostMessageTransport({ gateway });
 
-	// Should not throw when receiving a non-PolyTransport message
-	gateway.simulateMessage({ protocol: 'other', header: {}, data: {} });
-	assert(true, 'No error thrown for non-PolyTransport message');
+	// Verify a 'message' listener was actually registered on the gateway
+	assertEquals(gateway.getListenerCount('message'), 1, 'Exactly one message listener should be registered');
 });
 
 Deno.test('PostMessageTransport - constructor accepts bufferPool option', () => {
@@ -343,6 +345,10 @@ Deno.test('PostMessageTransport - processes ACK message and routes to channel', 
 	const transport = new MockPostMessageTransport({ gateway });
 	const _thys = transport.getProtectedState();
 
+	// Track protocol violations
+	let violation = null;
+	transport.addEventListener('protocolViolation', (event) => { violation = event.detail; });
+
 	// Start and complete handshake
 	const startPromise = transport.start();
 	gateway.simulateMessage({
@@ -358,8 +364,14 @@ Deno.test('PostMessageTransport - processes ACK message and routes to channel', 
 	});
 	await startPromise;
 
-	// Send ACK for TCC (channel 0)
-	// Should not throw
+	// Initiate a channel request so that TCC sends sequence 1 (a chanRequest message).
+	// We don't await the result - we just need the write to happen so sequence 1 is assigned.
+	transport.requestChannel('test-channel').catch(() => {});
+
+	// Give time for the channel request write to be queued/sent
+	await new Promise((r) => setTimeout(r, 20));
+
+	// Now send ACK for TCC sequence 1 (the chanRequest message we just sent)
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
@@ -374,8 +386,10 @@ Deno.test('PostMessageTransport - processes ACK message and routes to channel', 
 	// Give time for async processing
 	await new Promise((r) => setTimeout(r, 20));
 
-	// Should have processed without errors
-	assert(true, 'ACK message processed without error');
+	// Verify ACK was processed without protocol violation
+	assertEquals(violation, null, 'ACK should be processed without protocol violation');
+	// Transport should still be active (not stopped due to error)
+	assertEquals(transport.state, Transport.STATE_ACTIVE, 'Transport should remain active after valid ACK');
 
 	await transport.stop();
 });
@@ -405,8 +419,16 @@ Deno.test('PostMessageTransport - ACK message computes headerSize from ranges', 
 	});
 	await startPromise;
 
-	// Send ACK with ranges
-	const ranges = [5, 2, 3]; // 3 range bytes
+	// Send 3 channel requests so TCC sequences 1-3 are assigned (nextWriteSeq becomes 4).
+	// We don't await results - we just need the writes to happen.
+	for (let i = 0; i < 3; i++) {
+		transport.requestChannel(`test-channel-${i}`).catch(() => {});
+	}
+	await new Promise((r) => setTimeout(r, 20));
+
+	// Send ACK with 3 range bytes (include=1, skip=0, include=1 → ACKs sequences 1, 2, 3).
+	// ranges.length === 3 is what matters for the headerSize assertion.
+	const ranges = [1, 0, 1]; // 3 range bytes; ACKs base=1, seq 2, then seq 3
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
@@ -420,11 +442,10 @@ Deno.test('PostMessageTransport - ACK message computes headerSize from ranges', 
 
 	await new Promise((r) => setTimeout(r, 20));
 
-	// Verify headerSize was computed correctly
-	if (receivedHeader) {
-		assertEquals(receivedHeader.headerSize, ackHeaderSize(ranges.length));
-		assertEquals(receivedHeader.dataSize, 0);
-	}
+	// Verify the interceptor was called and headerSize was computed correctly
+	assertExists(receivedHeader, 'ACK receiveMessage interceptor should have been called');
+	assertEquals(receivedHeader.headerSize, ackHeaderSize(ranges.length));
+	assertEquals(receivedHeader.dataSize, 0);
 
 	await transport.stop();
 });
@@ -452,7 +473,11 @@ Deno.test('PostMessageTransport - ACK message with no ranges has correct headerS
 	});
 	await startPromise;
 
-	// ACK with no ranges (ranges omitted)
+	// Send 1 channel request so TCC sequence 1 is assigned (nextWriteSeq becomes 2).
+	transport.requestChannel('test-channel').catch(() => {});
+	await new Promise((r) => setTimeout(r, 20));
+
+	// ACK with no ranges (ranges omitted) - ACKs only base sequence 1
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
@@ -466,17 +491,16 @@ Deno.test('PostMessageTransport - ACK message with no ranges has correct headerS
 
 	await new Promise((r) => setTimeout(r, 20));
 
-	if (receivedHeader) {
-		assertEquals(receivedHeader.headerSize, ackHeaderSize(0));
-		assertEquals(receivedHeader.dataSize, 0);
-	}
+	assertExists(receivedHeader, 'ACK receiveMessage interceptor should have been called');
+	assertEquals(receivedHeader.headerSize, ackHeaderSize(0));
+	assertEquals(receivedHeader.dataSize, 0);
 
 	await transport.stop();
 });
 
 // ─── onMessage / Channel Data Reception Tests ─────────────────────────────────
 
-Deno.test('PostMessageTransport - processes channel control message', async () => {
+Deno.test('PostMessageTransport - processes TCC data message (chanRequest)', async () => {
 	const gateway = new MockGateway();
 	const transport = new MockPostMessageTransport({ gateway });
 	const _thys = transport.getProtectedState();
@@ -495,15 +519,16 @@ Deno.test('PostMessageTransport - processes channel control message', async () =
 	});
 	await startPromise;
 
-	// Send channel control message to TCC (channel 0)
-	// Should not throw
+	gateway.clearSentMessages();
+
+	// Send a chanRequest data message to TCC (channel 0, messageType=TCC_DTAM_CHAN_REQUEST[0])
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
-			type: HDR_TYPE_CHAN_CONTROL,
+			type: HDR_TYPE_CHAN_DATA,
 			channelId: 0,
 			sequence: 1,
-			messageType: 1, // TCC_DTAM_CHAN_REQUEST
+			messageType: TCC_DTAM_CHAN_REQUEST[0],
 			flags: FLAG_EOM,
 		},
 		data: JSON.stringify({ channelName: 'test', maxBufferBytes: 65536, maxChunkBytes: 16384 }),
@@ -511,20 +536,26 @@ Deno.test('PostMessageTransport - processes channel control message', async () =
 
 	await new Promise((r) => setTimeout(r, 20));
 
-	assert(true, 'Channel control message processed without error');
+	// Verify the chanRequest was processed: transport should have sent a chanResponse back
+	// (messageType=TCC_DTAM_CHAN_RESPONSE[0]) via the TCC (channel 0)
+	const sentMessages = gateway.getSentMessages();
+	const chanResponseMessages = sentMessages.filter((m) =>
+		m.data?.header?.type === HDR_TYPE_CHAN_DATA &&
+		m.data?.header?.channelId === 0 &&
+		m.data?.header?.messageType === 2 // TCC_DTAM_CHAN_RESPONSE[0]
+	);
+	assertEquals(chanResponseMessages.length, 1, 'Transport should send a chanResponse after receiving chanRequest');
 
 	await transport.stop();
 });
 
-Deno.test('PostMessageTransport - channel message sets headerSize to DATA_HEADER_BYTES', async () => {
+Deno.test('PostMessageTransport - channel data message sets headerSize to DATA_HEADER_BYTES', async () => {
 	const gateway = new MockGateway();
 	const transport = new MockPostMessageTransport({ gateway });
 
 	let receivedHeader = null;
 	transport.setReceiveMessageInterceptor((header, data) => {
-		if (header.type === HDR_TYPE_CHAN_CONTROL || header.type === HDR_TYPE_CHAN_DATA) {
-			receivedHeader = header;
-		}
+		if (header.type === HDR_TYPE_CHAN_DATA) receivedHeader = header;
 	});
 
 	const startPromise = transport.start();
@@ -541,13 +572,14 @@ Deno.test('PostMessageTransport - channel message sets headerSize to DATA_HEADER
 	});
 	await startPromise;
 
+	// Send a TCC data message (chanRequest) - valid HDR_TYPE_CHAN_DATA on TCC
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
-			type: HDR_TYPE_CHAN_CONTROL,
+			type: HDR_TYPE_CHAN_DATA,
 			channelId: 0,
 			sequence: 1,
-			messageType: 1,
+			messageType: TCC_DTAM_CHAN_REQUEST[0],
 			flags: FLAG_EOM,
 		},
 		data: JSON.stringify({ channelName: 'test', maxBufferBytes: 65536, maxChunkBytes: 16384 }),
@@ -555,20 +587,19 @@ Deno.test('PostMessageTransport - channel message sets headerSize to DATA_HEADER
 
 	await new Promise((r) => setTimeout(r, 20));
 
-	if (receivedHeader) {
-		assertEquals(receivedHeader.headerSize, DATA_HEADER_BYTES);
-	}
+	assertExists(receivedHeader, 'Channel data message receiveMessage interceptor should have been called');
+	assertEquals(receivedHeader.headerSize, DATA_HEADER_BYTES);
 
 	await transport.stop();
 });
 
-Deno.test('PostMessageTransport - channel message with string data passes string through', async () => {
+Deno.test('PostMessageTransport - channel data message with string data passes string through', async () => {
 	const gateway = new MockGateway();
 	const transport = new MockPostMessageTransport({ gateway });
 
 	let receivedData = undefined;
 	transport.setReceiveMessageInterceptor((header, data) => {
-		if (header.type === HDR_TYPE_CHAN_CONTROL) receivedData = data;
+		if (header.type === HDR_TYPE_CHAN_DATA) receivedData = data;
 	});
 
 	const startPromise = transport.start();
@@ -586,13 +617,14 @@ Deno.test('PostMessageTransport - channel message with string data passes string
 	await startPromise;
 
 	const testString = JSON.stringify({ channelName: 'test', maxBufferBytes: 65536, maxChunkBytes: 16384 });
+	// Send a TCC data message (chanRequest) with string data
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
-			type: HDR_TYPE_CHAN_CONTROL,
+			type: HDR_TYPE_CHAN_DATA,
 			channelId: 0,
 			sequence: 1,
-			messageType: 1,
+			messageType: TCC_DTAM_CHAN_REQUEST[0],
 			flags: FLAG_EOM,
 		},
 		data: testString,
@@ -600,21 +632,20 @@ Deno.test('PostMessageTransport - channel message with string data passes string
 
 	await new Promise((r) => setTimeout(r, 20));
 
-	if (receivedData !== undefined) {
-		assertEquals(typeof receivedData, 'string');
-		assertEquals(receivedData, testString);
-	}
+	assertExists(receivedData, 'Channel data message receiveMessage interceptor should have been called with data');
+	assertEquals(typeof receivedData, 'string');
+	assertEquals(receivedData, testString);
 
 	await transport.stop();
 });
 
-Deno.test('PostMessageTransport - channel message with null data has zero dataSize', async () => {
+Deno.test('PostMessageTransport - channel data message with null data has zero dataSize', async () => {
 	const gateway = new MockGateway();
 	const transport = new MockPostMessageTransport({ gateway });
 
 	let receivedHeader = null;
 	transport.setReceiveMessageInterceptor((header, data) => {
-		if (header.type === HDR_TYPE_CHAN_CONTROL) receivedHeader = header;
+		if (header.type === HDR_TYPE_CHAN_DATA) receivedHeader = header;
 	});
 
 	const startPromise = transport.start();
@@ -631,13 +662,14 @@ Deno.test('PostMessageTransport - channel message with null data has zero dataSi
 	});
 	await startPromise;
 
+	// Send a TCC data message with null data (tranStop has no payload)
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
-			type: HDR_TYPE_CHAN_CONTROL,
+			type: HDR_TYPE_CHAN_DATA,
 			channelId: 0,
 			sequence: 1,
-			messageType: 1,
+			messageType: TCC_DTAM_CHAN_REQUEST[0],
 			flags: FLAG_EOM,
 		},
 		data: null, // No data
@@ -645,9 +677,8 @@ Deno.test('PostMessageTransport - channel message with null data has zero dataSi
 
 	await new Promise((r) => setTimeout(r, 20));
 
-	if (receivedHeader) {
-		assertEquals(receivedHeader.dataSize, 0);
-	}
+	assertExists(receivedHeader, 'Channel data message receiveMessage interceptor should have been called');
+	assertEquals(receivedHeader.dataSize, 0);
 
 	await transport.stop();
 });
@@ -704,6 +735,7 @@ Deno.test('PostMessageTransport - sendAckMessage sends ACK via postMessage', asy
 
 	// Create mock flow control with ACK info
 	const mockFlowControl = {
+		clearReadAckInfo: () => {},
 		getAckInfo: () => ({ base: 1, ranges: [] }),
 	};
 
@@ -751,6 +783,7 @@ Deno.test('PostMessageTransport - sendAckMessage with no ACK info sends nothing'
 
 	// Flow control with no ACK info (base === undefined)
 	const mockFlowControl = {
+		clearReadAckInfo: () => {},
 		getAckInfo: () => ({ base: undefined, ranges: [] }),
 	};
 
@@ -789,6 +822,7 @@ Deno.test('PostMessageTransport - sendAckMessage includes baseSequence and range
 	const token = _thys.channelTokens.get(tcc);
 
 	const mockFlowControl = {
+		clearReadAckInfo: () => {},
 		getAckInfo: () => ({ base: 42, ranges: [5, 2, 3] }),
 	};
 
@@ -858,7 +892,7 @@ Deno.test('PostMessageTransport - sendChunk sends string data via postMessage', 
 	const testString = 'Hello, World!';
 	let remaining = testString.length;
 	const mockChunker = {
-		buffersize: null, // null = UTF-16 string mode
+		bufferSize: null, // null = UTF-16 string mode
 		bytesToReserve: () => testString.length * 2,
 		nextChunk: () => {
 			remaining = 0;
@@ -915,7 +949,7 @@ Deno.test('PostMessageTransport - sendChunk sets EOM flag when eom=true and rema
 	const testString = 'test';
 	let remaining = testString.length;
 	const mockChunker = {
-		buffersize: null,
+		bufferSize: null,
 		bytesToReserve: () => testString.length * 2,
 		nextChunk: () => {
 			remaining = 0;
@@ -966,7 +1000,7 @@ Deno.test('PostMessageTransport - sendChunk does not set EOM flag when remaining
 	const testString = 'test';
 	// remaining stays > 0 (simulating more data to come)
 	const mockChunker = {
-		buffersize: null,
+		bufferSize: null,
 		bytesToReserve: () => testString.length * 2,
 		nextChunk: () => testString,
 		remaining: 100, // Still more data remaining
@@ -1014,7 +1048,7 @@ Deno.test('PostMessageTransport - sendChunk includes correct header fields', asy
 	const testString = 'test';
 	let remaining = testString.length;
 	const mockChunker = {
-		buffersize: null,
+		bufferSize: null,
 		bytesToReserve: () => testString.length * 2,
 		nextChunk: () => {
 			remaining = 0;
@@ -1074,7 +1108,7 @@ Deno.test('PostMessageTransport - sendChunk returns byte count', async () => {
 	const expectedBytes = testString.length * 2;
 	let remaining = testString.length;
 	const mockChunker = {
-		buffersize: null,
+		bufferSize: null,
 		bytesToReserve: () => expectedBytes,
 		nextChunk: () => {
 			remaining = 0;
@@ -1364,14 +1398,9 @@ Deno.test('PostMessageTransport - getChannel returns undefined before handshake'
 
 // ─── Protocol Violation Tests ─────────────────────────────────────────────────
 
-Deno.test('PostMessageTransport - unknown channel ID triggers protocolViolation event', async () => {
+Deno.test('PostMessageTransport - unknown channel ID stops transport', async () => {
 	const gateway = new MockGateway();
 	const transport = new MockPostMessageTransport({ gateway });
-
-	let violation = null;
-	transport.addEventListener('protocolViolation', (event) => {
-		violation = event.detail;
-	});
 
 	const startPromise = transport.start();
 	gateway.simulateMessage({
@@ -1387,7 +1416,7 @@ Deno.test('PostMessageTransport - unknown channel ID triggers protocolViolation 
 	});
 	await startPromise;
 
-	// Send message to unknown channel ID
+	// Send message to unknown channel ID - transport logs error and stops
 	gateway.simulateMessage({
 		protocol: PROTOCOL,
 		header: {
@@ -1402,8 +1431,8 @@ Deno.test('PostMessageTransport - unknown channel ID triggers protocolViolation 
 
 	await new Promise((r) => setTimeout(r, 50));
 
-	assertExists(violation);
-	assertEquals(violation.type, 'unknownChannelId');
+	// Transport should have stopped due to unknown channel ID
+	assertEquals(transport.state, Transport.STATE_STOPPED, 'Transport should stop when unknown channel ID is received');
 });
 
 // ─── Inheritance Tests ────────────────────────────────────────────────────────

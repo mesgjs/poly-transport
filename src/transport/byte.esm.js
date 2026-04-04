@@ -114,11 +114,11 @@ export class ByteTransport extends Transport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 
-			const { transportId, c2cSymbol, minChannelId, minMessageTypeId, outputBuffer } = _thys;
+			const { id, c2cSymbol, minChannelId, minMessageTypeId, outputBuffer } = _thys;
 
 			// Prepare configuration object
 			const config = {
-				transportId,
+				transportId: id,
 				version: 1,
 				c2cEnabled: typeof c2cSymbol === 'symbol',
 				minChannelId,

@@ -7,7 +7,8 @@ import {
 	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
 	RESERVE_ACK_BYTES, DATA_HEADER_BYTES,
-	encodeAckHeaderInto, encodeChannelHeaderInto
+	encodeAckHeaderInto, encodeChannelHeaderInto,
+	TCC_DTAM_CHAN_REQUEST,
 } from '../../src/protocol.esm.js';
 
 // Mock byte transport with controllable I/O
@@ -151,7 +152,7 @@ Deno.test('ByteTransport - sendHandshake schedules immediate write', async () =>
 
 	// Check that write was triggered (data should be in write buffer, not committed buffer)
 	const writes = transport.getWrites();
-	assertEquals(writes.length > 0, true);
+	assert(writes.length > 0, 'sendHandshake should have triggered a write');
 
 	await transport.stop();
 });
@@ -309,7 +310,7 @@ Deno.test('ByteTransport - scheduleWrite triggers immediate write when forced', 
 
 	// Should have written
 	const writes = transport.getWrites();
-	assertEquals(writes.length > 0, true);
+	assert(writes.length > 0, 'scheduleWrite(true) should have triggered a write');
 
 	await transport.stop();
 });
@@ -351,7 +352,7 @@ Deno.test('ByteTransport - scheduleWrite triggers write when over threshold', as
 
 	// Should have written
 	const writes = transport.getWrites();
-	assertEquals(writes.length > 0, true);
+	assert(writes.length > 0, 'scheduleWrite should have triggered a write when over threshold');
 
 	await transport.stop();
 });
@@ -402,7 +403,7 @@ Deno.test('ByteTransport - sendAckMessage encodes ACK header', async () => {
 	await transport.writeBytes();
 
 	const writes = transport.getWrites();
-	assertEquals(writes.length > 0, true);
+	assertEquals(writes.length, 1, 'sendAckMessage should have produced exactly one write');
 
 	// Verify ACK header structure
 	const ackData = writes[0];
@@ -469,7 +470,7 @@ Deno.test('ByteTransport - sendChunk encodes channel header', async () => {
 	await transport.writeBytes();
 
 	const writes = transport.getWrites();
-	assertEquals(writes.length > 0, true);
+	assertEquals(writes.length, 1, 'sendChunk should have produced exactly one write');
 
 	// Verify channel header structure
 	const chunkData = writes[0];
@@ -553,8 +554,8 @@ Deno.test('ByteTransport - byteReader processes greeting and config', async () =
 	// Wait for processing
 	await new Promise((r) => setTimeout(r, 50));
 
-	// Should have processed config
-	assertEquals(_thys.role !== undefined, true);
+	// Should have processed config and determined role
+	assertExists(_thys.role, 'Role should be set after processing remote config');
 
 	await transport.stop();
 });
@@ -563,10 +564,10 @@ Deno.test('ByteTransport - byteReader processes byte stream marker', async () =>
 	const transport = new MockByteTransport();
 	const _thys = transport.getProtectedState();
 
-	// Start reader in background
-	_thys.startReader();
+	// Start transport (which starts the reader)
+	const startPromise = transport.start();
 
-	// Send handshake first
+	// Send handshake first (through the byte reader in line mode)
 	const config = {
 		transportId: 'remote-id',
 		version: 1,
@@ -580,14 +581,14 @@ Deno.test('ByteTransport - byteReader processes byte stream marker', async () =>
 	// Wait for handshake processing
 	await new Promise((r) => setTimeout(r, 50));
 
-	// Send byte stream marker
+	// Send byte stream marker to transition to byte-stream mode
 	transport.simulateReceive(START_BYTE_STREAM);
 
-	// Wait for processing
-	await new Promise((r) => setTimeout(r, 50));
+	// Wait for transport to become active (byte stream mode transition completes start)
+	await startPromise;
 
-	// Should have transitioned to byte stream mode
-	// (verified by not throwing errors)
+	// Verify transport is now active (byte stream mode was entered)
+	assertEquals(transport.state, Transport.STATE_ACTIVE, 'Transport should be active after byte stream marker');
 
 	await transport.stop();
 });
@@ -632,12 +633,31 @@ Deno.test('ByteTransport - byteReader decodes ACK messages', async () => {
 	});
 	await startPromise;
 
-	// Create ACK message
+	// Simulate the remote sending a chanRequest to us.
+	// The TCC reader will process it and send a chanResponse (sequence 1 on TCC).
+	// This advances nextWriteSeq to 2, making an ACK for sequence 1 valid.
+	const chanReqData = JSON.stringify({ channelName: 'test', maxBufferBytes: 65536, maxChunkBytes: 16384 });
+	const encoder = new TextEncoder();
+	const encodedChanReq = encoder.encode(chanReqData);
+	const chanReqBuffer = new VirtualRWBuffer([new Uint8Array(DATA_HEADER_BYTES + encodedChanReq.length)]);
+	encodeChannelHeaderInto(chanReqBuffer, 0, HDR_TYPE_CHAN_DATA, {
+		dataSize: encodedChanReq.length,
+		channelId: 0,
+		sequence: 1,
+		messageType: TCC_DTAM_CHAN_REQUEST[0]
+	});
+	chanReqBuffer.set(encodedChanReq, DATA_HEADER_BYTES);
+	transport.simulateReceive(chanReqBuffer.toUint8Array());
+
+	// Wait for TCC reader to process chanRequest and send chanResponse (sequence 1)
+	await new Promise((r) => setTimeout(r, 50));
+
+	// Create ACK message for TCC sequence 1 (the chanResponse we sent)
 	const ackBuffer = new VirtualRWBuffer([new Uint8Array(RESERVE_ACK_BYTES)]);
 	const headerSize = encodeAckHeaderInto(ackBuffer, 0, {
 		channelId: 0,
 		baseSequence: 1,
-		ranges: [5, 2, 3]
+		ranges: []
 	});
 	ackBuffer.shrink(headerSize);
 
@@ -647,8 +667,8 @@ Deno.test('ByteTransport - byteReader decodes ACK messages', async () => {
 	// Wait for processing
 	await new Promise((r) => setTimeout(r, 50));
 
-	// Should have processed without errors
-	// (verified by not throwing)
+	// Transport should still be active (no protocol violation from premature ACK)
+	assertEquals(transport.state, Transport.STATE_ACTIVE, 'Transport should remain active after valid ACK');
 
 	await transport.stop();
 });
@@ -669,16 +689,18 @@ Deno.test('ByteTransport - byteReader decodes channel data messages', async () =
 	});
 	await startPromise;
 
-	// Create channel data message
-	const testData = new Uint8Array([1, 2, 3, 4, 5]);
-	const messageBuffer = new VirtualRWBuffer([new Uint8Array(DATA_HEADER_BYTES + testData.length)]);
+	// Create a valid TCC data message (chanRequest) - messageType must be a valid TCC type
+	const chanReqData = JSON.stringify({ channelName: 'test', maxBufferBytes: 65536, maxChunkBytes: 16384 });
+	const encoder = new TextEncoder();
+	const encodedData = encoder.encode(chanReqData);
+	const messageBuffer = new VirtualRWBuffer([new Uint8Array(DATA_HEADER_BYTES + encodedData.length)]);
 	encodeChannelHeaderInto(messageBuffer, 0, HDR_TYPE_CHAN_DATA, {
-		dataSize: testData.length,
+		dataSize: encodedData.length,
 		channelId: 0,
 		sequence: 1,
-		messageType: 100
+		messageType: TCC_DTAM_CHAN_REQUEST[0]
 	});
-	messageBuffer.set(testData, DATA_HEADER_BYTES);
+	messageBuffer.set(encodedData, DATA_HEADER_BYTES);
 
 	// Simulate receiving message
 	transport.simulateReceive(messageBuffer.toUint8Array());
@@ -686,8 +708,8 @@ Deno.test('ByteTransport - byteReader decodes channel data messages', async () =
 	// Wait for processing
 	await new Promise((r) => setTimeout(r, 50));
 
-	// Should have processed without errors
-	// (verified by not throwing)
+	// Transport should still be active (chanRequest was processed, chanResponse sent)
+	assertEquals(transport.state, Transport.STATE_ACTIVE, 'Transport should remain active after valid TCC data message');
 
 	await transport.stop();
 });

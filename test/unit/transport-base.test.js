@@ -110,9 +110,9 @@ Deno.test('Transport - start changes state', async () => {
 	assertEquals(transport.stateString, 'starting');
 
 	// Trigger remote config to complete startup
-	// Use transportId that's different from local transportId
+	// Use transportId that's different from local id
 	await transport.triggerRemoteConfig({
-		transportId: _thys.transportId + 'z', // Lexically greater
+		transportId: _thys.id + 'z', // Lexically greater
 		minChannelId: 1024,
 		minMessageTypeId: 1024,
 		c2cEnabled: false
@@ -134,7 +134,7 @@ Deno.test('Transport - start returns same promise if already starting', async ()
 
 	// Complete startup
 	await transport.triggerRemoteConfig({
-		transportId: _thys.transportId + 'z',
+		transportId: _thys.id + 'z',
 		minChannelId: 1024,
 		minMessageTypeId: 1024,
 		c2cEnabled: false

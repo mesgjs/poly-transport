@@ -25,13 +25,21 @@ export class Channel extends Eventable {
 
 	static __protected = Object.freeze({
 		// Prototype protected methods
+
+		/**
+		 * Finalize channel closure on transport shutdown
+		 * Called by ControlChannel/Con2Channel when transport is stopping
+		 */
+		async onShutDown () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			await thys.#finalizeClosure();
+		},
 	});
 
 	#_;
 	#_subs = new Set();
 
-	#ackBatchTime;              // Standard ACK batching time (msec)
-	#ackBatchTimer = null;
 	#allReader = { waiting: false };
 	#closingPromise = null;
 	#controlChunks = [];        // { header, data }[] Assembly area for channel control messages
@@ -51,7 +59,6 @@ export class Channel extends Eventable {
 	#readyToAck = false;
 	#sendAckNow;
 	#state = Channel.STATE_OPEN;
-	#token;
 	#typeChain = new Map();     // Typed chunk chains within dataChunks
 	#writeQueue = new TaskQueue();
 
@@ -72,7 +79,6 @@ export class Channel extends Eventable {
 	constructor ({ ackBatchTime, dechunk = true, forceAckCount, id, localLimit, lowReadBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
 		super();
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
-		this.#ackBatchTime = ackBatchTime ?? 5; // msec
 		this.#dechunk = dechunk;
 		this.#forceAckCount = forceAckCount ?? 5; // # of ACKs
 		this.#ids = [id];
@@ -81,14 +87,16 @@ export class Channel extends Eventable {
 		this.#name = name;
 		this.#nextMessageTypeId = nextMessageTypeId;
 		this.#sendAckNow = () => this.#sendAckMessage(true);
-		this.#token = token;
 		this.#flowControl = new ChannelFlowControl(localLimit, remoteLimit, {
-			ackBatchTime: this.#ackBatchTime, ackCallback: () => this.#sendAckMessage(),
+			channel: this, logger: transport.logger,
+			ackBatchTime: ackBatchTime ?? 5, ackCallback: () => this.#sendAckMessage(),
 			forceAckCount: this.#forceAckCount, lowReadBytes: this.#lowReadBytes
 		});
 
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
+			__this: this,
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
+			token,
 			transport,
 		});
 		this._sub_(this.#_subs);
@@ -150,49 +158,46 @@ export class Channel extends Eventable {
 	 * @returns {Promise<void>} Resolves when channel is fully closed
 	 */
 	async close ({ discard = false } = {}) {
-		// If already closed, return immediately
-		if (this.#state === Channel.STATE_CLOSED) {
-			return this.#closingPromise.promise;
-		}
+		const state = this.#state;
+		const { token, transport } = this.#_;
 
-		// If already closing, switch to discard mode if requested and wait for completion
-		if (this.#state !== Channel.STATE_OPEN) {
-			if (discard && !this.#discard) {
-				this.#discard = true;
-				await this.#discardExistingInput();
-			}
-			// Wait for closure to complete
-			return this.#closingPromise.promise;
-		}
-
-		// Set discard mode if requested
-		if (discard) {
+		// Allow switch to discard mode mid-closing.
+		if (state !== Channel.STATE_OPEN && state !== Channel.STATE_CLOSED && discard && !this.#discard) {
 			this.#discard = true;
+			// Update the remote as well. This message will get echoed back to us if the remote
+			// isn't already in discard mode, but won't have any further effect.
+			await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: true });
+			await this.#discardExistingInput();
 		}
 
-		// Transition to closing state
+		// If already closing or closed, just return the existing closing promise.
+		if (state !== Channel.STATE_OPEN) {
+			return this.#closingPromise.promise;
+		}
+
+		if (discard) this.#discard = true;
+
+		// First request; initiate the closing process.
 		this.#state = Channel.STATE_CLOSING;
 		const closingPromise = this.#closingPromise = {};
 		closingPromise.promise = new Promise((...r) => [closingPromise.resolve] = r);
 
-		// Send chanClose message to remote via TCC
-		await this.#_.transport.sendTccMessage(this.#token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
+		// Notify remote via the TCC.
+		await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
 
-		// Emit beforeClose event
+		// Notify beforeClose listeners.
 		await this.dispatchEvent('beforeClose', { discard: this.#discard });
 
-		// If in discard mode, immediately ACK and discard all buffered input
-		if (this.#discard) {
-			await this.#discardExistingInput();
-		}
+		// If in discard mode, immediately ACK and discard all buffered input.
+		if (this.#discard) await this.#discardExistingInput();
 
-		// Wait for all in-flight writes to be ACK'd
+		// Wait for all in-flight writes to be ACK'd.
 		await this.#flowControl.allWritesAcked();
 
-		// Send chanClosed message via TCC
-		await this.#_.transport.sendTccMessage(this.#token, TCC_DTAM_CHAN_CLOSED[0], {});
+		// Notify remote of our completion.
+		await transport.sendTccMessage(this.#_.token, TCC_DTAM_CHAN_CLOSED[0]);
 
-		// Update state based on whether we've received remote's chanClosed
+		// Update state based on whether we've received remote's chanClosed.
 		if (this.#state === Channel.STATE_CLOSING) {
 			this.#state = Channel.STATE_REMOTE_CLOSING;
 			// Wait for remote's chanClosed
@@ -200,7 +205,7 @@ export class Channel extends Eventable {
 			// Both sides have sent chanClosed - fully closed
 			await this.#finalizeClosure();
 		}
-		return closingPromise.promise;
+		return closingPromise.promise; // Resolved in #finalizeClosure.
 	}
 
 	/**
@@ -208,9 +213,11 @@ export class Channel extends Eventable {
 	 * Used when closing in discard mode
 	 */
 	async #discardExistingInput () {
+		const flowControl = this.#flowControl;
+		flowControl.setAckBatchTime(0);
 		// Mark all buffered chunks as processed
 		for (const chunk of this.#dataChunks) {
-			this.#flowControl.markProcessed(chunk.header.sequence);
+			flowControl.markProcessed(chunk.header.sequence);
 		}
 
 		// Clear all data structures
@@ -218,7 +225,7 @@ export class Channel extends Eventable {
 		this.#eomChunks.clear();
 		this.#typeChain.clear();
 
-		// Send ACK immediately
+		// Send ACKs immediately
 		await this.#sendAckMessage(true);
 	}
 
@@ -247,7 +254,7 @@ export class Channel extends Eventable {
 
 		// Reject any message-type registrations still pending
 		for (const [_type, entry] of this.#_.messageTypes) {
-			entry.reject('Closed');
+			entry.reject?.('Closed');
 		}
 
 		// Reject any pending readers
@@ -260,13 +267,15 @@ export class Channel extends Eventable {
 		const { messageTypes } = this.#_;
 		messageTypes.clear();
 
+		this.#flowControl.stop();
+
 		// Dispatch closed event
 		await this.dispatchEvent('closed');
 
 		// Notify transport to null the channel record
-		await this.#_.transport.nullChannel(this.#token);
+		await this.#_.transport.nullChannel(this.#_.token);
 
-		this.#closingPromise.resolve();
+		this.#closingPromise?.resolve();
 	}
 
 	/**
@@ -372,7 +381,7 @@ export class Channel extends Eventable {
 		return [...this.#ids];
 	}
 	idsRW (token) { // Read/write access to ids
-		return (token && (token === this.#token) && this.#ids);
+		return (token && (token === this.#_.token) && this.#ids);
 	}
 
 	/**
@@ -495,7 +504,7 @@ export class Channel extends Eventable {
 	 * @param {symbol} token - Transport verification token
 	 */
 	async onRemoteChanClosed (token) {
-		if (!token || token !== this.#token) {
+		if (!token || token !== this.#_.token) {
 			throw new Error('Unauthorized');
 		}
 
@@ -720,6 +729,7 @@ export class Channel extends Eventable {
 		const result = this.#flowControl.clearWriteAckInfo(baseSequence, ranges);
 		if (result.duplicate) {
 			// Emit PVE for result.duplicate duplicate ACKs
+			this.#_.transport.logger.error('Received duplicate ACK');
 			const event = new AsyncAppEvent('protocolViolation', { cancelable: true, detail: { duplicateAcks: result.duplicate }});
 			await this.dispatchEvent(event);
 			if (!event.defaultPrevented) {
@@ -728,6 +738,7 @@ export class Channel extends Eventable {
 		}
 		if (result.premature) {
 			// Emit PVE for result.premature premature ACKS
+			this.#_.transport.logger.error('Received premature ACK');
 			const event = new AsyncAppEvent('protocolViolation', { cancelable: true, detail: { prematureAcks: result.premature }});
 			await this.dispatchEvent(event);
 			if (!event.defaultPrevented) {
@@ -743,7 +754,8 @@ export class Channel extends Eventable {
 	 */
 	#receiveControlMessage (header, data) {
 		const logger = this.#_.transport.logger;
-		const { dataSize, eom, headerSize, messageType, sequence } = header;
+		const { dataSize, flags, headerSize, messageType, sequence } = header;
+		const eom = header.eom = !!(flags & FLAG_EOM);
 		switch (messageType) {
 		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
 			break;
@@ -808,7 +820,8 @@ export class Channel extends Eventable {
 	 */
 	#receiveDataMessage (header, data) {
 		const _thys = this.#_;
-		const { headerSize, dataSize, sequence, messageType, eom } = header;
+		const { headerSize, dataSize, sequence, messageType, flags } = header;
+		const eom = header.eom = !!(flags & FLAG_EOM);
 
 		if (!this.#flowControl.received(sequence, headerSize + dataSize)) {
 			// Close channel on protocol violation
@@ -861,7 +874,7 @@ export class Channel extends Eventable {
 	 * @param {VirtualRWBuffer} data - Optional message data
 	 */
 	receiveMessage (token, header, data) {
-		if (!token || token !== this.#token) {
+		if (!token || token !== this.#_.token) {
 			throw new Error('Unauthorized');
 		}
 
@@ -889,7 +902,7 @@ export class Channel extends Eventable {
 		if (immediate) {
 			// Remove dedicated task and send ACK now
 			this.#writeQueue.cancel(this.#sendAckNow, { resolve: null });
-			return this.#_.transport.sendAckMessage(this.#token, this.#flowControl);
+			return this.#_.transport.sendAckMessage(this.#_.token, this.#flowControl);
 		}
 		if (!this.#readyToAck) {
 			// We'll piggy-back on an existing write task if possible,
@@ -1038,7 +1051,7 @@ export class Channel extends Eventable {
 			await flowControl.writable(bytesToReserve);
 			const sequence = flowControl.nextWriteSeq;
 			const header = { type, flags: 0, sequence, messageType };
-			const sentBytes = await transport.sendChunk(this.#token, header, chunker, { eom });
+			const sentBytes = await transport.sendChunk(this.#_.token, header, chunker, { eom });
 			flowControl.sent(sentBytes);
 		};
 		if (together) { // Send all chunks together in a single channel task

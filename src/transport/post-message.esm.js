@@ -24,9 +24,9 @@ export class PostMessageTransport extends Transport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 
 			// Prepare configuration object
-			const { transportId, c2cSymbol, minChannelId, minMessageTypeId } = _thys;
+			const { id, c2cSymbol, minChannelId, minMessageTypeId } = _thys;
 			const config = {
-				transportId,
+				transportId: id,
 				version: 1,
 				c2cEnabled: typeof c2cSymbol === 'symbol',
 				minChannelId,
@@ -150,6 +150,7 @@ export class PostMessageTransport extends Transport {
 			type: HDR_TYPE_ACK, channelId, baseSequence: base, ranges
 		};
 		this.#gateway.postMessage({ protocol: PROTOCOL, header });
+		flowControl.clearReadAckInfo(base, ranges);
 		// (caller is responsible for afterWrite)
 	}
 
@@ -168,7 +169,7 @@ export class PostMessageTransport extends Transport {
 			return Promise.reject(new Error('Unauthorized'));
 		}
 		const numBytesSent = chunker.bytesToReserve();
-		const bufferSize = chunker.buffersize;
+		const bufferSize = chunker.bufferSize;
 		const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
 		const channelId = channel.id, finalHeader = {
 			type, flags, channelId, sequence, messageType

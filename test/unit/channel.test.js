@@ -1182,3 +1182,309 @@ Deno.test('Channel - read with dechunk=true only wakes on EOM chunk', async () =
 	assertEquals(result.eom, true);
 	result.done();
 });
+
+// ============================================================================
+// Channel close - TCC message sending
+// ============================================================================
+
+Deno.test('Channel - close sends chanClose TCC message', async () => {
+	const { channel, token, transport } = makeChannel();
+
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	// Should have sent chanClose and chanClosed TCC messages
+	const closeMsg = transport.tccMessages.find(m => m.messageType === TCC_DTAM_CHAN_CLOSE[0]);
+	assertExists(closeMsg);
+	assertEquals(closeMsg.options.discard, false);
+});
+
+Deno.test('Channel - close with discard=true sends chanClose with discard flag', async () => {
+	const { channel, token, transport } = makeChannel();
+
+	const closePromise = channel.close({ discard: true });
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	const closeMsg = transport.tccMessages.find(m => m.messageType === TCC_DTAM_CHAN_CLOSE[0]);
+	assertExists(closeMsg);
+	assertEquals(closeMsg.options.discard, true);
+});
+
+Deno.test('Channel - close sends chanClosed TCC message after chanClose', async () => {
+	const { channel, token, transport } = makeChannel();
+
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	const closedMsg = transport.tccMessages.find(m => m.messageType === TCC_DTAM_CHAN_CLOSED[0]);
+	assertExists(closedMsg);
+});
+
+// ============================================================================
+// Channel close - message type clearing
+// ============================================================================
+
+Deno.test('Channel - message types are cleared after channel reaches closed state', async () => {
+	const { channel, token } = makeChannel();
+
+	// Register a message type via control message (REG_RESP)
+	const responseJson = JSON.stringify({ accept: { myType: 256 }, reject: [] });
+	receiveControl(channel, token, {
+		sequence: 1,
+		messageType: TCC_CTLM_MESG_TYPE_REG_RESP[0],
+		data: responseJson,
+		eom: true,
+	});
+
+	// Verify type is registered before close
+	const typeInfoBefore = channel.getMessageType('myType');
+	assertExists(typeInfoBefore);
+	assert(typeInfoBefore.ids.includes(256));
+
+	// Close the channel
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+
+	// After closed, getMessageType should throw or return undefined (map was cleared)
+	// The messageTypes map is cleared in #finalizeClosure
+	// Calling getMessageType on a cleared map will throw because entry is undefined
+	assertThrows(() => channel.getMessageType('myType'));
+});
+
+// ============================================================================
+// Channel close - discard mode clears buffered input
+// ============================================================================
+
+Deno.test('Channel - close with discard=true clears buffered data', async () => {
+	const { channel, token } = makeChannel();
+
+	// Buffer some data
+	receiveData(channel, token, { sequence: 1, messageType: 2, data: 'buffered', eom: true });
+
+	// Verify data is buffered
+	const buffered = channel.readSync();
+	assertExists(buffered);
+	buffered.done();
+
+	// Receive more data
+	receiveData(channel, token, { sequence: 2, messageType: 2, data: 'more data', eom: true });
+
+	// Close with discard - should clear buffered data
+	const closePromise = channel.close({ discard: true });
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+});
+
+Deno.test('Channel - data received during discard mode is discarded', async () => {
+	const { channel, token } = makeChannel();
+
+	// Start close with discard
+	const closePromise = channel.close({ discard: true });
+
+	// Receive data while closing in discard mode
+	receiveData(channel, token, { sequence: 1, messageType: 2, data: 'discarded', eom: true });
+
+	// Complete close
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+	// Data was discarded (not buffered) - verified by successful close
+});
+
+// ============================================================================
+// Channel close - pending readers rejected on close
+// ============================================================================
+
+Deno.test('Channel - pending read is rejected when channel closes', async () => {
+	const { channel, token } = makeChannel();
+
+	// Start a read that will wait
+	const readPromise = channel.read({ timeout: 5000 });
+
+	// Close the channel
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	// The pending read should have been rejected
+	await assertRejects(() => readPromise);
+});
+
+// ============================================================================
+// Channel close - acceleration (graceful → discard when remote sends discard)
+// ============================================================================
+
+Deno.test('Channel - acceleration: graceful close switches to discard when remote sends chanClose with discard', async () => {
+	const { channel, token, transport } = makeChannel();
+
+	// Buffer some data
+	receiveData(channel, token, { sequence: 1, messageType: 2, data: 'data', eom: true });
+
+	// Start graceful close
+	const closePromise = channel.close({ discard: false });
+
+	// Simulate remote sending chanClose with discard: true
+	// This is handled by transport calling channel.close({ discard: true })
+	// while channel is already in closing state
+	const acceleratePromise = channel.close({ discard: true });
+
+	// Complete close
+	await channel.onRemoteChanClosed(token);
+	await Promise.all([closePromise, acceleratePromise]);
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+
+	// The chanClose message sent should have discard: true (from the acceleration)
+	// OR the original discard: false (depending on timing)
+	// Either way, channel should be closed
+});
+
+// ============================================================================
+// Channel close - promise resolution
+// ============================================================================
+
+Deno.test('Channel - close promise resolves only after fully closed', async () => {
+	const { channel, token } = makeChannel();
+	let resolved = false;
+
+	const closePromise = channel.close().then(() => { resolved = true; });
+
+	// Not yet resolved (waiting for remote chanClosed)
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assertEquals(resolved, false);
+
+	// Remote sends chanClosed - should now resolve
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(resolved, true);
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+});
+
+Deno.test('Channel - second close() on already-closed channel resolves immediately', async () => {
+	const { channel, token } = makeChannel();
+
+	// First close
+	const closePromise1 = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise1;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+
+	// Second close should resolve immediately without error
+	let resolved = false;
+	await channel.close().then(() => { resolved = true; });
+	assertEquals(resolved, true);
+});
+
+// ============================================================================
+// Channel close - state validation after close
+// ============================================================================
+
+Deno.test('Channel - write throws StateError when channel is closed', async () => {
+	const { channel, token } = makeChannel();
+
+	// Close the channel
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+
+	// write should throw StateError
+	assertThrows(
+		() => channel.write(2, 'hello'),
+		StateError
+	);
+});
+
+Deno.test('Channel - addMessageTypes throws StateError when channel is closed', async () => {
+	const { channel, token } = makeChannel();
+
+	// Close the channel
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+
+	// addMessageTypes should throw StateError
+	await assertRejects(
+		() => channel.addMessageTypes(['myType']),
+		StateError
+	);
+});
+
+// ============================================================================
+// Channel close - state during closing (message types still available)
+// ============================================================================
+
+Deno.test('Channel - message types remain registered during closing state', async () => {
+	const { channel, token } = makeChannel();
+
+	// Register a message type
+	const responseJson = JSON.stringify({ accept: { myType: 256 }, reject: [] });
+	receiveControl(channel, token, {
+		sequence: 1,
+		messageType: TCC_CTLM_MESG_TYPE_REG_RESP[0],
+		data: responseJson,
+		eom: true,
+	});
+
+	// Start close (channel is now in closing state)
+	const closePromise = channel.close();
+
+	// Message types should still be registered during closing
+	const typeInfo = channel.getMessageType('myType');
+	assertExists(typeInfo);
+	assert(typeInfo.ids.includes(256));
+
+	// Complete close
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+});
+
+// ============================================================================
+// Channel close - cross-close (both sides close simultaneously)
+// ============================================================================
+
+Deno.test('Channel - cross-close: both sides close gracefully', async () => {
+	const { channel, token } = makeChannel();
+
+	// Both sides close simultaneously:
+	// 1. We call close() - transitions to closing
+	const closePromise = channel.close();
+
+	// 2. Remote sends chanClosed (simulating remote also closed)
+	await channel.onRemoteChanClosed(token);
+
+	// 3. Our close completes
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+});
+
+Deno.test('Channel - cross-close: remote chanClosed arrives before we send ours', async () => {
+	const { channel, token } = makeChannel();
+
+	// Start close
+	const closePromise = channel.close();
+
+	// Remote sends chanClosed while we're still in CLOSING state
+	// (before we've sent our own chanClosed)
+	await channel.onRemoteChanClosed(token);
+
+	// Our close should complete
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+});

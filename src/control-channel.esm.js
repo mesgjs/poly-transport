@@ -29,10 +29,15 @@ export class ControlChannel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	/* async */ close () {
+	/* async */ close ({ shutdown } = {}) {
+		if (shutdown && shutdown === this.#_.token) {
+			// Transport-initiated shutdown: finalize the channel to terminate the reader loop
+			return this.#_.onShutDown();
+		}
 		const logger = this.#_.transport.logger;
 		logger.warn('Transport Control Channel .close ignored');
-		return Promise.resolve();
+		// return Promise.resolve();
+		throw new Error('TCC.close should only be for shutdown');
 	}
 
 	/**
@@ -42,15 +47,16 @@ export class ControlChannel extends Channel {
 	 */
 	#preloadMessageTypes () {
 		const types = this.#_.messageTypes;
-		for (const [id, name] of [
+		for (const [id, type] of [
 			TCC_DTAM_TRAN_STOP,
 			TCC_DTAM_CHAN_REQUEST,
 			TCC_DTAM_CHAN_RESPONSE,
 			TCC_CTLM_MESG_TYPE_REG_REQ,
 			TCC_CTLM_MESG_TYPE_REG_RESP
 		]) {
-			types.set(id, name);
-			types.set(name, id);
+			const entry = { type, ids: [id] };
+			types.set(id, entry);
+			types.set(type, entry);
 		}
 	}
 

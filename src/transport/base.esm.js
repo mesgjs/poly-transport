@@ -60,11 +60,11 @@ export class Transport extends Eventable {
 			if (minRemoteMessageTypeId > minMessageTypeId) _thys.minMessageTypeId = minRemoteMessageTypeId;
 
 			// Compute even/odd role
-			const { transportId } = _thys;
+			const { id } = _thys;
 			const { transportId: remoteId } = config;
-			if (transportId < remoteId) {
+			if (id < remoteId) {
 				_thys.role = Transport.ROLE_EVEN;
-			} else if (transportId > remoteId) {
+			} else if (id > remoteId) {
 				_thys.role = Transport.ROLE_ODD;
 			} else {
 				_thys.state = Transport.STATE_CREATED;
@@ -79,13 +79,13 @@ export class Transport extends Eventable {
 				: toOdd(minChannelId);
 
 			// Always include the transport control channel (TCC)
+			// Note: TCC/C2C names are for debugging only (they're NOT indexed)
 			const { channels, channelTokens } = _thys;
 			const tccLowBuffer = _thys.tccOptions?.lowBufferBytes ?? _thys.lowBufferBytes;
 			const tccMaxChunk = _thys.tccOptions?.maxChunkBytes ?? _thys.maxChunkBytes;
 			const tccToken = Symbol('TCC');
-			const tcc = new ControlChannel({ id: CHANNEL_TCC, token: tccToken, lowBufferBytes: tccLowBuffer, maxChunkBytes: tccMaxChunk, transport: thys });
+			const tcc = new ControlChannel({ id: CHANNEL_TCC, name: '[TCC]', token: tccToken, localLimit: 0, remoteLimit: 0, lowBufferBytes: tccLowBuffer, maxChunkBytes: tccMaxChunk, transport: thys });
 			channels.set(CHANNEL_TCC, tcc);
-			channels.set(tcc, CHANNEL_TCC);
 			channelTokens.set(tccToken, tcc);
 			channelTokens.set(tcc, tccToken);
 
@@ -95,14 +95,15 @@ export class Transport extends Eventable {
 			if (typeof c2cSymbol === 'symbol' && remoteC2C) {
 				const c2cLowBuffer = _thys.c2cOptions?.lowBufferBytes ?? _thys.lowBufferBytes;
 				const c2cMaxChunk = _thys.c2cOptions?.maxChunkBytes ?? _thys.maxChunkBytes;
-				const c2cToken = Symbol('c2c');
-				const c2c = new Con2Channel({ id: CHANNEL_C2C, token: c2cToken, lowBufferBytes: c2cLowBuffer, maxChunkBytes: c2cMaxChunk, transport: thys });
+				const c2cToken = Symbol('C2C');
+				const c2c = new Con2Channel({ id: CHANNEL_C2C, name: '[C2C]', token: c2cToken, localLimit: 0, remoteLimit: 0, lowBufferBytes: c2cLowBuffer, maxChunkBytes: c2cMaxChunk, transport: thys });
 				channels.set(CHANNEL_C2C, c2c);
 				channels.set(c2cSymbol, c2c);
-				channels.set(c2c, CHANNEL_C2C);
 				channelTokens.set(c2cToken, c2c);
 				channelTokens.set(c2c, c2cToken);
 			}
+
+			_thys.state = Transport.STATE_ACTIVE;
 
 			await _thys.startByteStream();
 
@@ -122,16 +123,12 @@ export class Transport extends Eventable {
 		async receiveMessage (header, data) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			if (_thys.state != Transport.STATE_ACTIVE) return;
+			if (_thys.state === Transport.STATE_STOPPED) return;
 
 			const channelId = header.channelId, channel = _thys.channels.get(channelId);
 
 			if (!channel) {
-				await thys.dispatchEvent('protocolViolation', {
-					type: 'unknownChannelId',
-					description: 'Unknown channel ID',
-					channelId
-				});
+				thys.logger.error(`Unknown channel ID ${channelId}`);
 				await thys.stop();
 				return;
 			}
@@ -162,16 +159,18 @@ export class Transport extends Eventable {
 	 */
 	constructor (options = {}) {
 		super();
-		Object.assign(this.#_ = Object.create(this.constructor.__protected), {
+		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
 			__this: this,
 			bufferPool: options.bufferPool,
 			c2cOptions: options.c2c ?? {},
 			c2cSymbol: options.c2cSymbol,
-			channels: new Map(), // ids / name / token -> channel
+			channels: new Map(), // ids / name -> channel
 			channelTokens: new Map(), // token <-> channel
 			disconnected: false,
+			id: crypto.randomUUID(),
 			logSymbol: Symbol('log'),
 			lowBufferBytes: options.lowBufferBytes ?? 16 * 1024,
+			maxBufferBytes: options.maxBufferBytes ?? 0, // 0 = unlimited
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
 			minChannelId: MIN_CHANNEL_ID,
 			minMessageTypeId: MIN_MESG_TYPE_ID,
@@ -181,8 +180,6 @@ export class Transport extends Eventable {
 			state: Transport.STATE_CREATED,
 			stopped: null, // shutdown promise
 			tccOptions: options.tcc ?? {},
-			tccSymbol: Symbol('TCC'),
-			transportId: crypto.randomUUID(),
 		});
 		this.#logger = options.logger || console;
 		this._sub_(this.#_subs);
@@ -206,7 +203,7 @@ export class Transport extends Eventable {
 		const nextMessageTypeId = (role === Transport.ROLE_EVEN)
 			? toEven(minMessageTypeId) : toOdd(minMessageTypeId);
 
-		const token = Symbol(`channel-${name}`);
+		const token = options.token ?? Symbol(`channel-${name}`);
 		const newChannel = new Channel({
 			id,
 			name,
@@ -221,7 +218,6 @@ export class Transport extends Eventable {
 		// Register channel in maps
 		channels.set(name, newChannel);
 		channels.set(id, newChannel);
-		channels.set(newChannel, id);
 		channelTokens.set(token, newChannel);
 		channelTokens.set(newChannel, token);
 
@@ -275,7 +271,7 @@ export class Transport extends Eventable {
 	/**
 	 * Return the transport ID (UUID)
 	 */
-	get id () { return this.#_.transportId; }
+	get id () { return this.#_.id; }
 
 	/**
 	 * Returns the log channel id (symbol)
@@ -318,14 +314,12 @@ export class Transport extends Eventable {
 		const channel = channelTokens.get(token);
 		if (!channel) return;
 
-		// Get channel ID and name
-		const channelId = channels.get(channel);
-		const channelName = channel.name;
+		const channelIds = channel.ids, channelName = channel.name;
 
 		// Create nulled record
 		const nulledRecord = {
 			name: channelName,
-			id: channelId,
+			id: channelIds[0],
 			token,
 			state: Channel.STATE_CLOSED
 		};
@@ -333,11 +327,11 @@ export class Transport extends Eventable {
 		// Remove channel object from maps
 		channelTokens.delete(token);
 		channelTokens.delete(channel);
-		channels.delete(channel);
 
-		// Keep name and ID mappings pointing to nulled record
+		// Keep name and (first) ID mapping pointing to nulled record
 		channels.set(channelName, nulledRecord);
-		channels.set(channelId, nulledRecord);
+		channels.set(channelIds[0], nulledRecord);
+		if (channelIds[1] !== undefined) channels.delete(channelIds[1]);
 	}
 
 	/**
@@ -410,19 +404,19 @@ export class Transport extends Eventable {
 				accepted: false
 			});
 			const tcc = channels.get(CHANNEL_TCC);
-			await tcc.write(TCC_DTAM_CHAN_RESPONSE[1], response);
+			await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
 			return;
 		}
 
 		// 2. Emit 'newChannel' event with accept/reject methods
 		let accepted = false;
 		const event = Object.freeze({
-			channelName,
-			remoteLimits: Object.freeze({ maxBufferBytes, maxChunkBytes }),
+			type: 'newChannel',
+			detail: Object.freeze({ channelName, remoteLimits: Object.freeze({ maxBufferBytes, maxChunkBytes }) }),
 			accept: () => { accepted = true; },
 			reject: () => { accepted = false; }
 		});
-		await this.dispatchEvent('newChannel', event);
+		await this.dispatchEvent(event);
 
 		// 3. Check if channel was added while waiting for event handlers
 		const existingAfterEvent = channels.get(channelName);
@@ -456,7 +450,7 @@ export class Transport extends Eventable {
 				maxBufferBytes: _thys.maxBufferBytes,
 				maxChunkBytes: _thys.maxChunkBytes
 			});
-			await tcc.write(TCC_DTAM_CHAN_RESPONSE[1], response);
+			await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
 
 			// Resolve local pending request if exists
 			// NOTE: Remote request = remote approval, so channel is ready now
@@ -472,7 +466,7 @@ export class Transport extends Eventable {
 				name: channelName,
 				accepted: false
 			});
-			await tcc.write(TCC_DTAM_CHAN_RESPONSE[1], response);
+			await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
 
 			// DON'T reject local pending request here!
 			// "First accept or last reject" rule: Even if we reject the remote request,
@@ -507,7 +501,16 @@ export class Transport extends Eventable {
 		if (accepted) {
 			// Check if channel already exists (created by accepting remote request)
 			const existing = channels.get(name);
-			if (existing) {
+			if (existing && existing?.state === Channel.STATE_CLOSED) {
+				// Reopening nulled channel; reuse same id and token
+				const { id, token } = existing;
+				const channel = this.#createChannel(name, id, {
+					localLimit: pending.options.maxBufferBytes,
+					remoteLimit: maxBufferBytes,
+					maxChunkBytes: Math.min(pending.options.maxChunkBytes, maxChunkBytes),
+					token
+				});
+			} else if (existing) {
 				// Channel was created by accepting remote request while we waited
 				// Add the second role ID (perform ID switch if remote ID is lower)
 				const token = channelTokens.get(existing);
@@ -609,7 +612,7 @@ export class Transport extends Eventable {
 			maxBufferBytes: channelOptions.maxBufferBytes,
 			maxChunkBytes: channelOptions.maxChunkBytes
 		});
-		await tcc.write(TCC_DTAM_CHAN_REQUEST[1], requestData);
+		await tcc.write(TCC_DTAM_CHAN_REQUEST[0], requestData);
 
 		// 7. Return promise
 		// NOTE: Promise resolves as soon as channel is ready (or rejected)
@@ -636,13 +639,9 @@ export class Transport extends Eventable {
 		const channel = channelTokens.get(token);
 		if (!channel) throw new Error('Unauthorized: unknown channel token');
 
-		// Look up channel ID
-		const channelId = channels.get(channel);
-		if (typeof channelId !== 'number') throw new Error('Channel ID not found');
-
 		// Format and send message via TCC
 		const tcc = channels.get(CHANNEL_TCC);
-		const data = JSON.stringify({ channelId, ...options });
+		const data = JSON.stringify({ channelId: channel.id, ...options });
 		await tcc.write(messageType, data);
 	}
 
@@ -709,13 +708,11 @@ export class Transport extends Eventable {
 
 		// Close all channels
 		const channelClosePromises = [];
-		for (const [token, channel] of _thys.channels) {
-			if (channel.id === CHANNEL_TCC || channel.id === CHANNEL_C2C) continue;
-			if (typeof token === 'symbol') channelClosePromises.push(
-				channel.close({ discard }).catch(err => {
-					this.#logger.error('Error closing channel:', err);
-				})
-			);
+		for (const [channel] of _thys.channelTokens) {
+			if (!(channel instanceof Channel) || channel.id === CHANNEL_TCC || channel.id === CHANNEL_C2C) continue;
+			channelClosePromises.push(channel.close({ discard }).catch(err => {
+				this.#logger.error('Error closing channel:', err);
+			}));
 		}
 
 		// Wait for all channels to close
@@ -734,6 +731,18 @@ export class Transport extends Eventable {
 
 		// Close the transport
 		await _thys.stop();
+
+		// Shut down TCC and C2C channels (bypasses the no-op close() override)
+		const { channels, channelTokens } = _thys;
+		for (const channelId of [CHANNEL_TCC, CHANNEL_C2C]) {
+			const channel = channels.get(channelId);
+			if (channel && typeof channel.close === 'function') {
+				const token = channelTokens.get(channel);
+				if (token) {
+					await channel.close({ shutdown: token }).catch((err) => this.logger.error(err));
+				}
+			}
+		}
 
 		_thys.state = Transport.STATE_STOPPED;
 		stopped.resolve();
@@ -803,7 +812,7 @@ export class Transport extends Eventable {
 				}
 			} catch (err) {
 				// Channel closed or error - exit reader loop
-				logger.error('TCC reader error:', err);
+				if (err !== 'Closed') logger.error('TCC reader error:', err);
 				break;
 			}
 		}

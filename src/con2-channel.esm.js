@@ -23,7 +23,11 @@ export class Con2Channel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	/* async */ close () {
+	/* async */ close ({ shutdown } = {}) {
+		if (shutdown && shutdown === this.#_.token) {
+			// Transport-initiated shutdown: finalize the channel to terminate any reader loops
+			return this.#_.onShutDown();
+		}
 		const logger = this.#_.transport.logger;
 		logger.warn('Console Content Channel .close ignored');
 		return Promise.resolve();
@@ -34,15 +38,16 @@ export class Con2Channel extends Channel {
 	 */
 	#preloadMessageTypes () {
 		const types = this.#_.messageTypes;
-		for (const [id, name] of [
+		for (const [id, type] of [
 			C2C_MESG_TRACE,
 			C2C_MESG_DEBUG,
 			C2C_MESG_INFO,
 			C2C_MESG_WARN,
 			C2C_MESG_ERROR
 		]) {
-			types.set(id, name);
-			types.set(name, id);
+			const entry = { type, ids: [id] };
+			types.set(id, entry);
+			types.set(type, entry);
 		}
 	}
 

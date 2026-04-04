@@ -238,13 +238,13 @@ Deno.test('ChannelFlowControl - markProcessed marks chunk as processed', () => {
 	assertEquals(fc.ackableChunks, 1);
 });
 
-Deno.test('ChannelFlowControl - getAckInfo returns null if nothing processed', () => {
+Deno.test('ChannelFlowControl - getAckInfo returns only complete if nothing processed', () => {
 	const fc = new ChannelFlowControl(10000, 10000);
 	fc.received(1, 1000);
 	fc.received(2, 2000);
 
 	const ackInfo = fc.getAckInfo();
-	assertEquals(ackInfo, null);
+	assertEquals(ackInfo, { complete: true });
 });
 
 Deno.test('ChannelFlowControl - getAckInfo single sequence', () => {
