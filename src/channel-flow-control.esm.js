@@ -85,6 +85,10 @@ export class ChannelFlowControl {
 
 		this.#channel = channel;
 		this.#logger = logger || console;
+
+		if (!ackCallback) {
+			this.#logger.warn(`No ACK callback for channel ${channel?.name}!`);
+		}
 	}
 
 	/**
@@ -103,14 +107,16 @@ export class ChannelFlowControl {
 
 	/**
 	 * Wait for all pending writes to be ACKed (e.g. when channel is closing)
-	 * @returns {undefined|Promise} - Resolves when no writes are pending ACKs
+	 * @returns {Promise<void>} - Resolves when no writes are pending ACKs
 	 */
 	/* async */ allWritesAcked () {
-		if (!this.#writeAckInfo.size) return; // Nothing pending right now
-		const existing = this.#allWritesAcked;
+		if (!this.#writeAckInfo.size) return Promise.resolve(); // Already empty now
+
+		const existing = this.#allWritesAcked; // Return existing promise if there is one
 		if (existing) return existing.promise;
-		const promise = this.#allWritesAcked = {};
-		promise.promise = new Promise((...r) => [promise.resolve, promise.reject] = r);
+
+		const promise = this.#allWritesAcked = {}; // No existing promise yet, so create one
+		promise.promise = new Promise((resolve) => promise.resolve = resolve);
 		return promise.promise;
 	}
 
@@ -160,6 +166,7 @@ export class ChannelFlowControl {
 
 	/**
 	 * Clear read info and recover read budget for processed sequences
+	 * Called when ACKs for data read and processed are sent to the remote
 	 * @param {number} base
 	 * @param {number[]} ranges
 	 * @returns {{ acks, bytes, duplicate, premature }}
@@ -168,9 +175,10 @@ export class ChannelFlowControl {
 		const result = this.#clearAckInfo(base, ranges, this.#readAckInfo, this.#nextReadSeq);
 		this.#ackableBytes -= result.bytes;
 		this.#ackableChunks -= result.acks;
-		this.#read -= result.bytes;
+		this.#read -= result.bytes; // Free up read budget
 		this.#acksPending = false;
-		this.#scheduleAcks(true);
+		const { duplicate, premature } = result;
+		if (!duplicate && !premature) this.#scheduleAcks(true); // Just sent some, but check if we need to send more
 		return result;
 	}
 
@@ -185,16 +193,14 @@ export class ChannelFlowControl {
 		const result = this.#clearAckInfo(base, ranges, writeAckInfo, this.#nextWriteSeq);
 		this.#written -= result.bytes;
 
-		if (!writeAckInfo.size && this.#allWritesAcked) {
-			const resolve = this.#allWritesAcked.resolve;
-			this.#allWritesAcked = null;
-			resolve();
-		}
-
 		// Wake up waiting writer if budget is now sufficient
 		if (this.#writer && this.writeBudget >= this.#writer.bytes) {
 			const { resolve } = this.#writer;
 			this.#writer = null;
+			resolve();
+		} else if (this.#allWritesAcked && !this.#writer && !writeAckInfo.size) {
+			const resolve = this.#allWritesAcked.resolve;
+			this.#allWritesAcked = null;
 			resolve();
 		}
 
@@ -404,7 +410,6 @@ export class ChannelFlowControl {
 		const forceBytes = this.#forceAckBytes, forceChunks = this.#forceAckChunks;
 		if ((!justSent && !this.#ackBatchTimer) || (!batchTime && ackChunks) || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
 			if (this.#ackBatchTimer) {
-				console.log(`cancelling ${this.#channel?.name} batch timer`);
 				clearTimeout(this.#ackBatchTimer);
 				this.#ackBatchTimer = null;
 			}
@@ -414,10 +419,8 @@ export class ChannelFlowControl {
 		}
 
 		if (justSent && batchTime && !this.#ackBatchTimer && !this.#stopped) { // Start the batching timer if we just sent ACKs
-			console.log(`starting ${this.#channel?.name} batch timer`);
 			this.#ackBatchTimer = setTimeout(() => {
 				this.#ackBatchTimer = null;
-				console.log(`batch timer for ${this.#channel?.name} expired; scheduling`);
 				this.#scheduleAcks(); // Recheck after batching delay
 			}, batchTime);
 		}

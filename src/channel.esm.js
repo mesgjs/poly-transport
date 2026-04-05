@@ -49,7 +49,8 @@ export class Channel extends Eventable {
 	#eomChunks = new Set();     // EOM subset of dataChunks
 	#filteredReaders = new Map(); // Map<type, {waiting: boolean, resolve}>
 	#flowControl;
-	#forceAckCount;             // ACK-count threshold to force early ACK
+	#forceAckBytes;             // ACK-bytes threshold to force early ACK
+	#forceAckChunks;            // ACK-chunks threshold to force early ACK
 	#ids;
 	#lowReadBytes;
 	#maxDataBytes;
@@ -76,11 +77,12 @@ export class Channel extends Eventable {
 	 * @param {symbol} config.token - Unique channel auth token
 	 * @param {Transport} config.transport - The associated transport
 	 */
-	constructor ({ ackBatchTime, dechunk = true, forceAckCount, id, localLimit, lowReadBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
+	constructor ({ ackBatchTime, dechunk = true, forceAckBytes, forceAckChunks, id, localLimit, lowReadBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
 		super();
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
 		this.#dechunk = dechunk;
-		this.#forceAckCount = forceAckCount ?? 5; // # of ACKs
+		this.#forceAckBytes = forceAckBytes ?? 16384; // # of ACK bytes
+		this.#forceAckChunks = forceAckChunks ?? 5; // # of ACK chunks
 		this.#ids = [id];
 		this.#lowReadBytes = lowReadBytes ?? (16 * 1024);
 		this.#maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
@@ -90,7 +92,8 @@ export class Channel extends Eventable {
 		this.#flowControl = new ChannelFlowControl(localLimit, remoteLimit, {
 			channel: this, logger: transport.logger,
 			ackBatchTime: ackBatchTime ?? 5, ackCallback: () => this.#sendAckMessage(),
-			forceAckCount: this.#forceAckCount, lowReadBytes: this.#lowReadBytes
+			forceAckBytes: this.#forceAckBytes, forceAckChunks: this.#forceAckChunks,
+			lowReadBytes: this.#lowReadBytes
 		});
 
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
@@ -901,6 +904,7 @@ export class Channel extends Eventable {
 	/* async */ #sendAckMessage (immediate = false) {
 		if (immediate) {
 			// Remove dedicated task and send ACK now
+			this.#readyToAck = false;
 			this.#writeQueue.cancel(this.#sendAckNow, { resolve: null });
 			return this.#_.transport.sendAckMessage(this.#_.token, this.#flowControl);
 		}
@@ -1054,16 +1058,18 @@ export class Channel extends Eventable {
 			const sentBytes = await transport.sendChunk(this.#_.token, header, chunker, { eom });
 			flowControl.sent(sentBytes);
 		};
+
+		// Now send the chunks (as long as we're not closing in discard mode)
 		if (together) { // Send all chunks together in a single channel task
 			return writeQueue.add(async () => {
-				for (;;) {
+				while (!this.#discard) {
 					await sendAChunk();
 					if (remaining <= 0) break;
 				}
 			});
 		}
 		// Send each chunk in a separate channel task
-		for (;;) {
+		while (!this.#discard) {
 			await writeQueue.add(sendAChunk);
 			if (remaining <= 0) break;
 		}

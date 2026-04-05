@@ -426,14 +426,19 @@ export class Transport extends Eventable {
 		if (accepted) {
 			let channel, channelId;
 
-			if (existingAfterEvent) {
+			if (existingAfterEvent && !existingAfterEvent.state === Channel.STATE_CLOSED) {
 				// Channel was created while waiting - use its existing ID
 				channel = existingAfterEvent;
 				channelId = channel.id;
-			} else {
-				// Create new channel with new ID
-				channelId = _thys.nextChannelId;
-				_thys.nextChannelId += 2; // Increment by 2 for even/odd separation
+			} else { // Need to (re)create channel
+				if (existingAfterEvent) {
+					// Reopen closed channel with original, active ID
+					channelId = existingAfterEvent.id;
+				} else {
+					// Create (first-time) channel with new ID
+					channelId = _thys.nextChannelId;
+					_thys.nextChannelId += 2; // Increment by 2 for even/odd separation
+				}
 
 				channel = this.#createChannel(channelName, channelId, {
 					localLimit: _thys.maxBufferBytes,
@@ -490,10 +495,8 @@ export class Transport extends Eventable {
 		const pending = pendingChannelRequests.get(name);
 		if (!pending) {
 			// No pending request - protocol violation
-			await this.dispatchEvent('protocolViolation', {
-				type: 'unexpectedChannelResponse',
-				channelName: name
-			});
+			this.logger.error(`Unexpected response (channel ${name})`);
+			await this.stop();
 			return;
 		}
 
@@ -510,6 +513,7 @@ export class Transport extends Eventable {
 					maxChunkBytes: Math.min(pending.options.maxChunkBytes, maxChunkBytes),
 					token
 				});
+				pending.resolve(channel);
 			} else if (existing) {
 				// Channel was created by accepting remote request while we waited
 				// Add the second role ID (perform ID switch if remote ID is lower)
@@ -812,7 +816,7 @@ export class Transport extends Eventable {
 				}
 			} catch (err) {
 				// Channel closed or error - exit reader loop
-				if (err !== 'Closed') logger.error('TCC reader error:', err);
+				if (err instanceof Error) logger.error('TCC reader error:', err);
 				break;
 			}
 		}

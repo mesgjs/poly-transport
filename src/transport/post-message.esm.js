@@ -136,6 +136,7 @@ export class PostMessageTransport extends Transport {
 		}
 		this.#sendAckMessage(channel.id, flowControl);
 		_thys.afterWrite(); // (no deferred write)
+		return Promise.resolve();
 	}
 
 	/**
@@ -187,7 +188,7 @@ export class PostMessageTransport extends Transport {
 			this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data: buffer?.segments }, transfer);
 		}
 		_thys.afterWrite(); // (no deferred write)
-		return numBytesSent; // Return byte-equivalent for flow control
+		return Promise.resolve(numBytesSent); // Return byte-equivalent for flow control
 	}
 
 	/*

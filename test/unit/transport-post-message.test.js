@@ -72,6 +72,7 @@ class MockPostMessageTransport extends PostMessageTransport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			// Call interceptor if set, then call super
 			if (thys.#receiveMessageInterceptor) thys.#receiveMessageInterceptor(header, data);
+			if (header.channelId === 0 && data === undefined) return;
 			return super.receiveMessage(header, data);
 		}
 	}, super.__protected));
@@ -1118,7 +1119,7 @@ Deno.test('PostMessageTransport - sendChunk returns byte count', async () => {
 	};
 
 	const header = { type: HDR_TYPE_CHAN_DATA, sequence: 1, messageType: 100 };
-	const result = transport.sendChunk(token, header, mockChunker);
+	const result = await transport.sendChunk(token, header, mockChunker);
 
 	assertEquals(result, expectedBytes);
 

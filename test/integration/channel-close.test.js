@@ -61,7 +61,7 @@ function makePairedGateways () {
 
 /**
  * Create two connected PostMessageTransport instances and start them.
- * Returns { transportA, transportB } both in ACTIVE state.
+ * Returns [transportA, transportB] both in ACTIVE state.
  */
 async function makeConnectedTransports (optionsA = {}, optionsB = {}) {
 	const [gatewayA, gatewayB] = makePairedGateways();
@@ -89,12 +89,12 @@ async function makeConnectedTransports (optionsA = {}, optionsB = {}) {
 	assertEquals(transportA.state, Transport.STATE_ACTIVE);
 	assertEquals(transportB.state, Transport.STATE_ACTIVE);
 
-	return { transportA, transportB };
+	return [transportA, transportB];
 }
 
 /**
  * Request a channel from A and accept it on B.
- * Returns { channelA, channelB }.
+ * Returns [channelA, channelB].
  */
 async function makeConnectedChannel (transportA, transportB, name = 'test-channel') {
 	// Set up B to accept the channel request
@@ -115,15 +115,15 @@ async function makeConnectedChannel (transportA, transportB, name = 'test-channe
 	assertEquals(channelA.state, Channel.STATE_OPEN);
 	assertEquals(channelB.state, Channel.STATE_OPEN);
 
-	return { channelA, channelB };
+	return [channelA, channelB];
 }
 
 // ─── Test: Basic bidirectional data exchange ──────────────────────────────────
 
 Deno.test('Integration - two transports can connect and exchange data', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
+	const [transportA, transportB] = await makeConnectedTransports();
 
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// A writes a message, B reads it
 	await channelA.write(2, 'hello from A', { eom: true });
@@ -142,8 +142,8 @@ Deno.test('Integration - two transports can connect and exchange data', async ()
 // ─── Test: Bidirectional graceful closure ─────────────────────────────────────
 
 Deno.test('Integration - bidirectional graceful closure: both sides close gracefully', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Both sides close gracefully simultaneously
 	const closeA = channelA.close({ discard: false });
@@ -161,8 +161,8 @@ Deno.test('Integration - bidirectional graceful closure: both sides close gracef
 // ─── Test: One side initiates close, other side responds ─────────────────────
 
 Deno.test('Integration - A initiates close, B responds by closing', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Set up B to close when it receives chanClose from A
 	const closeBPromise = new Promise((resolve) => {
@@ -188,8 +188,8 @@ Deno.test('Integration - A initiates close, B responds by closing', async () => 
 // ─── Test: Data exchange before graceful close ────────────────────────────────
 
 Deno.test('Integration - data exchanged before graceful close is received', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// A writes data, then closes
 	await channelA.write(2, 'message before close', { eom: true });
@@ -215,8 +215,8 @@ Deno.test('Integration - data exchanged before graceful close is received', asyn
 // ─── Test: Bidirectional discard closure ─────────────────────────────────────
 
 Deno.test('Integration - bidirectional discard closure: both sides close with discard', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Both sides close with discard simultaneously
 	const closeA = channelA.close({ discard: true });
@@ -233,8 +233,8 @@ Deno.test('Integration - bidirectional discard closure: both sides close with di
 // ─── Test: Asymmetric closure - A graceful, B discard ────────────────────────
 
 Deno.test('Integration - asymmetric closure: A graceful, B discard', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// A closes gracefully, B closes with discard
 	const closeA = channelA.close({ discard: false });
@@ -251,8 +251,8 @@ Deno.test('Integration - asymmetric closure: A graceful, B discard', async () =>
 // ─── Test: Asymmetric closure - A discard, B graceful ────────────────────────
 
 Deno.test('Integration - asymmetric closure: A discard, B graceful', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// A closes with discard, B closes gracefully
 	const closeA = channelA.close({ discard: true });
@@ -269,8 +269,8 @@ Deno.test('Integration - asymmetric closure: A discard, B graceful', async () =>
 // ─── Test: Acceleration - graceful → discard when remote sends discard ────────
 
 Deno.test('Integration - acceleration: A graceful close switches to discard when B sends discard', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Buffer some data on A's side
 	await channelA.write(2, 'data that will be discarded', { eom: true });
@@ -292,8 +292,8 @@ Deno.test('Integration - acceleration: A graceful close switches to discard when
 // ─── Test: beforeClose event fires on both sides ─────────────────────────────
 
 Deno.test('Integration - beforeClose event fires on both sides during close', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	let beforeCloseA = false;
 	let beforeCloseB = false;
@@ -315,8 +315,8 @@ Deno.test('Integration - beforeClose event fires on both sides during close', as
 // ─── Test: closed event fires on both sides ───────────────────────────────────
 
 Deno.test('Integration - closed event fires on both sides after close', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	let closedA = false;
 	let closedB = false;
@@ -338,8 +338,8 @@ Deno.test('Integration - closed event fires on both sides after close', async ()
 // ─── Test: write throws StateError after close initiated ──────────────────────
 
 Deno.test('Integration - write throws StateError after close initiated', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Start close on A
 	const closeA = channelA.close();
@@ -367,12 +367,11 @@ Deno.test('Integration - write throws StateError after close initiated', async (
 // ─── Test: Channel reopening after close ─────────────────────────────────────
 
 Deno.test('Integration - channel can be reopened after close', async () => {
-	return;
-	const { transportA, transportB } = await makeConnectedTransports();
+	const [transportA, transportB] = await makeConnectedTransports();
 	const channelName = 'reopen-test';
 
 	// First open
-	const { channelA: channelA1, channelB: channelB1 } = await makeConnectedChannel(
+	const [channelA1, channelB1] = await makeConnectedChannel(
 		transportA, transportB, channelName
 	);
 
@@ -383,10 +382,9 @@ Deno.test('Integration - channel can be reopened after close', async () => {
 
 	assertEquals(channelA1.state, Channel.STATE_CLOSED);
 	assertEquals(channelB1.state, Channel.STATE_CLOSED);
-	console.log('closed generation 1');
 
 	// Reopen the channel
-	const { channelA: channelA2, channelB: channelB2 } = await makeConnectedChannel(
+	const [channelA2, channelB2] = await makeConnectedChannel(
 		transportA, transportB, channelName
 	);
 
@@ -394,7 +392,6 @@ Deno.test('Integration - channel can be reopened after close', async () => {
 	assertExists(channelB2);
 	assertEquals(channelA2.state, Channel.STATE_OPEN);
 	assertEquals(channelB2.state, Channel.STATE_OPEN);
-	console.log('reopened channel');
 
 	// Verify data can flow on the reopened channel
 	await channelA2.write(2, 'hello after reopen', { eom: true });
@@ -402,27 +399,24 @@ Deno.test('Integration - channel can be reopened after close', async () => {
 	assertExists(readResult);
 	assertEquals(readResult.text, 'hello after reopen');
 	readResult.done();
-	console.log('write/read completed');
 
 	// Clean up
 	const closeA2 = channelA2.close();
 	const closeB2 = channelB2.close();
 	await Promise.all([closeA2, closeB2]);
-	console.log('closed generation 2');
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
-	console.log('transports stopped');
 });
 
 // ─── Test: Multiple channels can be closed independently ─────────────────────
 
 Deno.test('Integration - multiple channels can be closed independently', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
+	const [transportA, transportB] = await makeConnectedTransports();
 
-	const { channelA: chA1, channelB: chB1 } = await makeConnectedChannel(
+	const [chA1, chB1] = await makeConnectedChannel(
 		transportA, transportB, 'channel-1'
 	);
-	const { channelA: chA2, channelB: chB2 } = await makeConnectedChannel(
+	const [chA2, chB2] = await makeConnectedChannel(
 		transportA, transportB, 'channel-2'
 	);
 
@@ -457,8 +451,8 @@ Deno.test('Integration - multiple channels can be closed independently', async (
 // ─── Test: Transport stop closes all channels ─────────────────────────────────
 
 Deno.test('Integration - transport stop closes all open channels', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	assertEquals(channelA.state, Channel.STATE_OPEN);
 
@@ -481,8 +475,8 @@ Deno.test('Integration - transport stop closes all open channels', async () => {
 // ─── Test: Pending read rejected when channel closes ─────────────────────────
 
 Deno.test('Integration - pending read is rejected when channel closes', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Start a read on B that will wait
 	const readPromise = channelB.read({ timeout: 5000 });
@@ -502,9 +496,8 @@ Deno.test('Integration - pending read is rejected when channel closes', async ()
 // ─── Test: Flow control budget restored during closure ───────────────────────
 
 Deno.test('Integration - flow control budget is maintained during graceful close', async () => {
-	return;
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Write several messages from A to B
 	const messages = ['msg1', 'msg2', 'msg3'];
@@ -524,6 +517,7 @@ Deno.test('Integration - flow control budget is maintained during graceful close
 	const closeA = channelA.close({ discard: false });
 	const closeB = channelB.close({ discard: false });
 
+	// FAILS during closing
 	await Promise.all([closeA, closeB]);
 
 	assertEquals(channelA.state, Channel.STATE_CLOSED);
@@ -535,8 +529,8 @@ Deno.test('Integration - flow control budget is maintained during graceful close
 // ─── Test: Discard mode discards buffered data ────────────────────────────────
 
 Deno.test('Integration - discard mode discards buffered data on receiver', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// A writes data that B hasn't read yet
 	await channelA.write(2, 'data to be discarded', { eom: true });
@@ -559,7 +553,7 @@ Deno.test('Integration - discard mode discards buffered data on receiver', async
 // ─── Test: TCC/C2C channels are not closed by transport.stop ─────────────────
 
 Deno.test('Integration - TCC channel is not closed by transport stop', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
+	const [transportA, transportB] = await makeConnectedTransports();
 
 	// Stop transport A - should not attempt to close TCC
 	// (If it did, it would log a warning per architecture doc)
@@ -573,8 +567,8 @@ Deno.test('Integration - TCC channel is not closed by transport stop', async () 
 // ─── Test: Channel close with data in flight ──────────────────────────────────
 
 Deno.test('Integration - graceful close waits for in-flight writes to be ACKed', async () => {
-	const { transportA, transportB } = await makeConnectedTransports();
-	const { channelA, channelB } = await makeConnectedChannel(transportA, transportB);
+	const [transportA, transportB] = await makeConnectedTransports();
+	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 	// Write data from A
 	const writePromise = channelA.write(2, 'in-flight data', { eom: true });
