@@ -128,11 +128,20 @@ export class Transport extends Eventable {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			if (_thys.state === Transport.STATE_STOPPED) return;
+			// console.log(`(${thys.role}) receiveMessage`, header, data);
 
 			const channelId = header.channelId, channel = _thys.channels.get(channelId);
 
 			if (!channel) {
-				thys.logger.error(`Unknown channel ID ${channelId}`);
+				const message = `Unknown channel ID ${channelId}`;
+				thys.logger.error(message);
+				await thys.stop();
+				return;
+			}
+
+			if (channel.state === Channel.STATE_CLOSED) {
+				const message = `Received message for closed channel ID ${channelId}`;
+				thys.logger.error(message);
 				await thys.stop();
 				return;
 			}
@@ -604,6 +613,19 @@ export class Transport extends Eventable {
 	 */
 	async #finalizeStop () {
 		const _thys = this.#_;
+
+		// Shut down TCC and C2C channels (bypasses the no-op close() override)
+		const { channels, channelTokens } = _thys;
+		for (const channelId of [CHANNEL_TCC, CHANNEL_C2C]) {
+			const channel = channels.get(channelId);
+			if (channel && typeof channel.close === 'function') {
+				const token = channelTokens.get(channel);
+				if (token) {
+					await channel.close({ shutdown: token }).catch((err) => this.logger.error(err));
+				}
+			}
+		}
+		
 		_thys.state = Transport.STATE_STOPPED;
 		_thys.stopped?.resolve();
 		await this.dispatchEvent('stopped', {});
@@ -803,18 +825,6 @@ export class Transport extends Eventable {
 		// Clear write batch timer (must happen after tranStopped is scheduled)
 		await _thys.stop();
 
-		// Shut down TCC and C2C channels (bypasses the no-op close() override)
-		const { channels, channelTokens } = _thys;
-		for (const channelId of [CHANNEL_TCC, CHANNEL_C2C]) {
-			const channel = channels.get(channelId);
-			if (channel && typeof channel.close === 'function') {
-				const token = channelTokens.get(channel);
-				if (token) {
-					await channel.close({ shutdown: token }).catch((err) => this.logger.error(err));
-				}
-			}
-		}
-
 		if (!tcc || _thys.state === Transport.STATE_LOCAL_STOPPING) {
 			// Either there's no TCC (because the handshake never completed)
 			// or the remote already sent tranStopped - both sides done
@@ -853,7 +863,7 @@ export class Transport extends Eventable {
 				let skipAck = false;
 				try {
 					// Parse JSON data (already complete message thanks to default de-chunking)
-					const parsed = JSON.parse(text);
+					const parsed = text?.length ? JSON.parse(text) : {};
 
 					// Handle control messages
 					switch (messageTypeId) {
@@ -883,7 +893,7 @@ export class Transport extends Eventable {
 						break;
 					default:
 						// Unknown message type - protocol violation
-						logger.error(`PolyTransport protocol violation (unknown TCC message type ${messageTypeId}); stopping transport`);
+						logger.error(`Unknown TCC message type ${messageTypeId}; stopping transport`);
 						await this.stop();
 					}
 				} finally {

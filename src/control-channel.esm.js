@@ -31,11 +31,11 @@ export class ControlChannel extends Channel {
 	}
 
 	/* async */ close ({ shutdown } = {}) {
+		const logger = this.#_.transport.logger;
 		if (shutdown && shutdown === this.#_.token) {
 			// Transport-initiated shutdown: finalize the channel to terminate the reader loop
 			return this.#_.onShutDown();
 		}
-		const logger = this.#_.transport.logger;
 		logger.warn('Transport Control Channel .close ignored');
 		// return Promise.resolve();
 		throw new Error('TCC.close should only be for shutdown');

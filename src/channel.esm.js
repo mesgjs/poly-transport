@@ -168,7 +168,9 @@ export class Channel extends Eventable {
 			this.#discard = true;
 			// Update the remote as well. This message will get echoed back to us if the remote
 			// isn't already in discard mode, but won't have any further effect.
-			await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: true });
+			if (state === Channel.STATE_CLOSING) {
+				await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: true });
+			}
 			await this.#discardExistingInput();
 		}
 
@@ -179,14 +181,12 @@ export class Channel extends Eventable {
 
 		if (discard) this.#discard = true;
 
-		console.log('closing', this.id, this.name);
 		// First request; initiate the closing process.
 		this.#state = Channel.STATE_CLOSING;
 		const closingPromise = this.#closingPromise = {};
 		closingPromise.promise = new Promise((...r) => [closingPromise.resolve] = r);
 
 		// Notify remote via the TCC.
-		console.log('sending chanClose to remote');
 		await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
 
 		// Notify beforeClose listeners.
@@ -196,21 +196,17 @@ export class Channel extends Eventable {
 		if (this.#discard) await this.#discardExistingInput();
 
 		// Wait for all in-flight writes to be ACK'd.
-		console.log('waiting on write ACKs');
 		await this.#_.flowControl.allWritesAcked();
 
 		// Notify remote of our completion.
-		console.log('sending chanClosed to remote');
 		await transport.sendTccMessage(this.#_.token, TCC_DTAM_CHAN_CLOSED[0]);
 
 		// Update state based on whether we've received remote's chanClosed.
 		if (this.#state === Channel.STATE_CLOSING) {
 			this.#state = Channel.STATE_REMOTE_CLOSING;
 			// Wait for remote's chanClosed
-			console.log('waiting for remote chanClosed');
 		} else if (this.#state === Channel.STATE_LOCAL_CLOSING) {
 			// Both sides have sent chanClosed - fully closed
-			console.log('finalizing');
 			await this.#finalizeClosure();
 		}
 		return closingPromise.promise; // Resolved in #finalizeClosure.
@@ -515,7 +511,6 @@ export class Channel extends Eventable {
 		if (!token || token !== this.#_.token) {
 			throw new Error('Unauthorized');
 		}
-		console.log(`(${this.#_.transport.role}) received remote chanClosed`);
 
 		// Update state based on current state
 		if (this.#state === Channel.STATE_CLOSING) {
@@ -523,7 +518,6 @@ export class Channel extends Eventable {
 			this.#state = Channel.STATE_LOCAL_CLOSING;
 		} else if (this.#state === Channel.STATE_REMOTE_CLOSING) {
 			// We already sent chanClosed, remote just sent theirs - fully closed
-			console.log('and now finalizing');
 			await this.#finalizeClosure();
 		}
 		// If state is OPEN or LOCAL_CLOSING, this is unexpected but we'll handle it gracefully
@@ -912,9 +906,8 @@ export class Channel extends Eventable {
 	// Send (or schedule) an ACK message
 	/* async */ #sendAckMessage (immediate = false) {
 		if (immediate) {
-			// Remove dedicated task and send ACK now
+			// Send ACK now
 			this.#readyToAck = false;
-			this.#writeQueue.cancel(this.#sendAckNow, { resolve: null });
 			return this.#_.transport.sendAckMessage(this.#_.token, this.#_.flowControl);
 		}
 		if (!this.#readyToAck) {
@@ -1066,25 +1059,24 @@ export class Channel extends Eventable {
 			if (this.#readyToAck) await this.#sendAckMessage(true);
 			const bytesToReserve = chunker.bytesToReserve();
 			await flowControl.writable(bytesToReserve);
-			const sequence = flowControl.nextWriteSeq;
-			const header = { type, flags: 0, sequence, messageType };
-			const sentBytes = await transport.sendChunk(this.#_.token, header, chunker, { eom });
-			flowControl.sent(sentBytes);
+			const header = { type, flags: 0, messageType };
+			return await transport.sendChunk(this.#_.token, flowControl, header, chunker, { eom });
 		};
 
 		// Now send the chunks (as long as we're not closing in discard mode)
 		if (together) { // Send all chunks together in a single channel task
-			return writeQueue.add(async () => {
+			await writeQueue.add(async () => {
 				while (!this.#discard) {
-					await sendAChunk();
-					if (remaining <= 0) break;
+					const remainingAfter = await sendAChunk();
+					if (remainingAfter <= 0) break;
 				}
 			});
-		}
-		// Send each chunk in a separate channel task
-		while (!this.#discard) {
-			await writeQueue.add(sendAChunk);
-			if (remaining <= 0) break;
+		} else {
+			// Send each chunk in a separate channel task
+			while (!this.#discard) {
+				const remaining = await writeQueue.add(sendAChunk);
+				if (remaining <= 0) break;
+			}
 		}
 	}
 }

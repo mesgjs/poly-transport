@@ -158,12 +158,13 @@ export class PostMessageTransport extends Transport {
 	/**
 	 * Send a control or data message (optionally with byte data)
 	 * @param {symbol} token - The channel ID token
+	 * @param {ChannelFlowControl} flowControl - The channel flow controller
 	 * @param {Object} header - The message header
 	 * @param {Object} chunker - The chunking-strategy control-object
 	 * @param {boolean} [eom] - Whether to add EOM flag when remaining <= 0
-	 * @returns {Promise<number>} Byte-equivalent count for flow control
+	 * @returns {Promise<number>} Resolves to number of bytes remaining to send
 	 */
-	/* async */ sendChunk (token, header, chunker, { eom } = {}) {
+	/* async */ sendChunk (token, flowControl, header, chunker, { eom } = {}) {
 		const _thys = this.#_;
 		const channel = _thys.channelTokens.get(token);
 		if (typeof token !== 'symbol' || !(channel instanceof Channel)) {
@@ -171,7 +172,8 @@ export class PostMessageTransport extends Transport {
 		}
 		const numBytesSent = chunker.bytesToReserve();
 		const bufferSize = chunker.bufferSize;
-		const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
+		const { type = HDR_TYPE_CHAN_DATA, flags = 0, messageType = 0 } = header;
+		const sequence = flowControl.nextWriteSeq;
 		const channelId = channel.id, finalHeader = {
 			type, flags, channelId, sequence, messageType
 		};
@@ -187,8 +189,10 @@ export class PostMessageTransport extends Transport {
 			if (eom && chunker.remaining <= 0) finalHeader.flags |= FLAG_EOM;
 			this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data: buffer?.segments }, transfer);
 		}
+		flowControl.sent(numBytesSent);
+		// console.log(`(${this.role}) committed chunk`, finalHeader);
 		_thys.afterWrite(); // (no deferred write)
-		return Promise.resolve(numBytesSent); // Return byte-equivalent for flow control
+		return Promise.resolve(chunker.remaining);
 	}
 
 	/*

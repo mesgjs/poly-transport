@@ -1,7 +1,7 @@
 {
 	"imports": {
 		"@eventable": "https://cdn.jsdelivr.net/gh/mesgjs/eventable@main/src/eventable.esm.js",
-		"@task-queue": "https://cdn.jsdelivr.net/gh/mesgjs/task-queue@main/src/task-queue.esm.js",
+		"@task-queue": "https://cdn.jsdelivr.net/gh/mesgjs/task-queue@0.1.1/src/task-queue.esm.js",
 		"@updatable-event": "https://cdn.jsdelivr.net/gh/mesgjs/updatable-event@main/src/updatable-event.esm.js"
 	}
 }

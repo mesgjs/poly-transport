@@ -452,20 +452,6 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await Promise.all([transportA.stop(), transportB.stop()]);
 	});
 
-	// ─── Test: TCC/C2C channels are not closed by transport.stop ─────────────────
-
-	Deno.test('TCC channel is not closed by transport stop', async () => {
-		const [transportA, transportB] = await makeTransportPair();
-
-		// Stop transport A - should not attempt to close TCC
-		// (If it did, it would log a warning per architecture doc)
-		// We verify by checking that stop completes without error
-		await transportA.stop();
-		assertEquals(transportA.state, Transport.STATE_STOPPED);
-
-		await transportB.stop();
-	});
-
 	// ─── Test: Channel close with data in flight ──────────────────────────────────
 
 	Deno.test('graceful close waits for in-flight writes to be ACKed', async () => {

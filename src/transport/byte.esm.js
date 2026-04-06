@@ -81,11 +81,14 @@ export class ByteTransport extends Transport {
 		/* async */ reservable (size) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
+
 			const { outputBuffer } = _thys;
-			if (outputBuffer.available >= size) return; // Requested space is available now
+			if (outputBuffer.available >= size) return Promise.resolve(); // Requested space is available now
+
 			if (size > outputBuffer.size) throw new RangeError(`Request (${size}) exceeds buffer size (${outputBuffer.size}`);
+
 			const waiter = _thys.reserveWaiter = { size };
-			const promise = new Promise((r) => waiter.resolve = r);
+			const promise = waiter.promise = new Promise((...r) => [waiter.resolve, waiter.reject] = r);
 			return promise;
 		},
 
@@ -100,9 +103,7 @@ export class ByteTransport extends Transport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			const { outputBuffer } = _thys;
 			const committed = outputBuffer.committed;
-			if (committed === 0) console.log(`(${this.role}) scheduleWrite with nothing committed`);
 			if (committed === 0) return; // Nothing to write
-			if (thys.#writeBatchTimer) console.log(`(${this.role}) (batch timer is currently running)`);
 
 			if (!thys.#writeBatchTime || committed >= (immediate ? 1 : thys.#forceWriteBytes)) {
 				// Send if immediate-mode, no batch time, or over byte threshold
@@ -110,11 +111,9 @@ export class ByteTransport extends Transport {
 					clearTimeout(thys.#writeBatchTimer);
 					thys.#writeBatchTimer = null;
 				}
-				console.log(`(${this.role}) calling writeBytes`);
 				_thys.writeBytes();
 			} else if (!thys.#writeBatchTimer) {
 				// Send when we've waited the maximum batching time
-				console.log(`(${this.role}) starting write batch timer`);
 				thys.#writeBatchTimer = setTimeout(() => {
 					thys.#writeBatchTimer = null;
 					_thys.scheduleWrite(true);
@@ -307,18 +306,14 @@ export class ByteTransport extends Transport {
 				header = decodeChannelHeaderFrom(inputBuffer);
 				break;
 			default:
-				await this.dispatchEvent('protocolViolation', {
-					type: 'unknownHeaderType',
-					description: `Unknown header type ${type}`,
-					headerType: type,
-				});
+				this.logger.error(`Unknown PolyTransport header type ${type}`);
 				await this.stop();
 				continue;
 			}
 
 			inputBuffer.release(totalHeaderSize, bufferPool);
 			const dataSize = header.dataSize ?? 0;
-			if (dataSize > 0 && _thys.state !== Transport.STATE_STOPPED) {
+			if (dataSize > 0) {
 				if (dataSize > inputBuffer.length) {
 					await this.#readable(dataSize);
 				}
@@ -377,7 +372,6 @@ export class ByteTransport extends Transport {
 		if (!ackBuffer) throw new Error('Insufficient pre-reservation');
 		const { base, ranges } = flowControl.getAckInfo();
 		if (base !== undefined) {
-			console.log(`(${this.role}) sendAckMessage`, channelId, base, ranges);
 			const headerSize = encodeAckHeaderInto(ackBuffer, 0, { channelId, baseSequence: base, ranges });
 			ackBuffer.shrink(headerSize);
 		} else {
@@ -392,6 +386,7 @@ export class ByteTransport extends Transport {
 	/**
 	 * Send a control or data message (optionally with byte data)
 	 * @param {symbol} token - The channel ID token
+	 * @param {ChannelFlowControl} flowControl - The channel flow controller
 	 * @param {Object} header - The message header
 	 * @param {Object} chunker - The chunking-strategy control-object
 	 * @param {number|null} chunker.bufferSize - Buffer size to request for next chunk (or null for UTF-16 text slices); depends on bytesToReserve()
@@ -400,9 +395,9 @@ export class ByteTransport extends Transport {
 	 * @param {function} chunker.nextChunk(buffer) - Fills the supplied buffer with the next chunk's Uint8 data; returns buffer
 	 * @param {number} chunker.remaining - Bytes remaining to write (before or) after most recent nextChunk
 	 * @param {boolean} eom - Whether to add EOM_FLAG when remaining (after nextChunk) <= 0
-	 * @returns {Promise<number>} - Returns a Promise that resolves to the number of bytes sent
+	 * @returns {Promise<number>} - Resolves to number of bytes remaining to send
 	 */
-	/* async */ sendChunk (token, header, chunker, { eom } = {}) {
+	async sendChunk (token, flowControl, header, chunker, { eom } = {}) {
 		const _thys = this.#_;
 		const { outputBuffer, writeQueue } = _thys;
 		const channel = _thys.channelTokens.get(token);
@@ -411,11 +406,12 @@ export class ByteTransport extends Transport {
 		}
 		const channelId = channel.id;
 		const taskResult = writeQueue.add(async () => {
-			const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
+			const { type = HDR_TYPE_CHAN_DATA, flags = 0, messageType = 0 } = header;
 			const bytesToReserve = chunker.bytesToReserve(), dataSize = chunker.bufferSize;
 			await _thys.reservable(bytesToReserve);
 			const chunkBuffer = outputBuffer.reserve(bytesToReserve);
 			if (!chunkBuffer) throw new Error('Insufficient pre-reservation');
+			const sequence = flowControl.nextWriteSeq;
 			const finalHeader = {
 				type, dataSize, flags, channelId, sequence, messageType
 			};
@@ -431,11 +427,12 @@ export class ByteTransport extends Transport {
 			encodeChannelHeaderInto(chunkBuffer, 0, type, finalHeader);
 			const numBytesSent = chunkBuffer.length;
 			outputBuffer.commit();
-			console.log(`(${this.role}) committed chunk`, finalHeader);
+			flowControl.sent(numBytesSent);
+			// console.log(`(${this.role}) committed chunk`, finalHeader);
 			_thys.scheduleWrite();
-			return numBytesSent;
+			return chunker.remaining;
 		});
-		return taskResult;
+		return await taskResult;
 	}
 
 	/**
