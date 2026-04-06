@@ -48,7 +48,6 @@ export class Channel extends Eventable {
 	#discard = false;           // Discard input when closing
 	#eomChunks = new Set();     // EOM subset of dataChunks
 	#filteredReaders = new Map(); // Map<type, {waiting: boolean, resolve}>
-	#flowControl;
 	#forceAckBytes;             // ACK-bytes threshold to force early ACK
 	#forceAckChunks;            // ACK-chunks threshold to force early ACK
 	#ids;
@@ -89,15 +88,15 @@ export class Channel extends Eventable {
 		this.#name = name;
 		this.#nextMessageTypeId = nextMessageTypeId;
 		this.#sendAckNow = () => this.#sendAckMessage(true);
-		this.#flowControl = new ChannelFlowControl(localLimit, remoteLimit, {
-			channel: this, logger: transport.logger,
-			ackBatchTime: ackBatchTime ?? 5, ackCallback: () => this.#sendAckMessage(),
-			forceAckBytes: this.#forceAckBytes, forceAckChunks: this.#forceAckChunks,
-			lowReadBytes: this.#lowReadBytes
-		});
 
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
 			__this: this,
+			flowControl: new ChannelFlowControl(localLimit, remoteLimit, {
+				channel: this, logger: transport.logger,
+				ackBatchTime: ackBatchTime ?? 5, ackCallback: () => this.#sendAckMessage(),
+				forceAckBytes: this.#forceAckBytes, forceAckChunks: this.#forceAckChunks,
+				lowReadBytes: this.#lowReadBytes
+			}),
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
 			token,
 			transport,
@@ -180,12 +179,14 @@ export class Channel extends Eventable {
 
 		if (discard) this.#discard = true;
 
+		console.log('closing', this.id, this.name);
 		// First request; initiate the closing process.
 		this.#state = Channel.STATE_CLOSING;
 		const closingPromise = this.#closingPromise = {};
 		closingPromise.promise = new Promise((...r) => [closingPromise.resolve] = r);
 
 		// Notify remote via the TCC.
+		console.log('sending chanClose to remote');
 		await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
 
 		// Notify beforeClose listeners.
@@ -195,17 +196,21 @@ export class Channel extends Eventable {
 		if (this.#discard) await this.#discardExistingInput();
 
 		// Wait for all in-flight writes to be ACK'd.
-		await this.#flowControl.allWritesAcked();
+		console.log('waiting on write ACKs');
+		await this.#_.flowControl.allWritesAcked();
 
 		// Notify remote of our completion.
+		console.log('sending chanClosed to remote');
 		await transport.sendTccMessage(this.#_.token, TCC_DTAM_CHAN_CLOSED[0]);
 
 		// Update state based on whether we've received remote's chanClosed.
 		if (this.#state === Channel.STATE_CLOSING) {
 			this.#state = Channel.STATE_REMOTE_CLOSING;
 			// Wait for remote's chanClosed
+			console.log('waiting for remote chanClosed');
 		} else if (this.#state === Channel.STATE_LOCAL_CLOSING) {
 			// Both sides have sent chanClosed - fully closed
+			console.log('finalizing');
 			await this.#finalizeClosure();
 		}
 		return closingPromise.promise; // Resolved in #finalizeClosure.
@@ -216,7 +221,7 @@ export class Channel extends Eventable {
 	 * Used when closing in discard mode
 	 */
 	async #discardExistingInput () {
-		const flowControl = this.#flowControl;
+		const flowControl = this.#_.flowControl;
 		flowControl.setAckBatchTime(0);
 		// Mark all buffered chunks as processed
 		for (const chunk of this.#dataChunks) {
@@ -270,7 +275,7 @@ export class Channel extends Eventable {
 		const { messageTypes } = this.#_;
 		messageTypes.clear();
 
-		this.#flowControl.stop();
+		this.#_.flowControl.stop();
 
 		// Dispatch closed event
 		await this.dispatchEvent('closed');
@@ -510,6 +515,7 @@ export class Channel extends Eventable {
 		if (!token || token !== this.#_.token) {
 			throw new Error('Unauthorized');
 		}
+		console.log(`(${this.#_.transport.role}) received remote chanClosed`);
 
 		// Update state based on current state
 		if (this.#state === Channel.STATE_CLOSING) {
@@ -517,6 +523,7 @@ export class Channel extends Eventable {
 			this.#state = Channel.STATE_LOCAL_CLOSING;
 		} else if (this.#state === Channel.STATE_REMOTE_CLOSING) {
 			// We already sent chanClosed, remote just sent theirs - fully closed
+			console.log('and now finalizing');
 			await this.#finalizeClosure();
 		}
 		// If state is OPEN or LOCAL_CLOSING, this is unexpected but we'll handle it gracefully
@@ -702,12 +709,13 @@ export class Channel extends Eventable {
 		const messageTypeId = selected[0].activeType;
 		const typeEntry = this.#_.messageTypes.get(messageTypeId);
 		const messageType = typeEntry?.name ?? messageTypeId;
+		const flowControl = this.#_.flowControl;
 
 		const result = {
 			messageType, messageTypeId, dataSize, text, data, eom,
 			done: () => {
 				for (const chunk of selected) {
-					this.#flowControl.markProcessed(chunk.header.sequence);
+					flowControl.markProcessed(chunk.header.sequence);
 				}
 			},
 			process: async (callback) => {
@@ -729,7 +737,7 @@ export class Channel extends Eventable {
 	 */
 	async #receiveAckMessage (header) {
 		const { baseSequence, ranges } = header;
-		const result = this.#flowControl.clearWriteAckInfo(baseSequence, ranges);
+		const result = this.#_.flowControl.clearWriteAckInfo(baseSequence, ranges);
 		if (result.duplicate) {
 			// Emit PVE for result.duplicate duplicate ACKs
 			this.#_.transport.logger.error('Received duplicate ACK');
@@ -771,7 +779,7 @@ export class Channel extends Eventable {
 		}
 
 		const controlChunks = this.#controlChunks;
-		const flowControl = this.#flowControl;
+		const flowControl = this.#_.flowControl;
 
 		/*
 		 * Accumulate control-message chunks until EOM.
@@ -823,17 +831,18 @@ export class Channel extends Eventable {
 	 */
 	#receiveDataMessage (header, data) {
 		const _thys = this.#_;
+		const { flowControl } = _thys;
 		const { headerSize, dataSize, sequence, messageType, flags } = header;
 		const eom = header.eom = !!(flags & FLAG_EOM);
 
-		if (!this.#flowControl.received(sequence, headerSize + dataSize)) {
+		if (!flowControl.received(sequence, headerSize + dataSize)) {
 			// Close channel on protocol violation
 			this.close({ discard: true });
 			return;
 		}
 		if (this.#discard) {
 			// If we're closing in discard mode, prepare to ACK and skip everything else
-			this.#flowControl.markProcessed(sequence);
+			flowControl.markProcessed(sequence);
 			return;
 		}
 
@@ -906,7 +915,7 @@ export class Channel extends Eventable {
 			// Remove dedicated task and send ACK now
 			this.#readyToAck = false;
 			this.#writeQueue.cancel(this.#sendAckNow, { resolve: null });
-			return this.#_.transport.sendAckMessage(this.#_.token, this.#flowControl);
+			return this.#_.transport.sendAckMessage(this.#_.token, this.#_.flowControl);
 		}
 		if (!this.#readyToAck) {
 			// We'll piggy-back on an existing write task if possible,
@@ -986,6 +995,7 @@ export class Channel extends Eventable {
 						return buffer;
 					},
 					get remaining () { return remaining; },
+					get type () { return 'VB'; }
 				};
 			}
 			if (source == null) return null; // No source/empty source
@@ -1001,6 +1011,7 @@ export class Channel extends Eventable {
 						return buffer;
 					},
 					get remaining () { return remaining; },
+					get type () { return 'fn'; }
 				};
 			}
 			if (typeof source === 'string' && !transport.needsEncodedText) { // Chunks from text (JS UTF-16)
@@ -1020,6 +1031,7 @@ export class Channel extends Eventable {
 						return slice;
 					},
 					get remaining () { return remaining; },
+					get type () { return 'str'; }
 				};
 			}
 			if (typeof source === 'string') { // Chunks of bytes from UTF-8-encoded text
@@ -1038,6 +1050,7 @@ export class Channel extends Eventable {
 						return buffer;
 					},
 					get remaining () { return remaining; },
+					get type () { return 'enc'; }
 				};
 			}
 			// undefined (default): unsupported source type
@@ -1046,7 +1059,7 @@ export class Channel extends Eventable {
 			throw new TypeError('Unsupported source type for channel write');
 		}
 
-		const flowControl = this.#flowControl;
+		const flowControl = this.#_.flowControl;
 		const writeQueue = this.#writeQueue;
 		const { type, eom = true, together = true } = options;
 		const sendAChunk = async () => {

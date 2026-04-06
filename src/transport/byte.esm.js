@@ -14,7 +14,7 @@
 import { Transport } from './base.esm.js';
 import { Channel } from '../channel.esm.js';
 import { OutputRingBuffer } from '../output-ring-buffer.esm.js';
-import { VirtualRWBuffer } from '../virtual-buffer.esm.js';
+import { VirtualBuffer, VirtualRWBuffer } from '../virtual-buffer.esm.js';
 import {
 	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
@@ -27,15 +27,18 @@ import { TaskQueue } from '@task-queue';
 export class ByteTransport extends Transport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
 		/**
-		 * Transport-specific stop: clear write timer
+		 * Transport-specific stop: wait for output buffer to drain, then clear write timer
 		 */
-		stop () {
+		async stop () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			const { writeTimer } = _thys;
-			if (writeTimer) {
-				clearTimeout(writeTimer);
-				_thys.writeTimer = null;
+			// Force any pending committed bytes to be written immediately
+			_thys.scheduleWrite(true);
+			// Wait until all committed bytes have been sent (output buffer fully drained)
+			await _thys.reservable(_thys.outputBuffer.size);
+			if (thys.#writeBatchTimer) {
+				clearTimeout(thys.#writeBatchTimer);
+				thys.#writeBatchTimer = null;
 			}
 		},
 
@@ -49,7 +52,11 @@ export class ByteTransport extends Transport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			// Wake a pending reservation if a ring-buffer release enables it
 			const { outputBuffer, reserveWaiter } = _thys;
-			if (reserveWaiter && outputBuffer.available >= reserveWaiter.size) reserveWaiter.resolve();
+			if (reserveWaiter && outputBuffer.available >= reserveWaiter.size) {
+				const resolve = reserveWaiter.resolve;
+				_thys.reserveWaiter = null;
+				resolve();
+			}
 		},
 
 		/**
@@ -63,7 +70,11 @@ export class ByteTransport extends Transport {
 			inputBuffer.append(source);
 
 			// If there's a waiter and we have sufficient input, wake them up
-			if (readWaiter && inputBuffer.length >= readWaiter.count) readWaiter.resolve();
+			if (readWaiter && inputBuffer.length >= readWaiter.count) {
+				const resolve = readWaiter.resolve;
+				_thys.readWaiter = null;
+				resolve();
+			}
 		},
 
 		// Wait until there's room for size bytes in the output ring
@@ -75,34 +86,39 @@ export class ByteTransport extends Transport {
 			if (size > outputBuffer.size) throw new RangeError(`Request (${size}) exceeds buffer size (${outputBuffer.size}`);
 			const waiter = _thys.reserveWaiter = { size };
 			const promise = new Promise((r) => waiter.resolve = r);
-			promise.then(() => _thys.reserveWaiter = null);
 			return promise;
 		},
 
 		/**
 		* Figure out when to write our output buffer
 		* Handles batching/scheduling, writes in progress, etc.
-		* @param {boolean} now - Send immediately (if there's any committed output)
+		* @param {boolean} immediate - Send immediately (if there's any committed output)
 		* @returns
 		*/
-		scheduleWrite (now = false) {
+		scheduleWrite (immediate = false) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			const { outputBuffer } = _thys;
 			const committed = outputBuffer.committed;
-			if (committed === 0 || _thys.writing) {
-				return; // Nothing to write, or writing in progress
-			}
-			if (committed >= (now ? 1 : thys.#autoWriteBytes)) {
-				// Send if forced or over byte threshold
-				if (_thys.writeTimer) {
-					clearTimeout(_thys.writeTimer);
-					_thys.writeTimer = null;
+			if (committed === 0) console.log(`(${this.role}) scheduleWrite with nothing committed`);
+			if (committed === 0) return; // Nothing to write
+			if (thys.#writeBatchTimer) console.log(`(${this.role}) (batch timer is currently running)`);
+
+			if (!thys.#writeBatchTime || committed >= (immediate ? 1 : thys.#forceWriteBytes)) {
+				// Send if immediate-mode, no batch time, or over byte threshold
+				if (thys.#writeBatchTimer) {
+					clearTimeout(thys.#writeBatchTimer);
+					thys.#writeBatchTimer = null;
 				}
+				console.log(`(${this.role}) calling writeBytes`);
 				_thys.writeBytes();
-			} else if (Number.isInteger(thys.#autoWriteTime) && !_thys.writeTimer) {
+			} else if (!thys.#writeBatchTimer) {
 				// Send when we've waited the maximum batching time
-				_thys.writeTimer = setTimeout(() => _thys.scheduleWrite(true), thys.#autoWriteTime);
+				console.log(`(${this.role}) starting write batch timer`);
+				thys.#writeBatchTimer = setTimeout(() => {
+					thys.#writeBatchTimer = null;
+					_thys.scheduleWrite(true);
+				}, thys.#writeBatchTime);
 			}
 		},
 
@@ -188,19 +204,27 @@ export class ByteTransport extends Transport {
 		 * Abstract method - must be implemented by subclasses
 		 */
 		/* async */ writeBytes () {
-			throw new Error('writeBytes() must be implemented by subclass');
+			thys.logger.error('writeBytes() must be implemented by subclass');
+			return Promise.reject(new Error('writeBytes() must be implemented by subclass'));
 		}
 	}, super.__protected));
 
 	#_; // ByteTransport-level view of shared protected state
-	#autoWriteBytes;
-	#autoWriteTime;
+	#forceWriteBytes;
+	#writeBatchTime;
+	#writeBatchTimer = null;
 
+	/**
+	 * Base class of hierarchy for byte-stream transports
+	 * @param {object} options 
+	 * @param {number} options.forceWriteBytes - Number of committed bytes that forces immediate write
+	 * @param {number} options.writeBatchTime - Time to wait (in msec) for more bytes to arrive before writing
+	 */
 	constructor (options = {}) {
 		super(options);
 		this._get_();
-		this.#autoWriteBytes = options.autoWriteBytes ?? 16 * 1024;
-		this.#autoWriteTime = options.autoWriteTime ?? 5; // msec
+		this.#forceWriteBytes = options.forceWriteBytes ?? 16 * 1024;
+		this.#writeBatchTime = options.writeBatchTime ?? 5; // msec
 		Object.assign(this.#_, {
 			inputBuffer: new VirtualRWBuffer(),
 			outputBuffer: new OutputRingBuffer(options.outputBufferSize),
@@ -319,7 +343,6 @@ export class ByteTransport extends Transport {
 		const waiter = { count };
 		const promise = new Promise((resolve) => waiter.resolve = resolve);
 		_thys.readWaiter = waiter;
-		promise.then(() => _thys.readWaiter = null);
 		return promise;
 	}
 
@@ -354,6 +377,7 @@ export class ByteTransport extends Transport {
 		if (!ackBuffer) throw new Error('Insufficient pre-reservation');
 		const { base, ranges } = flowControl.getAckInfo();
 		if (base !== undefined) {
+			console.log(`(${this.role}) sendAckMessage`, channelId, base, ranges);
 			const headerSize = encodeAckHeaderInto(ackBuffer, 0, { channelId, baseSequence: base, ranges });
 			ackBuffer.shrink(headerSize);
 		} else {
@@ -387,8 +411,8 @@ export class ByteTransport extends Transport {
 		}
 		const channelId = channel.id;
 		const taskResult = writeQueue.add(async () => {
-			const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0, dataSize = 0 } = header;
-			const bytesToReserve = chunker.bytesToReserve();
+			const { type = HDR_TYPE_CHAN_DATA, flags = 0, sequence, messageType = 0 } = header;
+			const bytesToReserve = chunker.bytesToReserve(), dataSize = chunker.bufferSize;
 			await _thys.reservable(bytesToReserve);
 			const chunkBuffer = outputBuffer.reserve(bytesToReserve);
 			if (!chunkBuffer) throw new Error('Insufficient pre-reservation');
@@ -407,6 +431,7 @@ export class ByteTransport extends Transport {
 			encodeChannelHeaderInto(chunkBuffer, 0, type, finalHeader);
 			const numBytesSent = chunkBuffer.length;
 			outputBuffer.commit();
+			console.log(`(${this.role}) committed chunk`, finalHeader);
 			_thys.scheduleWrite();
 			return numBytesSent;
 		});

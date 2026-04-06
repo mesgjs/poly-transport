@@ -8,14 +8,16 @@ import { Eventable } from '@eventable';
 import { ChannelFlowControl } from '../channel-flow-control.esm.js';
 import {
 	CHANNEL_TCC, CHANNEL_C2C, MIN_CHANNEL_ID, MIN_MESG_TYPE_ID,
-	TCC_DTAM_TRAN_STOP, TCC_DTAM_CHAN_REQUEST, TCC_DTAM_CHAN_RESPONSE,
+	TCC_DTAM_CHAN_REQUEST, TCC_DTAM_CHAN_RESPONSE,
 	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED,
+	TCC_DTAM_TRAN_STOP, TCC_DTAM_TRAN_STOPPED,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
 	StateError, toEven, toOdd, addRoleId
 } from '../protocol.esm.js';
 import { Channel } from '../channel.esm.js';
 import { ControlChannel } from '../control-channel.esm.js';
 import { Con2Channel } from '../con2-channel.esm.js';
+import { VirtualBuffer } from '../virtual-buffer.esm.js';
 export { StateError };
 
 /**
@@ -34,7 +36,9 @@ export class Transport extends Eventable {
 	static get STATE_STARTING () { return 1; }
 	static get STATE_ACTIVE () { return 2; }
 	static get STATE_STOPPING () { return 3; }
-	static get STATE_STOPPED () { return 4; }
+	static get STATE_LOCAL_STOPPING () { return 4; }
+	static get STATE_REMOTE_STOPPING () { return 5; }
+	static get STATE_STOPPED () { return 6; }
 
 	static __protected = Object.freeze({ // `protected` prototype
 		// Base stubs
@@ -117,7 +121,7 @@ export class Transport extends Eventable {
 		* Forward a received message to the appropriate channel
 		* @param {Object} state - Private state for auth
 		* @param {Object} header - Message header
-		* @param {*} data - Optional message data
+		* @param {undefined|string|Uint8Array[]} data - Optional message data
 		* @returns 
 		*/
 		async receiveMessage (header, data) {
@@ -135,6 +139,7 @@ export class Transport extends Eventable {
 
 			// Dispatch the message to the appropriate channel for processing
 			const token = _thys.channelTokens.get(channel);
+			if (Array.isArray(data)) data = new VirtualBuffer(data);
 			channel.receiveMessage(token, header, data);
 		}
 	});
@@ -558,13 +563,50 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Handle transport stop request
+	 * Handle incoming tranStop message (remote is initiating stop)
+	 * Initiates local stop if not already stopping.
 	 * @private
 	 * @param {Object} request - Parsed request
 	 */
 	async #onTransportStop (request) {
-		// Stop the transport
-		await this.stop();
+		const _thys = this.#_;
+		if (_thys.state === Transport.STATE_ACTIVE) {
+			// Remote initiated stop first - initiate our own stop (fire-and-forget)
+			this.stop().catch((err) => {
+				this.#logger.error('Error stopping transport after remote tranStop:', err);
+			});
+		}
+		// All other states: already stopping or stopped - no action needed
+	}
+
+	/**
+	 * Handle incoming tranStopped message (remote has completed its stop)
+	 * @private
+	 * @param {Object} request - Parsed request
+	 */
+	async #onTransportStopped (request) {
+		const _thys = this.#_;
+		const state = _thys.state;
+
+		if (state === Transport.STATE_STOPPING) {
+			// Remote is done, we're still working - transition to LOCAL_STOPPING
+			_thys.state = Transport.STATE_LOCAL_STOPPING;
+		} else if (state === Transport.STATE_REMOTE_STOPPING) {
+			// Both sides done - finalize
+			await this.#finalizeStop();
+		}
+		// LOCAL_STOPPING or other states: no-op
+	}
+
+	/**
+	 * Finalize transport stop - transition to STOPPED state, resolve promise, emit event
+	 * @private
+	 */
+	async #finalizeStop () {
+		const _thys = this.#_;
+		_thys.state = Transport.STATE_STOPPED;
+		_thys.stopped?.resolve();
+		await this.dispatchEvent('stopped', {});
 	}
 
 	/**
@@ -582,7 +624,7 @@ export class Transport extends Eventable {
 
 		// 1. Validate transport state
 		if (state !== Transport.STATE_ACTIVE) {
-			throw new StateError('Transport is not active');
+			throw new StateError(`Transport is not active (${this.stateString})`);
 		}
 
 		// 2. Check if channel already exists and is open
@@ -624,6 +666,8 @@ export class Transport extends Eventable {
 		return request.promise;
 	}
 
+	get role () { return this.#_.role; }
+
 	/**
 	 * Send a TCC message on behalf of a channel (e.g. chanClose, chanClosed)
 	 * @param {symbol} token - Channel token (for authorization and ID lookup)
@@ -650,6 +694,18 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Send a transport-level TCC message (tranStop or tranStopped)
+	 * @param {number} messageType - TCC_DTAM_TRAN_STOP[0] or TCC_DTAM_TRAN_STOPPED[0]
+	 * @param {Object} options - Additional message fields
+	 */
+	async #sendTransportTccMessage (messageType, options = {}) {
+		const _thys = this.#_;
+		const tcc = _thys.channels.get(CHANNEL_TCC);
+		const data = JSON.stringify(options);
+		await tcc.write(messageType, data);
+	}
+
+	/**
 	 * Common code to start the transport (begin reading and writing)
 	 * @returns {Promise<void>} Promise resolving when the transport is started
 	 */
@@ -660,6 +716,8 @@ export class Transport extends Eventable {
 		case Transport.STATE_ACTIVE:
 			return _thys.started.promise;
 		case Transport.STATE_STOPPING: // Too late - no longer available
+		case Transport.STATE_LOCAL_STOPPING:
+		case Transport.STATE_REMOTE_STOPPING:
 		case Transport.STATE_STOPPED:
 			throw new StateError('Transport is unavailable');
 		}
@@ -678,7 +736,7 @@ export class Transport extends Eventable {
 
 	get state () { return this.#_.state; }
 	get stateString () {
-		return ['created', 'starting', 'active', 'stopping', 'stopped'][this.#_.state];
+		return ['created', 'starting', 'active', 'stopping', 'localStopping', 'remoteStopping', 'stopped'][this.#_.state];
 	}
 
 	/**
@@ -691,7 +749,9 @@ export class Transport extends Eventable {
 	async stop (options = {}) {
 		const _thys = this.#_;
 		switch (_thys.state) {
-		case Transport.STATE_STOPPING: // Already stopping/stopped - return stopping promise
+		case Transport.STATE_STOPPING: // Already stopping - return stopping promise
+		case Transport.STATE_LOCAL_STOPPING:
+		case Transport.STATE_REMOTE_STOPPING:
 		case Transport.STATE_STOPPED:
 			return _thys.stopped.promise;
 		}
@@ -710,7 +770,11 @@ export class Transport extends Eventable {
 			if (request.reject) request.reject('Transport stopping');
 		}
 
-		// Close all channels
+		// Notify remote that we are stopping (only if TCC exists, i.e. handshake completed)
+		const tcc = _thys.channels.get(CHANNEL_TCC);
+		if (tcc) await this.#sendTransportTccMessage(TCC_DTAM_TRAN_STOP[0]);
+
+		// Close all regular channels
 		const channelClosePromises = [];
 		for (const [channel] of _thys.channelTokens) {
 			if (!(channel instanceof Channel) || channel.id === CHANNEL_TCC || channel.id === CHANNEL_C2C) continue;
@@ -733,7 +797,10 @@ export class Transport extends Eventable {
 			await Promise.all(channelClosePromises);
 		}
 
-		// Close the transport
+		// Notify remote that our side is fully stopped (last write before clearing timer)
+		if (tcc) await this.#sendTransportTccMessage(TCC_DTAM_TRAN_STOPPED[0]);
+
+		// Clear write batch timer (must happen after tranStopped is scheduled)
 		await _thys.stop();
 
 		// Shut down TCC and C2C channels (bypasses the no-op close() override)
@@ -748,11 +815,15 @@ export class Transport extends Eventable {
 			}
 		}
 
-		_thys.state = Transport.STATE_STOPPED;
-		stopped.resolve();
-
-		// Emit stopped event
-		await this.dispatchEvent('stopped', {});
+		if (!tcc || _thys.state === Transport.STATE_LOCAL_STOPPING) {
+			// Either there's no TCC (because the handshake never completed)
+			// or the remote already sent tranStopped - both sides done
+			await this.#finalizeStop();
+		} else {
+			// Waiting for remote's tranStopped
+			_thys.state = Transport.STATE_REMOTE_STOPPING;
+		}
+		return stopped.promise;
 	}
 
 	// Subscribe to protected state (base stub)
@@ -779,6 +850,7 @@ export class Transport extends Eventable {
 
 				const { messageTypeId, text } = message;
 
+				let skipAck = false;
 				try {
 					// Parse JSON data (already complete message thanks to default de-chunking)
 					const parsed = JSON.parse(text);
@@ -800,6 +872,10 @@ export class Transport extends Eventable {
 					case TCC_DTAM_TRAN_STOP[0]:
 						await this.#onTransportStop(parsed);
 						break;
+					case TCC_DTAM_TRAN_STOPPED[0]:
+						await this.#onTransportStopped(parsed);
+						skipAck = true; // tranStopped is the final message; no need to ACK
+						break;
 					case TCC_CTLM_MESG_TYPE_REG_REQ[0]:
 						// Message-type registration currently unsupported on TCC
 						break;
@@ -811,8 +887,8 @@ export class Transport extends Eventable {
 						await this.stop();
 					}
 				} finally {
-					// Always mark message as processed (enables backpressure)
-					message.done();
+					// Mark message as processed (enables backpressure) unless skipping ACK
+					if (!skipAck) message.done();
 				}
 			} catch (err) {
 				// Channel closed or error - exit reader loop

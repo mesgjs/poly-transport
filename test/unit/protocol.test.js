@@ -18,11 +18,12 @@ import {
 	FLAG_EOM,
 	CHANNEL_TCC,
 	CHANNEL_C2C,
-	TCC_DTAM_TRAN_STOP,
 	TCC_DTAM_CHAN_REQUEST,
 	TCC_DTAM_CHAN_RESPONSE,
 	TCC_CTLM_MESG_TYPE_REG_REQ,
 	TCC_CTLM_MESG_TYPE_REG_RESP,
+	TCC_DTAM_TRAN_STOP,
+	TCC_DTAM_TRAN_STOPPED,
 	C2C_MESG_TRACE,
 	C2C_MESG_DEBUG,
 	C2C_MESG_INFO,
@@ -111,11 +112,12 @@ Deno.test('Protocol - channel constants', () => {
 });
 
 Deno.test('Protocol - TCC message-type constants', () => {
-	assertEquals(TCC_DTAM_TRAN_STOP, [0, 'tranStop']);
 	assertEquals(TCC_DTAM_CHAN_REQUEST, [1, 'chanReq']);
 	assertEquals(TCC_DTAM_CHAN_RESPONSE, [2, 'chanResp']);
 	assertEquals(TCC_CTLM_MESG_TYPE_REG_REQ, [3, 'mesgTypeReq']);
 	assertEquals(TCC_CTLM_MESG_TYPE_REG_RESP, [4, 'mesgTypeResp']);
+	assertEquals(TCC_DTAM_TRAN_STOP, [7, 'tranStop']);
+	assertEquals(TCC_DTAM_TRAN_STOPPED, [8, 'tranStopped']);
 });
 
 Deno.test('Protocol - C2C message-type constants', () => {

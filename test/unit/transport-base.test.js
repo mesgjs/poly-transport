@@ -1,5 +1,10 @@
 import { assertEquals, assertRejects, assert, assertExists } from 'https://deno.land/std@0.177.0/testing/asserts.ts';
 import { Transport, StateError } from '../../src/transport/base.esm.js';
+import {
+	HDR_TYPE_CHAN_DATA, FLAG_EOM, DATA_HEADER_BYTES,
+	TCC_DTAM_TRAN_STOPPED, CHANNEL_TCC,
+} from '../../src/protocol.esm.js';
+import { VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
 
 // Mock transport implementation for testing
 class MockTransport extends Transport {
@@ -19,7 +24,23 @@ class MockTransport extends Transport {
 		},
 
 		async stop () {
-			// Mock stop
+			// Simulate remote sending tranStopped so stop() can finalize
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const tcc = _thys.channels.get(CHANNEL_TCC);
+			if (tcc) {
+				const data = '{}';
+				_thys.receiveMessage({
+					type: HDR_TYPE_CHAN_DATA,
+					headerSize: DATA_HEADER_BYTES,
+					dataSize: data.length * 2,
+					flags: FLAG_EOM,
+					channelId: CHANNEL_TCC,
+					sequence: tcc.nextReadSeq,
+					messageType: TCC_DTAM_TRAN_STOPPED[0],
+					eom: true,
+				}, data);
+			}
 		}
 	});
 
@@ -45,6 +66,25 @@ class MockTransport extends Transport {
 	getProtectedState () {
 		return this.#_;
 	}
+
+	// Mock sendChunk - consume the chunk and return byte count
+	/* async */ sendChunk (token, header, chunker, { eom } = {}) {
+		const bytesToReserve = chunker.bytesToReserve();
+		if (chunker.bufferSize !== null) {
+			// Binary/encoded chunk - provide a real buffer for encodeFrom
+			const buf = new VirtualRWBuffer(new Uint8Array(bytesToReserve));
+			chunker.nextChunk(buf);
+		} else {
+			// String chunk - consume it
+			chunker.nextChunk();
+		}
+		return Promise.resolve(bytesToReserve);
+	}
+
+	// Mock sendAckMessage - no-op
+	/* async */ sendAckMessage (token, flowControl) {
+		return Promise.resolve();
+	}
 }
 
 // Tests for Transport constants
@@ -58,7 +98,9 @@ Deno.test('Transport - STATE constants', () => {
 	assertEquals(Transport.STATE_STARTING, 1);
 	assertEquals(Transport.STATE_ACTIVE, 2);
 	assertEquals(Transport.STATE_STOPPING, 3);
-	assertEquals(Transport.STATE_STOPPED, 4);
+	assertEquals(Transport.STATE_LOCAL_STOPPING, 4);
+	assertEquals(Transport.STATE_REMOTE_STOPPING, 5);
+	assertEquals(Transport.STATE_STOPPED, 6);
 });
 
 // Tests for constructor

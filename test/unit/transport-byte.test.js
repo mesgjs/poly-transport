@@ -8,7 +8,7 @@ import {
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
 	RESERVE_ACK_BYTES, DATA_HEADER_BYTES,
 	encodeAckHeaderInto, encodeChannelHeaderInto,
-	TCC_DTAM_CHAN_REQUEST,
+	TCC_DTAM_CHAN_REQUEST, TCC_DTAM_TRAN_STOPPED, CHANNEL_TCC,
 } from '../../src/protocol.esm.js';
 
 // Mock byte transport with controllable I/O
@@ -30,6 +30,28 @@ class MockByteTransport extends ByteTransport {
 			outputBuffer.release(committed);
 			// Call afterWrite to wake any waiting reservations
 			_thys.afterWrite();
+		},
+
+		async stop () {
+			// First drain the output buffer (ByteTransport behavior)
+			await super.stop();
+			// Then simulate remote sending tranStopped so stop() can finalize
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const tcc = _thys.channels.get(CHANNEL_TCC);
+			if (tcc) {
+				const data = '{}';
+				_thys.receiveMessage({
+					type: HDR_TYPE_CHAN_DATA,
+					headerSize: DATA_HEADER_BYTES,
+					dataSize: data.length * 2,
+					flags: 0x0001, // FLAG_EOM
+					channelId: CHANNEL_TCC,
+					sequence: tcc.nextReadSeq,
+					messageType: TCC_DTAM_TRAN_STOPPED[0],
+					eom: true,
+				}, data);
+			}
 		}
 	}, super.__protected));
 
@@ -96,8 +118,8 @@ Deno.test('ByteTransport - constructor with defaults', () => {
 
 Deno.test('ByteTransport - constructor with custom options', () => {
 	const transport = new MockByteTransport({
-		autoWriteBytes: 8192,
-		autoWriteTime: 10,
+		forceWriteBytes: 8192,
+		writeBatchTime: 10,
 		outputBufferSize: 128 * 1024
 	});
 
@@ -316,7 +338,7 @@ Deno.test('ByteTransport - scheduleWrite triggers immediate write when forced', 
 });
 
 Deno.test('ByteTransport - scheduleWrite respects autoWriteBytes threshold', async () => {
-	const transport = new MockByteTransport({ autoWriteBytes: 1000, autoWriteTime: 50 });
+	const transport = new MockByteTransport({ forceWriteBytes: 1000, writeBatchTime: 50 });
 	const _thys = transport.getProtectedState();
 
 	// Commit less than threshold
@@ -336,7 +358,7 @@ Deno.test('ByteTransport - scheduleWrite respects autoWriteBytes threshold', asy
 });
 
 Deno.test('ByteTransport - scheduleWrite triggers write when over threshold', async () => {
-	const transport = new MockByteTransport({ autoWriteBytes: 1000 });
+	const transport = new MockByteTransport({ forceWriteBytes: 1000 });
 	const _thys = transport.getProtectedState();
 
 	// Commit more than threshold
@@ -907,16 +929,19 @@ Deno.test('ByteTransport - sendChunk uses write queue', async () => {
 	const token = _thys.channelTokens.get(tcc);
 
 	// Create chunkers
-	const createChunker = (data) => ({
-		bufferSize: data.length,
-		bytesToReserve: () => DATA_HEADER_BYTES + data.length + RESERVE_ACK_BYTES,
-		nextChunk: (buffer) => {
-			buffer.set(data);
-			buffer.shrink(data.length);
-			chunker.remaining = 0;
-		},
-		remaining: data.length
-	});
+	const createChunker = (data) => {
+		let remaining = data.length;
+		return {
+			bufferSize: data.length,
+			bytesToReserve: () => DATA_HEADER_BYTES + data.length,
+			nextChunk: (buffer) => {
+				buffer.set(data);
+				buffer.shrink(data.length);
+				remaining = 0;
+			},
+			get remaining () { return remaining; }
+		};
+	};
 
 	const chunker1 = createChunker(new Uint8Array([1, 2, 3]));
 	const chunker2 = createChunker(new Uint8Array([4, 5, 6]));

@@ -7,11 +7,12 @@
 import { Channel } from './channel.esm.js';
 import {
 	// Foundational transport-control-channel types
-	TCC_DTAM_TRAN_STOP,
 	TCC_DTAM_CHAN_REQUEST,
 	TCC_DTAM_CHAN_RESPONSE,
 	TCC_CTLM_MESG_TYPE_REG_REQ,
-	TCC_CTLM_MESG_TYPE_REG_RESP
+	TCC_CTLM_MESG_TYPE_REG_RESP,
+	TCC_DTAM_TRAN_STOP,
+	TCC_DTAM_TRAN_STOPPED,
 } from './protocol.esm.js';
 
 /**
@@ -48,16 +49,24 @@ export class ControlChannel extends Channel {
 	#preloadMessageTypes () {
 		const types = this.#_.messageTypes;
 		for (const [id, type] of [
-			TCC_DTAM_TRAN_STOP,
 			TCC_DTAM_CHAN_REQUEST,
 			TCC_DTAM_CHAN_RESPONSE,
 			TCC_CTLM_MESG_TYPE_REG_REQ,
-			TCC_CTLM_MESG_TYPE_REG_RESP
+			TCC_CTLM_MESG_TYPE_REG_RESP,
+			TCC_DTAM_TRAN_STOP,
+			TCC_DTAM_TRAN_STOPPED,
 		]) {
 			const entry = { type, ids: [id] };
 			types.set(id, entry);
 			types.set(type, entry);
 		}
+	}
+
+	/**
+	 * Next expected receive sequence number (for testing/simulation)
+	 */
+	get nextReadSeq () {
+		return this.#_.flowControl.nextReadSeq;
 	}
 
 	// Subscribe to private state (called by base constructor)

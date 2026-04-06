@@ -6,6 +6,7 @@ import {
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, HDR_TYPE_HANDSHAKE,
 	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL,
 	ackHeaderSize, TCC_DTAM_CHAN_REQUEST,
+	TCC_DTAM_TRAN_STOPPED, CHANNEL_TCC,
 } from '../../src/protocol.esm.js';
 
 /**
@@ -74,6 +75,26 @@ class MockPostMessageTransport extends PostMessageTransport {
 			if (thys.#receiveMessageInterceptor) thys.#receiveMessageInterceptor(header, data);
 			if (header.channelId === 0 && data === undefined) return;
 			return super.receiveMessage(header, data);
+		},
+
+		async stop () {
+			// Simulate remote sending tranStopped so stop() can finalize
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const tcc = _thys.channels.get(CHANNEL_TCC);
+			if (tcc) {
+				const data = '{}';
+				_thys.receiveMessage({
+					type: HDR_TYPE_CHAN_DATA,
+					headerSize: DATA_HEADER_BYTES,
+					dataSize: data.length * 2,
+					flags: FLAG_EOM,
+					channelId: CHANNEL_TCC,
+					sequence: tcc.nextReadSeq,
+					messageType: TCC_DTAM_TRAN_STOPPED[0],
+					eom: true,
+				}, data);
+			}
 		}
 	}, super.__protected));
 

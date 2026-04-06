@@ -49,13 +49,14 @@ export const CHANNEL_C2C = 1;  // Console-Content Channel
 // TCC pre-defined (foundational) message types (requirements.md:482-493)
 // (One shared namespace for TCC control/data and control on all channels)
 // (Message-types not required at transport start should be registered/mapped)
-export const TCC_DTAM_TRAN_STOP = [0, 'tranStop'];
 export const TCC_DTAM_CHAN_REQUEST = [1, 'chanReq'];
 export const TCC_DTAM_CHAN_RESPONSE = [2, 'chanResp'];
 export const TCC_CTLM_MESG_TYPE_REG_REQ = [3, 'mesgTypeReq']; // message-type registration request
 export const TCC_CTLM_MESG_TYPE_REG_RESP = [4, 'mesgTypeResp']; // message-type registration response
 export const TCC_DTAM_CHAN_CLOSE = [5, 'chanClose']; // channel close initiation
 export const TCC_DTAM_CHAN_CLOSED = [6, 'chanClosed']; // channel close completion
+export const TCC_DTAM_TRAN_STOP = [7, 'tranStop']; // transport stop initiation
+export const TCC_DTAM_TRAN_STOPPED = [8, 'tranStopped']; // transport stop completion
 
 // C2C pre-defined (foundational) message types (requirements.md:495-505)
 // (Message-types not required at transport start should be registered/mapped)
