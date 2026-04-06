@@ -67,9 +67,10 @@ class MockTransport extends Transport {
 		return this.#_;
 	}
 
-	// Mock sendChunk - consume the chunk and return byte count
-	/* async */ sendChunk (token, header, chunker, { eom } = {}) {
+	// Mock sendChunk - consume the chunk and return remaining
+	/* async */ sendChunk (token, flowControl, header, chunker, { eom } = {}) {
 		const bytesToReserve = chunker.bytesToReserve();
+		const sequence = flowControl.nextWriteSeq;
 		if (chunker.bufferSize !== null) {
 			// Binary/encoded chunk - provide a real buffer for encodeFrom
 			const buf = new VirtualRWBuffer(new Uint8Array(bytesToReserve));
@@ -78,7 +79,8 @@ class MockTransport extends Transport {
 			// String chunk - consume it
 			chunker.nextChunk();
 		}
-		return Promise.resolve(bytesToReserve);
+		flowControl.sent(bytesToReserve);
+		return Promise.resolve(chunker.remaining);
 	}
 
 	// Mock sendAckMessage - no-op

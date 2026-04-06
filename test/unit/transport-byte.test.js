@@ -439,7 +439,7 @@ Deno.test('ByteTransport - sendChunk requires valid token', async () => {
 	const transport = new MockByteTransport();
 
 	await assertRejects(
-		() => transport.sendChunk('not-a-symbol', {}, {}),
+		() => transport.sendChunk('not-a-symbol', {}, {}, {}),
 		Error,
 		'Unauthorized'
 	);
@@ -480,13 +480,18 @@ Deno.test('ByteTransport - sendChunk encodes channel header', async () => {
 
 	transport.clearWrites();
 
+	// Create mock flow control
+	const mockFlowControl = {
+		get nextWriteSeq () { return 1; },
+		sent: () => {}
+	};
+
 	// Send chunk
 	const header = {
 		type: HDR_TYPE_CHAN_DATA,
-		sequence: 1,
 		messageType: 100
 	};
-	await transport.sendChunk(token, header, mockChunker, { eom: true });
+	await transport.sendChunk(token, mockFlowControl, header, mockChunker, { eom: true });
 
 	// Trigger write
 	await transport.writeBytes();
@@ -736,14 +741,9 @@ Deno.test('ByteTransport - byteReader decodes channel data messages', async () =
 	await transport.stop();
 });
 
-Deno.test('ByteTransport - byteReader emits protocolViolation on unknown header type', async () => {
+Deno.test('ByteTransport - byteReader stops transport on unknown header type', async () => {
 	const transport = new MockByteTransport();
 	const _thys = transport.getProtectedState();
-
-	let violation = null;
-	transport.addEventListener('protocolViolation', (event) => {
-		violation = event.detail;
-	});
 
 	// Start transport (starts byte reader in line mode)
 	const startPromise = transport.start();
@@ -775,11 +775,8 @@ Deno.test('ByteTransport - byteReader emits protocolViolation on unknown header 
 	// Wait for processing
 	await new Promise((r) => setTimeout(r, 50));
 
-	assertExists(violation);
-	assertEquals(violation.type, 'unknownHeaderType');
-	assertEquals(violation.headerType, 99);
-
-	await transport.stop();
+	// Transport should have stopped due to unknown header type
+	assertEquals(transport.state, Transport.STATE_STOPPED);
 });
 
 // Tests for integration with base class
@@ -947,9 +944,16 @@ Deno.test('ByteTransport - sendChunk uses write queue', async () => {
 	const chunker2 = createChunker(new Uint8Array([4, 5, 6]));
 
 	// Send multiple chunks - should be serialized
-	const header = { sequence: 1, messageType: 100 };
-	const promise1 = transport.sendChunk(token, header, chunker1);
-	const promise2 = transport.sendChunk(token, { ...header, sequence: 2 }, chunker2);
+	// Create mock flow control
+	const mockFlowControl = {
+		_seq: 0,
+		get nextWriteSeq () { return ++this._seq; },
+		sent: () => {}
+	};
+
+	const header = { messageType: 100 };
+	const promise1 = transport.sendChunk(token, mockFlowControl, header, chunker1);
+	const promise2 = transport.sendChunk(token, mockFlowControl, { ...header }, chunker2);
 
 	// Both should complete
 	await promise1;

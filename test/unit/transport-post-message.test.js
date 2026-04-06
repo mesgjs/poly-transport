@@ -871,7 +871,7 @@ Deno.test('PostMessageTransport - sendChunk requires symbol token', async () => 
 	const transport = new MockPostMessageTransport({ gateway });
 
 	await assertRejects(
-		() => transport.sendChunk('not-a-symbol', {}, {}),
+		() => transport.sendChunk('not-a-symbol', {}, {}, {}),
 		Error,
 		'Unauthorized'
 	);
@@ -883,7 +883,7 @@ Deno.test('PostMessageTransport - sendChunk requires valid channel token', async
 
 	const fakeToken = Symbol('fake');
 	await assertRejects(
-		() => transport.sendChunk(fakeToken, {}, {}),
+		() => transport.sendChunk(fakeToken, {}, {}, {}),
 		Error,
 		'Unauthorized'
 	);
@@ -923,14 +923,19 @@ Deno.test('PostMessageTransport - sendChunk sends string data via postMessage', 
 		get remaining () { return remaining; },
 	};
 
+	// Create mock flow control
+	const mockFlowControl = {
+		get nextWriteSeq () { return 1; },
+		sent: () => {}
+	};
+
 	const header = {
 		type: HDR_TYPE_CHAN_DATA,
-		sequence: 1,
 		messageType: 100,
 	};
 
 	gateway.clearSentMessages();
-	transport.sendChunk(token, header, mockChunker, { eom: true });
+	transport.sendChunk(token, mockFlowControl, header, mockChunker, { eom: true });
 
 	await new Promise((r) => setTimeout(r, 20));
 
@@ -980,10 +985,16 @@ Deno.test('PostMessageTransport - sendChunk sets EOM flag when eom=true and rema
 		get remaining () { return remaining; },
 	};
 
-	const header = { type: HDR_TYPE_CHAN_DATA, sequence: 1, messageType: 100 };
+	// Create mock flow control
+	const mockFlowControl = {
+		get nextWriteSeq () { return 1; },
+		sent: () => {}
+	};
+
+	const header = { type: HDR_TYPE_CHAN_DATA, messageType: 100 };
 
 	gateway.clearSentMessages();
-	transport.sendChunk(token, header, mockChunker, { eom: true });
+	transport.sendChunk(token, mockFlowControl, header, mockChunker, { eom: true });
 
 	await new Promise((r) => setTimeout(r, 20));
 
@@ -1028,10 +1039,16 @@ Deno.test('PostMessageTransport - sendChunk does not set EOM flag when remaining
 		remaining: 100, // Still more data remaining
 	};
 
-	const header = { type: HDR_TYPE_CHAN_DATA, sequence: 1, messageType: 100 };
+	// Create mock flow control
+	const mockFlowControl = {
+		get nextWriteSeq () { return 1; },
+		sent: () => {}
+	};
+
+	const header = { type: HDR_TYPE_CHAN_DATA, messageType: 100 };
 
 	gateway.clearSentMessages();
-	transport.sendChunk(token, header, mockChunker, { eom: true });
+	transport.sendChunk(token, mockFlowControl, header, mockChunker, { eom: true });
 
 	await new Promise((r) => setTimeout(r, 20));
 
@@ -1079,15 +1096,20 @@ Deno.test('PostMessageTransport - sendChunk includes correct header fields', asy
 		get remaining () { return remaining; },
 	};
 
+	// Create mock flow control
+	const mockFlowControl = {
+		get nextWriteSeq () { return 7; },
+		sent: () => {}
+	};
+
 	const header = {
 		type: HDR_TYPE_CHAN_DATA,
-		sequence: 7,
 		messageType: 42,
 		flags: 0,
 	};
 
 	gateway.clearSentMessages();
-	transport.sendChunk(token, header, mockChunker);
+	transport.sendChunk(token, mockFlowControl, header, mockChunker);
 
 	await new Promise((r) => setTimeout(r, 20));
 
@@ -1139,10 +1161,17 @@ Deno.test('PostMessageTransport - sendChunk returns byte count', async () => {
 		get remaining () { return remaining; },
 	};
 
-	const header = { type: HDR_TYPE_CHAN_DATA, sequence: 1, messageType: 100 };
-	const result = await transport.sendChunk(token, header, mockChunker);
+	// Create mock flow control
+	const mockFlowControl = {
+		get nextWriteSeq () { return 1; },
+		sent: () => {}
+	};
 
-	assertEquals(result, expectedBytes);
+	const header = { type: HDR_TYPE_CHAN_DATA, messageType: 100 };
+	const result = await transport.sendChunk(token, mockFlowControl, header, mockChunker);
+
+	// sendChunk returns chunker.remaining (0 since all data was consumed)
+	assertEquals(result, 0);
 
 	await transport.stop();
 });

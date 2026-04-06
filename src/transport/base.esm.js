@@ -625,6 +625,8 @@ export class Transport extends Eventable {
 				}
 			}
 		}
+
+		_thys.bufferPool?.stop();
 		
 		_thys.state = Transport.STATE_STOPPED;
 		_thys.stopped?.resolve();
