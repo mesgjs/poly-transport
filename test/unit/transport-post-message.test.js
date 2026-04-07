@@ -76,26 +76,6 @@ class MockPostMessageTransport extends PostMessageTransport {
 			if (header.channelId === 0 && data === undefined) return;
 			return super.receiveMessage(header, data);
 		},
-
-		async stop () {
-			// Simulate remote sending tranStopped so stop() can finalize
-			const [thys, _thys] = [this.__this, this];
-			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			const tcc = _thys.channels.get(CHANNEL_TCC);
-			if (tcc) {
-				const data = '{}';
-				_thys.receiveMessage({
-					type: HDR_TYPE_CHAN_DATA,
-					headerSize: DATA_HEADER_BYTES,
-					dataSize: data.length * 2,
-					flags: FLAG_EOM,
-					channelId: CHANNEL_TCC,
-					sequence: tcc.nextReadSeq,
-					messageType: TCC_DTAM_TRAN_STOPPED[0],
-					eom: true,
-				}, data);
-			}
-		}
 	}, super.__protected));
 
 	#_subs = new Set();
@@ -116,6 +96,34 @@ class MockPostMessageTransport extends PostMessageTransport {
 	// Set an interceptor for receiveMessage calls
 	setReceiveMessageInterceptor (fn) {
 		this.#receiveMessageInterceptor = fn;
+	}
+
+	// Simulate remote sending tranStopped so stop() handshake can complete
+	#simulateRemoteTranStopped () {
+		const _thys = this.#_;
+		const tcc = _thys.channels.get(CHANNEL_TCC);
+		if (tcc) {
+			const data = '{}';
+			_thys.receiveMessage({
+				type: HDR_TYPE_CHAN_DATA,
+				headerSize: DATA_HEADER_BYTES,
+				dataSize: data.length * 2,
+				flags: FLAG_EOM,
+				channelId: CHANNEL_TCC,
+				sequence: tcc.nextReadSeq,
+				messageType: TCC_DTAM_TRAN_STOPPED[0],
+				eom: true,
+			}, data);
+		}
+	}
+
+	// Override sendChunk to simulate remote tranStopped when we send ours
+	sendChunk (token, flowControl, header, chunker, options) {
+		const result = super.sendChunk(token, flowControl, header, chunker, options);
+		if (header.messageType === TCC_DTAM_TRAN_STOPPED[0]) {
+			this.#simulateRemoteTranStopped();
+		}
+		return result;
 	}
 
 	_sub_ (subs) {

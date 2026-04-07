@@ -22,26 +22,6 @@ class MockTransport extends Transport {
 		startWriter () {
 			// Mock writer
 		},
-
-		async stop () {
-			// Simulate remote sending tranStopped so stop() can finalize
-			const [thys, _thys] = [this.__this, this];
-			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			const tcc = _thys.channels.get(CHANNEL_TCC);
-			if (tcc) {
-				const data = '{}';
-				_thys.receiveMessage({
-					type: HDR_TYPE_CHAN_DATA,
-					headerSize: DATA_HEADER_BYTES,
-					dataSize: data.length * 2,
-					flags: FLAG_EOM,
-					channelId: CHANNEL_TCC,
-					sequence: tcc.nextReadSeq,
-					messageType: TCC_DTAM_TRAN_STOPPED[0],
-					eom: true,
-				}, data);
-			}
-		}
 	});
 
 	#_ = null;
@@ -67,6 +47,25 @@ class MockTransport extends Transport {
 		return this.#_;
 	}
 
+	// Simulate remote sending tranStopped so stop() handshake can complete
+	#simulateRemoteTranStopped () {
+		const _thys = this.#_;
+		const tcc = _thys.channels.get(CHANNEL_TCC);
+		if (tcc) {
+			const data = '{}';
+			_thys.receiveMessage({
+				type: HDR_TYPE_CHAN_DATA,
+				headerSize: DATA_HEADER_BYTES,
+				dataSize: data.length * 2,
+				flags: FLAG_EOM,
+				channelId: CHANNEL_TCC,
+				sequence: tcc.nextReadSeq,
+				messageType: TCC_DTAM_TRAN_STOPPED[0],
+				eom: true,
+			}, data);
+		}
+	}
+
 	// Mock sendChunk - consume the chunk and return remaining
 	/* async */ sendChunk (token, flowControl, header, chunker, { eom } = {}) {
 		const bytesToReserve = chunker.bytesToReserve();
@@ -80,6 +79,12 @@ class MockTransport extends Transport {
 			chunker.nextChunk();
 		}
 		flowControl.sent(bytesToReserve);
+
+		// When we "send" our tranStopped, simulate remote sending theirs
+		if (header.messageType === TCC_DTAM_TRAN_STOPPED[0]) {
+			this.#simulateRemoteTranStopped();
+		}
+
 		return Promise.resolve(chunker.remaining);
 	}
 
