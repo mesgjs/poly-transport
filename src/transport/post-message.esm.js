@@ -183,7 +183,7 @@ export class PostMessageTransport extends Transport {
 			if (eom && chunker.remaining <= 0) finalHeader.flags |= FLAG_EOM;
 			this.#gateway.postMessage({ protocol: PROTOCOL, header: finalHeader, data });
 		} else { // Sending byte data (or none at all)
-			const buffer = this.#getPoolVRWB(header.dataSize);
+			const buffer = this.#getPoolVRWB(bufferSize);
 			if (buffer) chunker.nextChunk(buffer);
 			const transfer = buffer ? buffer.segments.map((buffer) => buffer.buffer) : [];
 			if (eom && chunker.remaining <= 0) finalHeader.flags |= FLAG_EOM;

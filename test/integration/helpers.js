@@ -128,7 +128,7 @@ export class ConnectedByteTransport extends ByteTransport {
 				copy.set(buf);
 				return copy;
 			});
-			
+
 			// Capture for assertions
 			for (const snapshot of snapshots) {
 				thys.writtenBytes.push(snapshot);

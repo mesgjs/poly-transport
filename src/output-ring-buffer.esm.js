@@ -283,9 +283,9 @@ export class OutputRingBuffer {
 	}
 
 	// Basic cleanup on shutdown (e.g. for testing)
-	stop () {
+	stop ({ disconnected = false } = {}) {
 		if (this.#waiter) {
-			this.#waiter.reject('Stopping');
+			this.#waiter.reject(disconnected ? 'Disconnected' : 'Stopping');
 		}
 	}
 }

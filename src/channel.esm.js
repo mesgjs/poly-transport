@@ -335,7 +335,7 @@ export class Channel extends Eventable {
 		if (spec == null) return null;
 		const { messageTypes } = this.#_;
 		const ids = new IdSet();
-		const iterable = spec?.[Symbol.iterator];
+		const iterable = (typeof spec !== 'string') && spec?.[Symbol.iterator];
 		for (const value of iterable ? spec : [spec]) {
 			switch (typeof value) {
 			case 'number':
@@ -999,7 +999,15 @@ export class Channel extends Eventable {
 					get type () { return 'VB'; }
 				};
 			}
-			if (source == null) return null; // No source/empty source
+			if (source == null) { // No source/empty source
+				remaining = 0;
+				return {
+					get bufferSize () { return 0; },
+					bytesToReserve: standardBytesToReserve,
+					get remaining () { return 0; },
+					get type () { return 'null'; }
+				};
+			}
 			if (typeof source === 'function') { // Chunks from function
 				remaining = options.byteLength ?? 0;
 				return {
@@ -1056,7 +1064,7 @@ export class Channel extends Eventable {
 			}
 			// undefined (default): unsupported source type
 		})();
-		if (chunker === undefined) {
+		if (chunker == undefined) {
 			throw new TypeError('Unsupported source type for channel write');
 		}
 
