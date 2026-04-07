@@ -23,7 +23,11 @@ export class Con2Channel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	/* async */ close ({ shutdown } = {}) {
+	/* async */ close ({ disconnect, shutdown } = {}) {
+		if (disconnect && disconnect === this.#_.token) {
+			// Transport-initiated shutdown: finalize the channel to terminate the reader loop
+			return this.#_.onDisconnect();
+		}
 		if (shutdown && shutdown === this.#_.token) {
 			// Transport-initiated shutdown: finalize the channel to terminate any reader loops
 			return this.#_.onShutDown();

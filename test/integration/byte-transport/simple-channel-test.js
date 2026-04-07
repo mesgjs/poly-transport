@@ -10,10 +10,8 @@ import { Channel } from '../../../src/channel.esm.js';
 
 Deno.test('ByteTransport - can request and accept channel', async () => {
 	const [transportA, transportB] = await makeByteTransportPair();
-	console.log('made byte transports');
 
 	const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
-	console.log('made connected channel');
 
 	assertExists(channelA);
 	assertExists(channelB);
@@ -21,7 +19,6 @@ Deno.test('ByteTransport - can request and accept channel', async () => {
 	assertEquals(channelB.state, Channel.STATE_OPEN);
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
-	console.log('stopped transports');
 });
 
 Deno.test('ByteTransport - can exchange data', async () => {

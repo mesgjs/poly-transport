@@ -27,23 +27,6 @@ import { TaskQueue } from '@task-queue';
 export class ByteTransport extends Transport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
 		/**
-		 * Transport-specific stop: wait for output buffer to drain, then clear write timer
-		 */
-		async stop () {
-			const [thys, _thys] = [this.__this, this];
-			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			const { outputBuffer } = _thys;
-			// Force any pending committed bytes to be written immediately
-			if (outputBuffer.committed) _thys.scheduleWrite(true);
-			// Wait until all committed bytes have been sent (output buffer fully drained)
-			await _thys.reservable(outputBuffer.size);
-			if (thys.#writeBatchTimer) {
-				clearTimeout(thys.#writeBatchTimer);
-				thys.#writeBatchTimer = null;
-			}
-		},
-
-		/**
 		 * Handle any post-write actions
 		 * (Call from concrete sub-class writeBytes)
 		 */
@@ -58,6 +41,29 @@ export class ByteTransport extends Transport {
 				_thys.reserveWaiter = null;
 				resolve();
 			}
+		},
+
+		/**
+		 * Called when the underlying connection is lost.
+		 * Wakes/rejects I/O waiters before calling the base implementation.
+		 */
+		async onDisconnect () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			// Wake the read waiter (if any) so the reader loop can exit
+			if (_thys.readWaiter) {
+				const { reject } = _thys.readWaiter;
+				_thys.readWaiter = null;
+				reject?.('Disconnected');
+			}
+			// Wake the reserve waiter (if any)
+			if (_thys.reserveWaiter) {
+				const { reject } = _thys.reserveWaiter;
+				_thys.reserveWaiter = null;
+				reject?.('Disconnected');
+			}
+			// Call base implementation
+			await super.onDisconnect();
 		},
 
 		/**
@@ -200,6 +206,27 @@ export class ByteTransport extends Transport {
 		},
 
 		/**
+		 * Transport-specific stop: wait for output buffer to drain, then clear write timer.
+		 * Skips drain if transport is in STATE_DISCONNECTED (no connection to drain to).
+		 */
+		async stop () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			// Skip drain if disconnected (no connection to drain to)
+			if (_thys.state !== Transport.STATE_DISCONNECTED) {
+				const { outputBuffer } = _thys;
+				// Force any pending committed bytes to be written immediately
+				if (outputBuffer.committed) _thys.scheduleWrite(true);
+				// Wait until all committed bytes have been sent (output buffer fully drained)
+				await _thys.reservable(outputBuffer.size);
+			}
+			if (thys.#writeBatchTimer) {
+				clearTimeout(thys.#writeBatchTimer);
+				thys.#writeBatchTimer = null;
+			}
+		},
+
+		/**
 		 * Write bytes from output buffer to underlying transport
 		 * Abstract method - must be implemented by subclasses
 		 */
@@ -246,7 +273,7 @@ export class ByteTransport extends Transport {
 		let offset = 0;
 
 		// Line-based config/handshake loop
-		while (!(_thys.state === Transport.STATE_STOPPED)) {
+		while (_thys.state !== Transport.STATE_STOPPED && _thys.state !== Transport.STATE_DISCONNECTED) {
 			if (offset === inputBuffer.length) {
 				await this.#readable(offset + 1);
 			}
@@ -283,7 +310,7 @@ export class ByteTransport extends Transport {
 		}
 
 		// Byte-stream-based message loop
-		while (_thys.state !== Transport.STATE_STOPPED) {
+		while (_thys.state !== Transport.STATE_STOPPED && _thys.state !== Transport.STATE_DISCONNECTED) {
 			// Read a message header
 			if (inputBuffer.length < 2) {
 				await this.#readable(2);
@@ -337,7 +364,7 @@ export class ByteTransport extends Transport {
 
 		// Wait on the necessary additional bytes
 		const waiter = { count };
-		const promise = new Promise((resolve) => waiter.resolve = resolve);
+		const promise = new Promise((...r) => [ waiter.resolve, waiter.reject] = r);
 		_thys.readWaiter = waiter;
 		return promise;
 	}

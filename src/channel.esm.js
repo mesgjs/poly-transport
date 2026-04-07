@@ -22,9 +22,20 @@ export class Channel extends Eventable {
 	static get STATE_LOCAL_CLOSING () { return 'localClosing'; }
 	static get STATE_REMOTE_CLOSING () { return 'remoteClosing'; }
 	static get STATE_CLOSED () { return 'closed'; }
+	static get STATE_DISCONNECTED () { return 'disconnected'; }
 
 	static __protected = Object.freeze({
 		// Prototype protected methods
+
+		/**
+		 * Finalize channel closure on transport disconnect
+		 * Called by ControlChannel/Con2Channel when transport is disconnected
+		 */
+		async onDisconnect () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			return thys.#disconnect();
+		},
 
 		/**
 		 * Finalize channel closure on transport shutdown
@@ -157,14 +168,21 @@ export class Channel extends Eventable {
 	 * Close the channel
 	 * @param {Object} options
 	 * @param {boolean} options.discard - Discard incoming data
+	 * @param {symbol} options.disconnect - Transport token for immediate disconnect (secret handshake)
 	 * @returns {Promise<void>} Resolves when channel is fully closed
 	 */
-	async close ({ discard = false } = {}) {
+	async close ({ discard = false, disconnect } = {}) {
+		// Secret handshake: transport passes its token to trigger immediate disconnect
+		if (disconnect !== undefined) {
+			if (disconnect !== this.#_.token) throw new Error('Unauthorized');
+			return this.#disconnect();
+		}
+
 		const state = this.#state;
 		const { token, transport } = this.#_;
 
 		// Allow switch to discard mode mid-closing.
-		if (state !== Channel.STATE_OPEN && state !== Channel.STATE_CLOSED && discard && !this.#discard) {
+		if (state !== Channel.STATE_OPEN && state !== Channel.STATE_CLOSED && state !== Channel.STATE_DISCONNECTED && discard && !this.#discard) {
 			this.#discard = true;
 			// Update the remote as well. This message will get echoed back to us if the remote
 			// isn't already in discard mode, but won't have any further effect.
@@ -176,7 +194,7 @@ export class Channel extends Eventable {
 
 		// If already closing or closed, just return the existing closing promise.
 		if (state !== Channel.STATE_OPEN) {
-			return this.#closingPromise.promise;
+			return this.#closingPromise?.promise;
 		}
 
 		if (discard) this.#discard = true;
@@ -185,7 +203,7 @@ export class Channel extends Eventable {
 		this.#state = Channel.STATE_CLOSING;
 		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} now CLOSING`);
 		const closingPromise = this.#closingPromise = {};
-		closingPromise.promise = new Promise((...r) => [closingPromise.resolve] = r);
+		closingPromise.promise = new Promise((...r) => [closingPromise.resolve, closingPromise.reject] = r);
 
 		// Notify remote via the TCC.
 		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} sending chanClose`);
@@ -237,6 +255,46 @@ export class Channel extends Eventable {
 
 		// Send ACKs immediately
 		await this.#sendAckMessage(true);
+	}
+
+	/**
+	 * Immediately disconnect the channel (abrupt, non-negotiated termination).
+	 * Called by the transport when it is being disconnected.
+	 * Does NOT send any TCC messages (chanClose, chanClosed).
+	 * Does NOT call transport.nullChannel() — transport handles its own cleanup.
+	 */
+	async #disconnect () {
+		const state = this.#state;
+		if (state === Channel.STATE_CLOSED || state === Channel.STATE_DISCONNECTED) {
+			return this.#closingPromise?.promise;
+		}
+
+		// Transition to disconnected state immediately
+		this.#state = Channel.STATE_DISCONNECTED;
+
+		// Reject pending message-type registrations
+		for (const [_type, entry] of this.#_.messageTypes) {
+			entry.reject?.('Disconnected');
+		}
+
+		// Reject pending reads
+		if (this.#allReader?.reject) this.#allReader.reject('Disconnected');
+		for (const [_type, entry] of this.#filteredReaders) {
+			if (entry.reject) entry.reject('Disconnected');
+		}
+
+		// Reject pending close() promise
+		this.#closingPromise?.reject?.('Disconnected');
+
+		// Clear message type registrations
+		this.#_.messageTypes.clear();
+
+		// Stop flow control (rejects pending writable() and allWritesAcked() waiters)
+		this.#_.flowControl.stop({ disconnected: true });
+
+		// Dispatch 'closed' event (channel IS closed, just abruptly)
+		await this.dispatchEvent('closed');
+		// Note: No transport.nullChannel() call — transport handles its own cleanup
 	}
 
 	/**

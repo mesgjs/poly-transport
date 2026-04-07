@@ -116,7 +116,7 @@ export class ChannelFlowControl {
 		if (existing) return existing.promise;
 
 		const promise = this.#allWritesAcked = {}; // No existing promise yet, so create one
-		promise.promise = new Promise((resolve) => promise.resolve = resolve);
+		promise.promise = new Promise((...r) => [promise.resolve, promise.reject] = r);
 		return promise.promise;
 	}
 
@@ -443,12 +443,30 @@ export class ChannelFlowControl {
 	}
 
 	/**
-	 * Stop any running batch timer when finalizing channel closure
+	 * Stop any running batch timer when finalizing channel closure.
+	 * If disconnected is true, also rejects pending writable() and allWritesAcked() waiters.
+	 * @param {Object} options
+	 * @param {boolean} options.disconnected - Whether to reject pending waiters (default: false)
 	 */
-	stop () {
+	stop ({ disconnected = false } = {}) {
 		const timer = this.#ackBatchTimer;
 		if (timer) clearTimeout(timer);
 		this.#stopped = true;
+
+		if (disconnected) {
+			// Reject pending writable() waiter
+			if (this.#writer) {
+				const { reject } = this.#writer;
+				this.#writer = null;
+				reject?.('Disconnected');
+			}
+			// Reject pending allWritesAcked() waiter
+			if (this.#allWritesAcked) {
+				const { reject } = this.#allWritesAcked;
+				this.#allWritesAcked = null;
+				reject?.('Disconnected');
+			}
+		}
 	}
 
 	/**
@@ -480,8 +498,8 @@ export class ChannelFlowControl {
 
 		// Otherwise, wait for budget to become available
 		// Note: TaskQueue ensures only one chunk waiting at a time per channel
-		return new Promise((resolve) => {
-			this.#writer = { bytes, resolve };
+		return new Promise((resolve, reject) => {
+			this.#writer = { bytes, resolve, reject };
 		});
 	}
 

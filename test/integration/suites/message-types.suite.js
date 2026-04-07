@@ -117,14 +117,11 @@ export function registerMessageTypeTests (makeTransportPair) {
 		const [transportA, transportB] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
-		console.log('transports started, channel created, adding (unnecessary) message-type listener');
 		channelB.addEventListener('newMessageType', (_event) => {
-			console.log('default-accepting new message type', _event.detail);
 			// Accept by default
 		});
 
 		await channelA.addMessageTypes(['myType']);
-		console.log('back from message type request, writing with new type');
 
 		// Should not throw
 		await channelA.write('myType', 'hello', { eom: true });
@@ -135,11 +132,8 @@ export function registerMessageTypeTests (makeTransportPair) {
 		assertEquals(readResult.text, 'hello');
 		readResult.done();
 
-		console.log('messaging done, closing channels');
 		await Promise.all([channelA.close(), channelB.close()]);
-		console.log('channels closed, stopping transports');
 		await Promise.all([transportA.stop(), transportB.stop()]);
-		console.log('transports stopped');
 	});
 
 	// ─── Test: Rejected type cannot be used in write ──────────────────────────────

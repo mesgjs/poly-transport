@@ -39,6 +39,7 @@ export class Transport extends Eventable {
 	static get STATE_LOCAL_STOPPING () { return 4; }
 	static get STATE_REMOTE_STOPPING () { return 5; }
 	static get STATE_STOPPED () { return 6; }
+	static get STATE_DISCONNECTED () { return 7; }
 
 	static __protected = Object.freeze({ // `protected` prototype
 		// Base stubs
@@ -47,6 +48,16 @@ export class Transport extends Eventable {
 		startReader () { },
 		startWriter () { },
 		stop () { },
+
+		/**
+		 * Called by subclasses when they detect a connection drop.
+		 * Default implementation calls stop({ disconnected: true }).
+		 */
+		async onDisconnect () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			await thys.stop({ disconnected: true });
+		},
 
 		/**
 		* Calculate operating values and activate foundational channels upon receiving
@@ -127,7 +138,7 @@ export class Transport extends Eventable {
 		async receiveMessage (header, data) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			if (_thys.state === Transport.STATE_STOPPED) return;
+			if (_thys.state === Transport.STATE_STOPPED || _thys.state === Transport.STATE_DISCONNECTED) return;
 			// console.log(`(${thys.role}) receiveMessage`, header, data);
 
 			const channelId = header.channelId, channel = _thys.channels.get(channelId);
@@ -139,7 +150,7 @@ export class Transport extends Eventable {
 				return;
 			}
 
-			if (channel.state === Channel.STATE_CLOSED) {
+			if (channel.state === Channel.STATE_CLOSED || channel.state === Channel.STATE_DISCONNECTED) {
 				const message = `Received message for closed channel ID ${channelId}`;
 				thys.logger.error(message);
 				await thys.stop();
@@ -239,6 +250,69 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Immediately disconnect the transport (abrupt, non-negotiated shutdown).
+	 * Called when stop({ disconnected: true }) is invoked.
+	 * Does NOT send any TCC messages. Does NOT wait for remote responses.
+	 * @private
+	 */
+	async #disconnectedStop () {
+		const _thys = this.#_;
+
+		// Already in a terminal state: no-op
+		if (_thys.state === Transport.STATE_STOPPED || _thys.state === Transport.STATE_DISCONNECTED) {
+			return _thys.stopped?.promise;
+		}
+
+		// Capture prior stopped promise (to reject it if graceful stop was in progress)
+		const priorStopped = _thys.stopped;
+
+		// Transition to disconnected state
+		_thys.state = Transport.STATE_DISCONNECTED;
+
+		// Create new stopped promise
+		const stopped = _thys.stopped = { promise: null };
+		stopped.promise = new Promise((res) => stopped.resolve = res);
+
+		// Reject all pending channel requests
+		for (const [_name, request] of _thys.pendingChannelRequests) {
+			if (request.reject) request.reject('Disconnected');
+		}
+		_thys.pendingChannelRequests.clear();
+
+		// Disconnect all regular channels via close({ disconnect: token })
+		const { channels, channelTokens } = _thys;
+		for (const [channel, token] of channelTokens) {
+			if (!(channel instanceof Channel)) continue;
+			if (channel.id === CHANNEL_TCC || channel.id === CHANNEL_C2C) continue;
+			channel.close({ disconnect: token }).catch(() => { });
+		}
+
+		// Disconnect TCC and C2C
+		for (const channelId of [CHANNEL_TCC, CHANNEL_C2C]) {
+			const channel = channels.get(channelId);
+			if (channel && typeof channel.close === 'function') {
+				const token = channelTokens.get(channel);
+				if (token) channel.close({ disconnect: token }).catch(() => { });
+			}
+		}
+
+		// Subclass cleanup (wake I/O waiters, clear timers — no I/O)
+		await _thys.stop();
+
+		_thys.bufferPool?.stop();
+
+		// Reject prior stopped promise (if graceful stop was in progress)
+		priorStopped?.reject?.('Disconnected');
+
+		// Resolve new stopped promise
+		stopped.resolve();
+
+		// Emit events
+		await this.dispatchEvent('disconnected', {});
+		await this.dispatchEvent('stopped', {});
+	}
+
+	/**
 	 * Dispatch an event and await all handlers
 	 * @protected
 	 * @returns {Promise<void>}
@@ -252,6 +326,35 @@ export class Transport extends Eventable {
 			// Allows dispatching "real" event objects (e.g. with .preventDefault(), such as subclasses of AppAsyncEvent)
 			await super.dispatchEvent(spec[0]);
 		}
+	}
+
+	/**
+	 * Finalize transport stop - transition to STOPPED state, resolve promise, emit event
+	 * @private
+	 */
+	async #finalizeStop () {
+		const _thys = this.#_;
+
+		// Shut down TCC and C2C channels (bypasses the no-op close() override)
+		const { channels, channelTokens } = _thys;
+		for (const channelId of [CHANNEL_TCC, CHANNEL_C2C]) {
+			const channel = channels.get(channelId);
+			if (channel && typeof channel.close === 'function') {
+				const token = channelTokens.get(channel);
+				if (token) {
+					await channel.close({ shutdown: token }).catch((err) => this.logger.error(err));
+				}
+			}
+		}
+
+		// Clear write batch timer (must happen after tranStopped is scheduled)
+		await _thys.stop();
+
+		_thys.bufferPool?.stop();
+
+		_thys.state = Transport.STATE_STOPPED;
+		_thys.stopped?.resolve();
+		await this.dispatchEvent('stopped', {});
 	}
 
 	/**
@@ -604,35 +707,6 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Finalize transport stop - transition to STOPPED state, resolve promise, emit event
-	 * @private
-	 */
-	async #finalizeStop () {
-		const _thys = this.#_;
-
-		// Shut down TCC and C2C channels (bypasses the no-op close() override)
-		const { channels, channelTokens } = _thys;
-		for (const channelId of [CHANNEL_TCC, CHANNEL_C2C]) {
-			const channel = channels.get(channelId);
-			if (channel && typeof channel.close === 'function') {
-				const token = channelTokens.get(channel);
-				if (token) {
-					await channel.close({ shutdown: token }).catch((err) => this.logger.error(err));
-				}
-			}
-		}
-
-		// Clear write batch timer (must happen after tranStopped is scheduled)
-		await _thys.stop();
-
-		_thys.bufferPool?.stop();
-
-		_thys.state = Transport.STATE_STOPPED;
-		_thys.stopped?.resolve();
-		await this.dispatchEvent('stopped', {});
-	}
-
-	/**
 	 * Request a new channel
 	 * @param {string} name - Channel name
 	 * @param {Object} options - Channel options
@@ -654,6 +728,11 @@ export class Transport extends Eventable {
 		const existing = channels.get(name);
 		if (existing && existing.state === Channel.STATE_OPEN) {
 			return existing;
+		}
+
+		// 2b. Check if channel was disconnected (not reopenable)
+		if (existing && existing.state === Channel.STATE_DISCONNECTED) {
+			throw new StateError(`Channel "${name}" was disconnected and cannot be reopened`);
 		}
 
 		// 3. Check if request already pending - return existing promise
@@ -759,24 +838,33 @@ export class Transport extends Eventable {
 
 	get state () { return this.#_.state; }
 	get stateString () {
-		return ['created', 'starting', 'active', 'stopping', 'localStopping', 'remoteStopping', 'stopped'][this.#_.state];
+		return ['created', 'starting', 'active', 'stopping', 'localStopping', 'remoteStopping', 'stopped', 'disconnected'][this.#_.state];
 	}
 
 	/**
 	 * Stop the transport and close all channels
 	 * @param {Object} options - Close options
 	 * @param {boolean} options.discard - Discard pending data (default: false)
+	 * @param {boolean} options.disconnected - Trigger immediate disconnected shutdown (default: false)
 	 * @param {number} options.timeout - Timeout in milliseconds
 	 * @returns {Promise<void>} Promise resolving when the transport is stopped
 	 */
 	async stop (options = {}) {
 		const _thys = this.#_;
+		const { disconnected = false } = options;
+
+		// Disconnected path: immediate, non-negotiated shutdown
+		if (disconnected) {
+			return this.#disconnectedStop();
+		}
+
 		switch (_thys.state) {
 		case Transport.STATE_STOPPING: // Already stopping - return stopping promise
 		case Transport.STATE_LOCAL_STOPPING:
 		case Transport.STATE_REMOTE_STOPPING:
-		case Transport.STATE_STOPPED:
-			return _thys.stopped.promise;
+		case Transport.STATE_STOPPED: // Already in terminal state
+		case Transport.STATE_DISCONNECTED:
+			return _thys.stopped?.promise;
 		}
 
 		_thys.state = Transport.STATE_STOPPING;

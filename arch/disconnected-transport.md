@@ -1,7 +1,7 @@
 # Disconnected-Transport Feature Architecture
 
 **Date**: 2026-04-07
-**Status**: [DRAFT]
+**Status**: [APPROVED]
 
 ## Executive Summary
 
