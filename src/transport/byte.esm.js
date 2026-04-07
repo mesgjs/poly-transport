@@ -32,10 +32,11 @@ export class ByteTransport extends Transport {
 		async stop () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			const { outputBuffer } = _thys;
 			// Force any pending committed bytes to be written immediately
-			_thys.scheduleWrite(true);
+			if (outputBuffer.committed) _thys.scheduleWrite(true);
 			// Wait until all committed bytes have been sent (output buffer fully drained)
-			await _thys.reservable(_thys.outputBuffer.size);
+			await _thys.reservable(outputBuffer.size);
 			if (thys.#writeBatchTimer) {
 				clearTimeout(thys.#writeBatchTimer);
 				thys.#writeBatchTimer = null;
@@ -379,8 +380,10 @@ export class ByteTransport extends Transport {
 			ackBuffer.shrink(0);
 		}
 		outputBuffer.commit();
-		flowControl.clearReadAckInfo(base, ranges);
-		_thys.scheduleWrite();
+		if (base !== undefined) {
+			flowControl.clearReadAckInfo(base, ranges);
+			_thys.scheduleWrite();
+		}
 	}
 
 	/**

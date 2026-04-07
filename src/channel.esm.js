@@ -217,6 +217,7 @@ export class Channel extends Eventable {
 	 * Used when closing in discard mode
 	 */
 	async #discardExistingInput () {
+		if (this.#state === Channel.STATE_CLOSED) return;
 		const flowControl = this.#_.flowControl;
 		flowControl.setAckBatchTime(0);
 		// Mark all buffered chunks as processed

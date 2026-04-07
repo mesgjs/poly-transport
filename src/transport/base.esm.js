@@ -188,7 +188,7 @@ export class Transport extends Eventable {
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
 			minChannelId: MIN_CHANNEL_ID,
 			minMessageTypeId: MIN_MESG_TYPE_ID,
-			pendingChannelRequests: new Map(), // name -> { channelPromise, channelResolve, channelReject, responsePromise, options }
+			pendingChannelRequests: new Map(), // name -> { promise, resolve, reject, options }
 			role: undefined, // even/odd role not yet determined
 			started: null, // startup promise
 			state: Transport.STATE_CREATED,
@@ -234,9 +234,6 @@ export class Transport extends Eventable {
 		channels.set(id, newChannel);
 		channelTokens.set(token, newChannel);
 		channelTokens.set(newChannel, token);
-
-		// Remove pending request if exists
-		pendingChannelRequests.delete(name);
 
 		return newChannel;
 	}
@@ -536,13 +533,12 @@ export class Transport extends Eventable {
 				if (ids && !addRoleId(id, ids)) {
 					const error = new Error('Failed to add role ID - duplicate or invalid');
 					pending.reject(error);
-					pendingChannelRequests.delete(name);
-					return;
+				} else {
+					// Register new ID in channels map
+					channels.set(id, existing);
+					// NOTE: Promise already resolved when we accepted remote request
+					// This response just adds the second ID
 				}
-				// Register new ID in channels map
-				channels.set(id, existing);
-				// NOTE: Promise already resolved when we accepted remote request
-				// This response just adds the second ID
 			} else {
 				// Channel doesn't exist yet - create it now
 				const channel = this.#createChannel(name, id, {
@@ -626,8 +622,11 @@ export class Transport extends Eventable {
 			}
 		}
 
+		// Clear write batch timer (must happen after tranStopped is scheduled)
+		await _thys.stop();
+
 		_thys.bufferPool?.stop();
-		
+
 		_thys.state = Transport.STATE_STOPPED;
 		_thys.stopped?.resolve();
 		await this.dispatchEvent('stopped', {});
@@ -823,9 +822,6 @@ export class Transport extends Eventable {
 
 		// Notify remote that our side is fully stopped (last write before clearing timer)
 		if (tcc) await this.#sendTransportTccMessage(TCC_DTAM_TRAN_STOPPED[0]);
-
-		// Clear write batch timer (must happen after tranStopped is scheduled)
-		await _thys.stop();
 
 		if (!tcc || _thys.state === Transport.STATE_LOCAL_STOPPING) {
 			// Either there's no TCC (because the handshake never completed)
