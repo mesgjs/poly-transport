@@ -460,7 +460,7 @@ Loop for each chunk:
 **ACK Scheduling** (managed by `ChannelFlowControl`):
 - `#scheduleAcks()` is called when chunks are marked processed
 - ACKs are sent when:
-  - Unprocessed read bytes drop below `lowReadBytes` (low-water mark), AND
+  - Unprocessed read bytes drop below `lowWaterBytes` (low-water mark), AND
   - Either: no batching delay (`ackBatchTime = 0`), OR
   - Force threshold reached: `ackableBytes >= forceAckBytes` OR `ackableChunks >= forceAckChunks`
 - After sending ACKs, a batching timer (`ackBatchTime` msec) prevents immediate re-ACKing

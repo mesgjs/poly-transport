@@ -75,7 +75,7 @@ function makeChannel (options = {}) {
 		dechunk: options.dechunk ?? true,
 		ackBatchTime: options.ackBatchTime ?? 0,
 		forceAckCount: options.forceAckCount ?? 5,
-		lowReadBytes: options.lowReadBytes ?? 0,
+		lowWaterBytes: options.lowWaterBytes ?? 0,
 	});
 	return { channel, transport, token };
 }

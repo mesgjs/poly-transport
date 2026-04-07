@@ -41,14 +41,14 @@ export class ChannelFlowControl {
 	#ackBatchTime;             // ACK batching time (msec)
 	#ackBatchTimer = null;     // ACK batching timer
 	#ackCallback;              // Channel callback to send ACKs
-	#acksPending = false;      // ACKs are currently pending
 	#forceAckBytes;            // # of bytes to override inter-ACK delay
 	#forceAckChunks;           // # of chunks to override inter-ACK delay
-	#lowReadBytes;             // Low-water-mark bytes
+	#lowWaterBytes;            // Low-water-mark for unprocessed bytes
 	#nextReadSeq = 1;          // Sequence number expected to be received next
 	#read = 0;                 // Total bytes received remaining to be locally ACK'd
 	#readAckInfo = new Map();  // Map<seq, {bytes, processed}> from receipt to ACK queued
 	#readLimit;                // Max read (local buffer) limit
+	#unprocessed = 0;          // Total unprocessed bytes
 
 	// Private outbound state
 	#allWritesAcked = null;    // Promise for all pending writes ACKed
@@ -72,21 +72,21 @@ export class ChannelFlowControl {
 	 * @param {function} options.ackCallback - channel callback to send ACKs
 	 * @param {number} options.forceAckBytes - number of ACKable bytes that overrides ackBatchTime
 	 * @param {number} options.forceAckChunks - number of ACKable chunks that overrides ackBatchTime
-	 * @param {number} options.lowReadBytes - read-level below which to start sending ACKs
+	 * @param {number} options.lowWaterBytes - read-level below which to start sending ACKs
 	 */
-	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, channel, forceAckBytes, forceAckChunks, logger, lowReadBytes } = {}) {
+	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, channel, forceAckBytes, forceAckChunks, logger, lowWaterBytes } = {}) {
 		this.#ackBatchTime = ackBatchTime ?? 0; // Default 0 = no minimum delay between ACKs
 		this.#ackCallback = ackCallback;
 		this.#forceAckBytes = forceAckBytes ?? 0; // Default 0 = no delay override
 		this.#forceAckChunks = forceAckChunks ?? 0; // Default 0 = no delay override
-		this.#lowReadBytes = lowReadBytes ?? 0; // Default 0 = don't apply low-water mark
+		this.#lowWaterBytes = lowWaterBytes ?? 0; // Default 0 = don't apply low-water mark
 		this.#readLimit = readLimit;
 		this.#writeLimit = writeLimit;
 
 		this.#channel = channel;
 		this.#logger = logger || console;
 
-		if (!ackCallback) {
+		if (channel && !ackCallback) {
 			this.#logger.warn(`No ACK callback for channel ${channel?.name}!`);
 		}
 	}
@@ -176,9 +176,8 @@ export class ChannelFlowControl {
 		this.#ackableBytes -= result.bytes;
 		this.#ackableChunks -= result.acks;
 		this.#read -= result.bytes; // Free up read budget
-		this.#acksPending = false;
 		const { duplicate, premature } = result;
-		if (!duplicate && !premature) this.#scheduleAcks(true); // Just sent some, but check if we need to send more
+		if (!duplicate && !premature) this.#scheduleAcks(); // Just sent some, but check if we need to send more
 		return result;
 	}
 
@@ -298,6 +297,7 @@ export class ChannelFlowControl {
 			readAckInfo: this.#readAckInfo.size,
 			readBudget: this.readBudget,
 			readLimit: this.#readLimit,
+			unprocessed: this.#unprocessed,
 
 			nextWriteSeq: this.#nextWriteSeq,
 			writeAckInfo: this.#writeAckInfo.size,
@@ -317,8 +317,10 @@ export class ChannelFlowControl {
 	markProcessed (seq) {
 		const entry = this.#readAckInfo.get(seq);
 		if (entry !== undefined && !entry.processed) {
+			const bytes = entry.bytes;
 			entry.processed = true;
-			this.#ackableBytes += entry.bytes;
+			this.#ackableBytes += bytes;
+			this.#unprocessed -= bytes;
 			++this.#ackableChunks;
 			this.#scheduleAcks();
 			return true;
@@ -392,37 +394,33 @@ export class ChannelFlowControl {
 		// Record the chunk (not yet consumed)
 		this.#readAckInfo.set(seq, { bytes, processed: false });
 		this.#read += bytes;
+		this.#unprocessed += bytes;
 		++this.#nextReadSeq;
 		return true;
 	}
 
 	// Determine when ACKs should be sent for data that have been processed
-	#scheduleAcks (justSent = false) {
-		// Nothing more to do if there's no callback or ACKs are already pending
-		if (!this.#ackCallback || this.#acksPending) return;
+	#scheduleAcks () {
+		const callback = this.#ackCallback, ackChunks = this.#ackableChunks, lowWaterBytes = this.#lowWaterBytes;
+		// Return now if there's nothing to do
+		if (!callback || !ackChunks || (lowWaterBytes && this.#unprocessed > lowWaterBytes)) return;
 
-		// Don't ACK yet if unprocessed reads are over the low-water mark
-		const lowReadBytes = this.#lowReadBytes;
-		if (lowReadBytes && this.#read > lowReadBytes) return;
-
-		// ACK now if we didn't just ACK (and no batch timer running), there's no batching delay, or there's a delay-override
-		const ackBytes = this.#ackableBytes, ackChunks = this.#ackableChunks, batchTime = this.#ackBatchTime;
+		// ACK now if there's no batch timer running or there's a delay-override
+		const ackBytes = this.#ackableBytes, batchTime = this.#ackBatchTime;
 		const forceBytes = this.#forceAckBytes, forceChunks = this.#forceAckChunks;
-		if ((!justSent && !this.#ackBatchTimer) || (!batchTime && ackChunks) || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
+		if (!this.#ackBatchTimer || (forceBytes && ackBytes >= forceBytes) || (forceChunks && ackChunks >= forceChunks)) {
 			if (this.#ackBatchTimer) {
 				clearTimeout(this.#ackBatchTimer);
 				this.#ackBatchTimer = null;
 			}
-			this.#acksPending = true;
-			queueMicrotask(this.#ackCallback);
+			queueMicrotask(callback);
+			if (batchTime && !this.#stopped) {
+				this.#ackBatchTimer = setTimeout(() => {
+					this.#ackBatchTimer = null;
+					this.#scheduleAcks(); // Recheck after batching delay
+				}, batchTime);
+			}
 			return;
-		}
-
-		if (justSent && batchTime && !this.#ackBatchTimer && !this.#stopped) { // Start the batching timer if we just sent ACKs
-			this.#ackBatchTimer = setTimeout(() => {
-				this.#ackBatchTimer = null;
-				this.#scheduleAcks(); // Recheck after batching delay
-			}, batchTime);
 		}
 	}
 
@@ -451,6 +449,13 @@ export class ChannelFlowControl {
 		const timer = this.#ackBatchTimer;
 		if (timer) clearTimeout(timer);
 		this.#stopped = true;
+	}
+
+	/**
+	 * Get the number of unprocessed bytes
+	 */
+	get unprocessed () {
+		return this.#unprocessed;
 	}
 
 	/**

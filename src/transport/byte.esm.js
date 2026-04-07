@@ -372,6 +372,7 @@ export class ByteTransport extends Transport {
 		const ackBuffer = outputBuffer.reserve(RESERVE_ACK_BYTES);
 		if (!ackBuffer) throw new Error('Insufficient pre-reservation');
 		const { base, ranges } = flowControl.getAckInfo();
+		// console.log('sendAckMessage', base, ranges);
 		if (base !== undefined) {
 			const headerSize = encodeAckHeaderInto(ackBuffer, 0, { channelId, baseSequence: base, ranges });
 			ackBuffer.shrink(headerSize);

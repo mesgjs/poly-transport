@@ -51,7 +51,7 @@ export class Channel extends Eventable {
 	#forceAckBytes;             // ACK-bytes threshold to force early ACK
 	#forceAckChunks;            // ACK-chunks threshold to force early ACK
 	#ids;
-	#lowReadBytes;
+	#lowWaterBytes;
 	#maxDataBytes;
 	#mesgTypeRemapping = new Map(); // Map<highId, lowId> message-type id remapping
 	#name;
@@ -68,7 +68,7 @@ export class Channel extends Eventable {
 	 * @param {boolean} config.dechunk - Default read dechunk setting
 	 * @param {number} config.id - Initial numeric channel id
 	 * @param {number} config.localLimit - Local buffer limit
-	 * @param {number} config.lowReadBytes - Unprocessed-read low-water mark
+	 * @param {number} config.lowWaterBytes - Unprocessed-read low-water mark
 	 * @param {number} config.maxChunkBytes - Maximum chunk size
 	 * @param {string} config.name - Channel name
 	 * @param {number} config.nextMessageTypeId - Initial message-type ID for assignment
@@ -76,14 +76,14 @@ export class Channel extends Eventable {
 	 * @param {symbol} config.token - Unique channel auth token
 	 * @param {Transport} config.transport - The associated transport
 	 */
-	constructor ({ ackBatchTime, dechunk = true, forceAckBytes, forceAckChunks, id, localLimit, lowReadBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
+	constructor ({ ackBatchTime, dechunk = true, forceAckBytes, forceAckChunks, id, localLimit, lowWaterBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
 		super();
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
 		this.#dechunk = dechunk;
 		this.#forceAckBytes = forceAckBytes ?? 16384; // # of ACK bytes
 		this.#forceAckChunks = forceAckChunks ?? 5; // # of ACK chunks
 		this.#ids = [id];
-		this.#lowReadBytes = lowReadBytes ?? (16 * 1024);
+		this.#lowWaterBytes = lowWaterBytes ?? (16 * 1024);
 		this.#maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
 		this.#name = name;
 		this.#nextMessageTypeId = nextMessageTypeId;
@@ -95,7 +95,7 @@ export class Channel extends Eventable {
 				channel: this, logger: transport.logger,
 				ackBatchTime: ackBatchTime ?? 5, ackCallback: () => this.#sendAckMessage(),
 				forceAckBytes: this.#forceAckBytes, forceAckChunks: this.#forceAckChunks,
-				lowReadBytes: this.#lowReadBytes
+				lowWaterBytes: this.#lowWaterBytes
 			}),
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
 			token,
@@ -116,7 +116,7 @@ export class Channel extends Eventable {
 			});
 		}
 
-		const types = Array.isArray(rawTypes) && rawTypes.filter((type) => typeof type === string && type !== '');
+		const types = Array.isArray(rawTypes) && rawTypes.filter((type) => typeof type === 'string' && type !== '');
 		if (!types?.length) {
 			return Promise.resolve();
 		}
@@ -183,10 +183,12 @@ export class Channel extends Eventable {
 
 		// First request; initiate the closing process.
 		this.#state = Channel.STATE_CLOSING;
+		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} now CLOSING`);
 		const closingPromise = this.#closingPromise = {};
 		closingPromise.promise = new Promise((...r) => [closingPromise.resolve] = r);
 
 		// Notify remote via the TCC.
+		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} sending chanClose`);
 		await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
 
 		// Notify beforeClose listeners.
@@ -196,14 +198,17 @@ export class Channel extends Eventable {
 		if (this.#discard) await this.#discardExistingInput();
 
 		// Wait for all in-flight writes to be ACK'd.
+		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} awaiting all writes ACKed`);
 		await this.#_.flowControl.allWritesAcked();
 
 		// Notify remote of our completion.
+		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} sending chanClosed`);
 		await transport.sendTccMessage(this.#_.token, TCC_DTAM_CHAN_CLOSED[0]);
 
 		// Update state based on whether we've received remote's chanClosed.
 		if (this.#state === Channel.STATE_CLOSING) {
 			this.#state = Channel.STATE_REMOTE_CLOSING;
+			// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} now REMOTE_CLOSING`);
 			// Wait for remote's chanClosed
 		} else if (this.#state === Channel.STATE_LOCAL_CLOSING) {
 			// Both sides have sent chanClosed - fully closed
@@ -256,6 +261,7 @@ export class Channel extends Eventable {
 	async #finalizeClosure () {
 		// Transition to closed state
 		this.#state = Channel.STATE_CLOSED;
+		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} now CLOSED`);
 
 		// Reject any message-type registrations still pending
 		for (const [_type, entry] of this.#_.messageTypes) {
@@ -517,6 +523,7 @@ export class Channel extends Eventable {
 		if (this.#state === Channel.STATE_CLOSING) {
 			// We're still working on our side - transition to localClosing
 			this.#state = Channel.STATE_LOCAL_CLOSING;
+			// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} now LOCAL_CLOSING`);
 		} else if (this.#state === Channel.STATE_REMOTE_CLOSING) {
 			// We already sent chanClosed, remote just sent theirs - fully closed
 			await this.#finalizeClosure();

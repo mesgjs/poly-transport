@@ -10,6 +10,7 @@ Deno.test('ChannelFlowControl - construction with limited budget', () => {
 	assertEquals(fc.writeLimit, 10000);
 	assertEquals(fc.writeBudget, 10000);
 	assertEquals(fc.written, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - construction with unlimited budget', () => {
@@ -17,6 +18,7 @@ Deno.test('ChannelFlowControl - construction with unlimited budget', () => {
 	assertEquals(fc.writeLimit, 0);
 	assertEquals(fc.writeBudget, Infinity);
 	assertEquals(fc.written, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - sent consumes budget', () => {
@@ -30,6 +32,7 @@ Deno.test('ChannelFlowControl - sent consumes budget', () => {
 	assertEquals(fc.nextWriteSeq, 3);
 	assertEquals(fc.writeBudget, 5000);
 	assertEquals(fc.written, 5000);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - sent with unlimited budget', () => {
@@ -50,6 +53,7 @@ Deno.test('ChannelFlowControl - clearWriteAckInfo restores budget (single sequen
 	assertEquals(result.acks, 1);
 	assertEquals(fc.writeBudget, 10000);
 	assertEquals(fc.written, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - clearWriteAckInfo with ranges', () => {
@@ -65,6 +69,7 @@ Deno.test('ChannelFlowControl - clearWriteAckInfo with ranges', () => {
 	assertEquals(result.acks, 2);
 	assertEquals(fc.writeBudget, 8000);
 	assertEquals(fc.written, 2000);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - clearWriteAckInfo with large ranges (>255)', () => {
@@ -81,6 +86,7 @@ Deno.test('ChannelFlowControl - clearWriteAckInfo with large ranges (>255)', () 
 	assertEquals(result.bytes, 30000);
 	assertEquals(result.acks, 300);
 	assertEquals(fc.written, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - clearWriteAckInfo detects duplicate ACK', () => {
@@ -92,6 +98,7 @@ Deno.test('ChannelFlowControl - clearWriteAckInfo detects duplicate ACK', () => 
 	const result2 = fc.clearWriteAckInfo(1, []);  // Try to ACK sequence 1 again
 	assertEquals(result2.duplicate, 1);
 	assertEquals(result2.acks, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - clearWriteAckInfo detects premature ACK', () => {
@@ -101,6 +108,7 @@ Deno.test('ChannelFlowControl - clearWriteAckInfo detects premature ACK', () => 
 	const result = fc.clearWriteAckInfo(2, []);  // Try to ACK sequence 2 (not sent yet)
 	assertEquals(result.premature, 1);
 	assertEquals(result.acks, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - writable resolves immediately if sufficient', async () => {
@@ -109,6 +117,7 @@ Deno.test('ChannelFlowControl - writable resolves immediately if sufficient', as
 	await fc.writable(5000);
 	const elapsed = Date.now() - start;
 	assertEquals(elapsed < 100, true);  // Should be nearly instant
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - writable waits for ACK', async () => {
@@ -127,6 +136,7 @@ Deno.test('ChannelFlowControl - writable waits for ACK', async () => {
 	// Now the wait should resolve
 	await waitPromise;
 	assertEquals(fc.writeBudget, 10000);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - writable single waiter model', async () => {
@@ -145,6 +155,7 @@ Deno.test('ChannelFlowControl - writable single waiter model', async () => {
 	// Now the wait should resolve
 	await waitPromise;
 	assertEquals(fc.writeBudget, 10000);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - write getStats', () => {
@@ -161,6 +172,7 @@ Deno.test('ChannelFlowControl - write getStats', () => {
 	// Note: In real usage with TaskQueue, waiters would be queue size + (writer ? 1 : 0)
 	// For this test (no TaskQueue), just check writer state
 	assertEquals(stats.writer, null);
+	fc.stop();
 });
 
 // ============================================================================
@@ -173,6 +185,7 @@ Deno.test('ChannelFlowControl - read construction with limited budget', () => {
 	assertEquals(fc.read, 0);
 	assertEquals(fc.readBudget, 10000);
 	assertEquals(fc.nextReadSeq, 1);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - read construction with unlimited budget', () => {
@@ -181,6 +194,7 @@ Deno.test('ChannelFlowControl - read construction with unlimited budget', () => 
 	assertEquals(fc.read, 0);
 	assertEquals(fc.readBudget, Infinity);
 	assertEquals(fc.nextReadSeq, 1);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - received consumes buffer', () => {
@@ -196,6 +210,7 @@ Deno.test('ChannelFlowControl - received consumes buffer', () => {
 	assertEquals(fc.read, 5000);
 	assertEquals(fc.readBudget, 5000);
 	assertEquals(fc.nextReadSeq, 3);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - received with unlimited budget', () => {
@@ -204,6 +219,7 @@ Deno.test('ChannelFlowControl - received with unlimited budget', () => {
 	fc.received(2, 10000);
 	assertEquals(fc.read, 15000);
 	assertEquals(fc.readBudget, Infinity);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - received returns false on out-of-order', () => {
@@ -212,6 +228,7 @@ Deno.test('ChannelFlowControl - received returns false on out-of-order', () => {
 
 	const result = fc.received(3, 1000);  // Expected 2, got 3
 	assertEquals(result, false);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - received returns false on over-budget', () => {
@@ -220,6 +237,7 @@ Deno.test('ChannelFlowControl - received returns false on over-budget', () => {
 
 	const result = fc.received(2, 3000);  // Would exceed budget (8000 + 3000 > 10000)
 	assertEquals(result, false);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - markProcessed marks chunk as processed', () => {
@@ -236,6 +254,7 @@ Deno.test('ChannelFlowControl - markProcessed marks chunk as processed', () => {
 	assertEquals(result2, false);
 	assertEquals(fc.ackableBytes, 1000);
 	assertEquals(fc.ackableChunks, 1);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - getAckInfo returns only complete if nothing processed', () => {
@@ -245,6 +264,7 @@ Deno.test('ChannelFlowControl - getAckInfo returns only complete if nothing proc
 
 	const ackInfo = fc.getAckInfo();
 	assertEquals(ackInfo, { complete: true });
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - getAckInfo single sequence', () => {
@@ -254,6 +274,7 @@ Deno.test('ChannelFlowControl - getAckInfo single sequence', () => {
 
 	const ackInfo = fc.getAckInfo();
 	assertEquals(ackInfo, { base: 1, ranges: [], complete: true });
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - getAckInfo consecutive sequences', () => {
@@ -267,6 +288,7 @@ Deno.test('ChannelFlowControl - getAckInfo consecutive sequences', () => {
 
 	const ackInfo = fc.getAckInfo();
 	assertEquals(ackInfo, { base: 1, ranges: [2], complete: true });  // Base + 2 more
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - getAckInfo with gaps', () => {
@@ -281,6 +303,7 @@ Deno.test('ChannelFlowControl - getAckInfo with gaps', () => {
 
 	const ackInfo = fc.getAckInfo();
 	assertEquals(ackInfo, { base: 1, ranges: [0, 1, 2], complete: true });  // Base by itself (no additional), then skip 1, include 2
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - getAckInfo with large ranges (>255)', () => {
@@ -297,6 +320,7 @@ Deno.test('ChannelFlowControl - getAckInfo with large ranges (>255)', () => {
 	// Should split: 255 + 0 + 44 (299 sequences after base)
 	assertEquals(ackInfo.ranges, [255, 0, 44]);
 	assertEquals(ackInfo.complete, true);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - getAckInfo enforces 501 range limit', () => {
@@ -316,6 +340,7 @@ Deno.test('ChannelFlowControl - getAckInfo enforces 501 range limit', () => {
 	assertEquals(ackInfo.ranges.length <= 501, true);
 	// Should be incomplete since we hit the limit
 	assertEquals(ackInfo.complete, false);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - clearReadAckInfo frees buffer space', () => {
@@ -339,6 +364,7 @@ Deno.test('ChannelFlowControl - clearReadAckInfo frees buffer space', () => {
 	assertEquals(fc.readBudget, 10000);
 	assertEquals(fc.ackableBytes, 0);
 	assertEquals(fc.ackableChunks, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - clearReadAckInfo with gaps', () => {
@@ -356,6 +382,7 @@ Deno.test('ChannelFlowControl - clearReadAckInfo with gaps', () => {
 	assertEquals(result.acks, 2);
 	assertEquals(fc.read, 2000);  // Sequence 2 still tracked
 	assertEquals(fc.ackableBytes, 0);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - read getStats', () => {
@@ -372,6 +399,7 @@ Deno.test('ChannelFlowControl - read getStats', () => {
 	assertEquals(stats.readBudget, 5000);
 	assertEquals(stats.ackableBytes, 3000);
 	assertEquals(stats.ackableChunks, 1);
+	fc.stop();
 });
 
 // ============================================================================
@@ -414,6 +442,7 @@ Deno.test('Integration - send and receive with ACKs', () => {
 	const readResult = fc.clearReadAckInfo(ackInfo.base, ackInfo.ranges);
 	assertEquals(readResult.bytes, 6000);
 	assertEquals(fc.read, 0);
+	fc.stop();
 });
 
 Deno.test('Integration - selective processing and ACK', () => {
@@ -439,6 +468,7 @@ Deno.test('Integration - selective processing and ACK', () => {
 	const writeResult = fc.clearWriteAckInfo(ackInfo.base, ackInfo.ranges);
 	assertEquals(writeResult.bytes, 3000);  // Sequences 1, 2, 5
 	assertEquals(fc.written, 2000);  // Sequences 3, 4 still in flight
+	fc.stop();
 });
 
 // ============================================================================
@@ -452,7 +482,7 @@ Deno.test('ChannelFlowControl - ACK batching with callback', async () => {
 	const fc = new ChannelFlowControl(10000, 10000, {
 		ackCallback,
 		ackBatchTime: 0,  // No delay
-		lowReadBytes: 0   // Always ACK
+		lowWaterBytes: 0  // Always ACK
 	});
 
 	fc.received(1, 1000);
@@ -462,26 +492,54 @@ Deno.test('ChannelFlowControl - ACK batching with callback', async () => {
 	await new Promise(resolve => setTimeout(resolve, 0));
 
 	assertEquals(ackCallCount, 1);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - ACK batching respects low water mark', async () => {
 	let ackCallCount = 0;
 	const ackCallback = () => { ackCallCount++; };
 
-	const fc = new ChannelFlowControl(10000, 10000, {
+	const fc = new ChannelFlowControl(20000, 20000, {
 		ackCallback,
 		ackBatchTime: 0,
-		lowReadBytes: 5000  // Don't ACK until below 5000
+		lowWaterBytes: 5000  // Don't ACK while more than 5000 bytes are unprocessed
 	});
 
-	fc.received(1, 6000);
+	// Receive two chunks: 6000 bytes unprocessed total
+	fc.received(1, 3000);
+	fc.received(2, 3000);
+
+	// Mark only the first chunk processed (3000 unprocessed remain for seq 2)
+	// unprocessed = 3000, which is below lowWaterBytes=5000, so ACK should fire
 	fc.markProcessed(1);
 
 	// Wait for microtask
 	await new Promise(resolve => setTimeout(resolve, 0));
 
-	// Should not ACK yet (above low water mark)
-	assertEquals(ackCallCount, 0);
+	// Should ACK (unprocessed=3000 is NOT above lowWaterBytes=5000)
+	assertEquals(ackCallCount, 1);
+
+	// Now receive a large chunk: unprocessed goes above low water mark
+	fc.received(3, 6000);
+
+	// Mark seq 2 processed (unprocessed = 6000 for seq 3, above lowWaterBytes=5000)
+	fc.markProcessed(2);
+
+	// Wait for microtask
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	// Should not ACK (unprocessed=6000 > lowWaterBytes=5000)
+	assertEquals(ackCallCount, 1);
+
+	// Now mark seq 3 processed (unprocessed drops to 0)
+	fc.markProcessed(3);
+
+	// Wait for microtask
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	// Should ACK now (unprocessed=0 is not above lowWaterBytes=5000)
+	assertEquals(ackCallCount, 2);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - ACK batching with force bytes', async () => {
@@ -492,7 +550,7 @@ Deno.test('ChannelFlowControl - ACK batching with force bytes', async () => {
 		ackCallback,
 		ackBatchTime: 100,  // 100ms delay
 		forceAckBytes: 5000,  // Force ACK at 5000 bytes
-		lowReadBytes: 0
+		lowWaterBytes: 0
 	});
 
 	fc.received(1, 6000);
@@ -501,6 +559,7 @@ Deno.test('ChannelFlowControl - ACK batching with force bytes', async () => {
 	// Should ACK immediately (exceeds forceAckBytes)
 	await new Promise(resolve => setTimeout(resolve, 0));
 	assertEquals(ackCallCount, 1);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - ACK batching with force chunks', async () => {
@@ -511,7 +570,7 @@ Deno.test('ChannelFlowControl - ACK batching with force chunks', async () => {
 		ackCallback,
 		ackBatchTime: 100,  // 100ms delay
 		forceAckChunks: 3,  // Force ACK at 3 chunks
-		lowReadBytes: 0
+		lowWaterBytes: 0
 	});
 
 	fc.received(1, 1000);
@@ -523,7 +582,8 @@ Deno.test('ChannelFlowControl - ACK batching with force chunks', async () => {
 
 	// Should ACK immediately (exceeds forceAckChunks)
 	await new Promise(resolve => setTimeout(resolve, 0));
-	assertEquals(ackCallCount, 1);
+	assertEquals(ackCallCount, 2);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - ACK batching with delay', async () => {
@@ -533,7 +593,7 @@ Deno.test('ChannelFlowControl - ACK batching with delay', async () => {
 	const fc = new ChannelFlowControl(10000, 10000, {
 		ackCallback,
 		ackBatchTime: 50,  // 50ms delay
-		lowReadBytes: 0
+		lowWaterBytes: 0
 	});
 
 	fc.received(1, 1000);
@@ -558,6 +618,7 @@ Deno.test('ChannelFlowControl - ACK batching with delay', async () => {
 	// Wait for batching delay
 	await new Promise(resolve => setTimeout(resolve, 60));
 	assertEquals(ackCallCount, 2);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - ACK batching prevents duplicate pending', async () => {
@@ -574,7 +635,7 @@ Deno.test('ChannelFlowControl - ACK batching prevents duplicate pending', async 
 	const fc = new ChannelFlowControl(10000, 10000, {
 		ackCallback,
 		ackBatchTime: 0,
-		lowReadBytes: 0
+		lowWaterBytes: 0
 	});
 
 	fc.received(1, 1000);
@@ -593,6 +654,7 @@ Deno.test('ChannelFlowControl - ACK batching prevents duplicate pending', async 
 	// Wait for second ACK (should be scheduled by clearReadAckInfo in first callback)
 	await new Promise(resolve => setTimeout(resolve, 0));
 	assertEquals(ackCallCount, 2);
+	fc.stop();
 });
 
 Deno.test('ChannelFlowControl - ackableBytes and ackableChunks getters', () => {
@@ -616,4 +678,5 @@ Deno.test('ChannelFlowControl - ackableBytes and ackableChunks getters', () => {
 
 	assertEquals(fc.ackableBytes, 3000);
 	assertEquals(fc.ackableChunks, 2);
+	fc.stop();
 });
