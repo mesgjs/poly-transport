@@ -17,14 +17,15 @@ import { makeConnectedChannel } from '../helpers.js';
 
 /**
  * Register channel close integration tests for a given transport pair factory.
- * @param {Function} makeTransportPair - Factory function that returns [transportA, transportB]
+ * @param {Function} makeTransportPair - Factory function that returns [transportA, transportB, cleanup?]
+ *   cleanup is an optional async function called after each test to release additional resources.
  */
 export function registerChannelCloseTests (makeTransportPair) {
 
 	// ─── Test: Basic bidirectional data exchange ──────────────────────────────────
 
 	Deno.test('two transports can connect and exchange data', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
@@ -40,12 +41,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Bidirectional graceful closure ─────────────────────────────────────
 
 	Deno.test('bidirectional graceful closure: both sides close gracefully', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Both sides close gracefully simultaneously
@@ -59,12 +61,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: One side initiates close, other side responds ─────────────────────
 
 	Deno.test('A initiates close, B responds by closing', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Set up B to close when it receives chanClose from A
@@ -86,12 +89,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Data exchange before graceful close ────────────────────────────────
 
 	Deno.test('data exchanged before graceful close is received', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A writes data, then closes
@@ -113,12 +117,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Bidirectional discard closure ─────────────────────────────────────
 
 	Deno.test('bidirectional discard closure: both sides close with discard', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Both sides close with discard simultaneously
@@ -131,12 +136,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Asymmetric closure - A graceful, B discard ────────────────────────
 
 	Deno.test('asymmetric closure: A graceful, B discard', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A closes gracefully, B closes with discard
@@ -149,12 +155,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Asymmetric closure - A discard, B graceful ────────────────────────
 
 	Deno.test('asymmetric closure: A discard, B graceful', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A closes with discard, B closes gracefully
@@ -167,12 +174,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Acceleration - graceful → discard when remote sends discard ────────
 
 	Deno.test('acceleration: A graceful close switches to discard when B sends discard', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Buffer some data on A's side
@@ -190,12 +198,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: beforeClose event fires on both sides ─────────────────────────────
 
 	Deno.test('beforeClose event fires on both sides during close', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		let beforeCloseA = false;
@@ -213,12 +222,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assert(beforeCloseB, 'beforeClose should fire on B');
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: closed event fires on both sides ───────────────────────────────────
 
 	Deno.test('closed event fires on both sides after close', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		let closedA = false;
@@ -236,12 +246,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assert(closedB, 'closed event should fire on B');
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: write throws StateError after close initiated ──────────────────────
 
 	Deno.test('write throws StateError after close initiated', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Start close on A
@@ -265,12 +276,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await Promise.all([closeA, closeB]);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Channel reopening after close ─────────────────────────────────────
 
 	Deno.test('channel can be reopened after close', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const channelName = 'reopen-test';
 
 		// First open
@@ -309,12 +321,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await Promise.all([closeA2, closeB2]);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Multiple channels can be closed independently ─────────────────────
 
 	Deno.test('multiple channels can be closed independently', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 
 		const [chA1, chB1] = await makeConnectedChannel(
 			transportA, transportB, 'channel-1'
@@ -349,12 +362,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await Promise.all([closeA2, closeB2]);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Transport stop closes all channels ─────────────────────────────────
 
 	Deno.test('transport stop closes all open channels', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		assertEquals(channelA.state, Channel.STATE_OPEN);
@@ -373,12 +387,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(transportA.state, Transport.STATE_STOPPED);
 
 		await transportB.stop();
+		await cleanup?.();
 	});
 
 	// ─── Test: Pending read rejected when channel closes ─────────────────────────
 
 	Deno.test('pending read is rejected when channel closes', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Start a read on B that will wait
@@ -394,12 +409,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await Promise.all([closeA, closeB]);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Flow control budget restored during closure ───────────────────────
 
 	Deno.test('flow control budget is maintained during graceful close', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Write several messages from A to B
@@ -426,12 +442,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Discard mode discards buffered data ────────────────────────────────
 
 	Deno.test('discard mode discards buffered data on receiver', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A writes data that B hasn't read yet
@@ -450,12 +467,13 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Channel close with data in flight ──────────────────────────────────
 
 	Deno.test('graceful close waits for in-flight writes to be ACKed', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Write data from A
@@ -481,5 +499,6 @@ export function registerChannelCloseTests (makeTransportPair) {
 		assertEquals(channelB.state, Channel.STATE_CLOSED);
 
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 }

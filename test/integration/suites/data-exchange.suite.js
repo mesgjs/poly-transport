@@ -14,14 +14,15 @@ import { makeConnectedChannel } from '../helpers.js';
 
 /**
  * Register data exchange integration tests for a given transport pair factory.
- * @param {Function} makeTransportPair - Factory function that returns [transportA, transportB]
+ * @param {Function} makeTransportPair - Factory function that returns [transportA, transportB, cleanup?]
+ *   cleanup is an optional async function called after each test to release additional resources.
  */
 export function registerDataExchangeTests (makeTransportPair) {
 
 	// ─── Test: Send/receive chunk (eom=false) with message type 0 ─────────────────
 
 	Deno.test('send/receive chunk (eom=false) with message type 0', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A writes a chunk with eom=false
@@ -42,12 +43,13 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Send/receive complete message (eom=true) with message type 0 ───────
 
 	Deno.test('send/receive complete message (eom=true) with message type 0', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A writes a complete message with eom=true
@@ -62,12 +64,13 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Multiple messages in sequence ──────────────────────────────────────
 
 	Deno.test('multiple messages in sequence', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		const messages = ['first message', 'second message', 'third message'];
@@ -88,12 +91,13 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Bidirectional data exchange ────────────────────────────────────────
 
 	Deno.test('bidirectional data exchange', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// A writes to B and B writes to A simultaneously
@@ -118,12 +122,13 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Send/receive message with accepted registered string type ──────────
 
 	Deno.test('send/receive message with accepted registered string type', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// B accepts the message type registration
@@ -146,12 +151,13 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Read filtered by registered string type ────────────────────────────
 
 	Deno.test('read filtered by registered string type', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// B accepts the message type registration
@@ -181,13 +187,14 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Multi-chunk message reassembled correctly ─────────────────────────
 
 	Deno.test('multi-chunk message reassembled correctly', async () => {
 		// Use small maxChunkBytes to force multi-chunk messages
-		const [transportA, transportB] = await makeTransportPair({
+		const [transportA, transportB, cleanup] = await makeTransportPair({
 			maxChunkBytes: 1024 + 18, // 18 bytes header + 1024 bytes data
 		}, {
 			maxChunkBytes: 1024 + 18,
@@ -209,12 +216,13 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Send/receive binary data (Uint8Array) ──────────────────────────────
 
 	Deno.test('send/receive binary data (Uint8Array)', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// Create binary data
@@ -238,5 +246,6 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 }

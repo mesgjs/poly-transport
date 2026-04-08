@@ -14,14 +14,15 @@ import { makeConnectedChannel } from '../helpers.js';
 
 /**
  * Register message type integration tests for a given transport pair factory.
- * @param {Function} makeTransportPair - Factory function that returns [transportA, transportB]
+ * @param {Function} makeTransportPair - Factory function that returns [transportA, transportB, cleanup?]
+ *   cleanup is an optional async function called after each test to release additional resources.
  */
 export function registerMessageTypeTests (makeTransportPair) {
 
 	// ─── Test: Request message type - accepted ────────────────────────────────────
 
 	Deno.test('request message type - accepted', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// B accepts all message type requests (default: no preventDefault)
@@ -37,12 +38,13 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Accepted type has a numeric ID ─────────────────────────────────────
 
 	Deno.test('accepted type has a numeric ID', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		channelB.addEventListener('newMessageType', (_event) => {
@@ -59,12 +61,13 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Request message type - rejected ────────────────────────────────────
 
 	Deno.test('request message type - rejected', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// B rejects all message type requests
@@ -80,12 +83,13 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Request multiple types - one accepted, one rejected ────────────────
 
 	Deno.test('request multiple types - one accepted, one rejected', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// B accepts 'typeA' but rejects 'typeB'
@@ -109,12 +113,13 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Accepted type can be used in write ─────────────────────────────────
 
 	Deno.test('accepted type can be used in write', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		channelB.addEventListener('newMessageType', (_event) => {
@@ -134,12 +139,13 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 
 	// ─── Test: Rejected type cannot be used in write ──────────────────────────────
 
 	Deno.test('rejected type cannot be used in write', async () => {
-		const [transportA, transportB] = await makeTransportPair();
+		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
 		// B rejects all message type requests
@@ -157,5 +163,6 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		await Promise.all([channelA.close(), channelB.close()]);
 		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
 	});
 }
