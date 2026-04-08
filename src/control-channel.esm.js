@@ -30,15 +30,11 @@ export class ControlChannel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	/* async */ close ({ disconnect, shutdown } = {}) {
+	/* async */ close ({ disconnected } = {}) {
 		const logger = this.#_.transport.logger;
-		if (disconnect && disconnect === this.#_.token) {
-			// Transport-initiated shutdown: finalize the channel to terminate the reader loop
+		if (disconnected && disconnected === this.#_.token) {
+			// Transport-initiated shutdown or disconnect
 			return this.#_.onDisconnect();
-		}
-		if (shutdown && shutdown === this.#_.token) {
-			// Transport-initiated shutdown: finalize the channel to terminate the reader loop
-			return this.#_.onShutDown();
 		}
 		logger.warn('Transport Control Channel .close ignored');
 		// return Promise.resolve();

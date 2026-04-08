@@ -28,23 +28,13 @@ export class Channel extends Eventable {
 		// Prototype protected methods
 
 		/**
-		 * Finalize channel closure on transport disconnect
+		 * Finalize channel closure on transport shutdown or disconnect
 		 * Called by ControlChannel/Con2Channel when transport is disconnected
 		 */
 		async onDisconnect () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			return thys.#disconnect();
-		},
-
-		/**
-		 * Finalize channel closure on transport shutdown
-		 * Called by ControlChannel/Con2Channel when transport is stopping
-		 */
-		async onShutDown () {
-			const [thys, _thys] = [this.__this, this];
-			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			await thys.#finalizeClosure();
+			return thys.#onDisconnect();
 		},
 	});
 
@@ -168,14 +158,14 @@ export class Channel extends Eventable {
 	 * Close the channel
 	 * @param {Object} options
 	 * @param {boolean} options.discard - Discard incoming data
-	 * @param {symbol} options.disconnect - Transport token for immediate disconnect (secret handshake)
+	 * @param {symbol} options.disconnected - Transport token for immediate disconnect (secret handshake)
 	 * @returns {Promise<void>} Resolves when channel is fully closed
 	 */
-	async close ({ discard = false, disconnect } = {}) {
+	async close ({ discard = false, disconnected } = {}) {
 		// Secret handshake: transport passes its token to trigger immediate disconnect
-		if (disconnect !== undefined) {
-			if (disconnect !== this.#_.token) throw new Error('Unauthorized');
-			return this.#disconnect();
+		if (disconnected !== undefined) {
+			if (disconnected !== this.#_.token) throw new Error('Unauthorized');
+			return this.#onDisconnect();
 		}
 
 		const state = this.#state;
@@ -263,7 +253,7 @@ export class Channel extends Eventable {
 	 * Does NOT send any TCC messages (chanClose, chanClosed).
 	 * Does NOT call transport.nullChannel() — transport handles its own cleanup.
 	 */
-	async #disconnect () {
+	async #onDisconnect () {
 		const state = this.#state;
 		if (state === Channel.STATE_CLOSED || state === Channel.STATE_DISCONNECTED) {
 			return this.#closingPromise?.promise;
@@ -284,7 +274,7 @@ export class Channel extends Eventable {
 		}
 
 		// Reject pending close() promise
-		this.#closingPromise?.reject?.('Disconnected');
+		this.#closingPromise?.resolve('Disconnected');
 
 		// Clear message type registrations
 		this.#_.messageTypes.clear();
@@ -344,7 +334,7 @@ export class Channel extends Eventable {
 		// Notify transport to null the channel record
 		await this.#_.transport.nullChannel(this.#_.token);
 
-		this.#closingPromise?.resolve();
+		this.#closingPromise?.resolve('Closed');
 	}
 
 	/**

@@ -23,14 +23,10 @@ export class Con2Channel extends Channel {
 		this.#preloadMessageTypes();
 	}
 
-	/* async */ close ({ disconnect, shutdown } = {}) {
-		if (disconnect && disconnect === this.#_.token) {
-			// Transport-initiated shutdown: finalize the channel to terminate the reader loop
+	/* async */ close ({ disconnected } = {}) {
+		if (disconnected && disconnected === this.#_.token) {
+			// Transport-initiated shutdown or disconnect
 			return this.#_.onDisconnect();
-		}
-		if (shutdown && shutdown === this.#_.token) {
-			// Transport-initiated shutdown: finalize the channel to terminate any reader loops
-			return this.#_.onShutDown();
 		}
 		const logger = this.#_.transport.logger;
 		logger.warn('Console Content Channel .close ignored');

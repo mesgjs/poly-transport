@@ -20,9 +20,6 @@ export function registerDataExchangeTests (makeTransportPair) {
 
 	// ─── Test: Send/receive chunk (eom=false) with message type 0 ─────────────────
 
-	// Some of these tests have issues (including some running non-stop)
-	// ALL are currently disabled pending further investigation
-	// so that otherwise-complete test runs are possible
 	Deno.test('send/receive chunk (eom=false) with message type 0', async () => {
 		const [transportA, transportB] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);

@@ -1491,25 +1491,25 @@ Deno.test('Channel - cross-close: remote chanClosed arrives before we send ours'
 });
 
 // ============================================================================
-// Channel disconnect - close({ disconnect: token }) secret handshake
+// Channel disconnect - close({ disconnected: token }) secret handshake
 // ============================================================================
 
-Deno.test('Channel - close({ disconnect: token }) transitions to STATE_DISCONNECTED', async () => {
+Deno.test('Channel - close({ disconnected: token }) transitions to STATE_DISCONNECTED', async () => {
 	const { channel, token } = makeChannel();
 
 	assertEquals(channel.state, Channel.STATE_OPEN);
 
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 });
 
-Deno.test('Channel - close({ disconnect: wrongToken }) throws Unauthorized', async () => {
+Deno.test('Channel - close({ disconnected: wrongToken }) throws Unauthorized', async () => {
 	const { channel } = makeChannel();
 	const wrongToken = Symbol('wrong');
 
 	await assertRejects(
-		() => channel.close({ disconnect: wrongToken }),
+		() => channel.close({ disconnected: wrongToken }),
 		Error,
 		'Unauthorized'
 	);
@@ -1521,7 +1521,7 @@ Deno.test('Channel - disconnect dispatches closed event', async () => {
 
 	channel.addEventListener('closed', () => { closedFired = true; });
 
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	assert(closedFired);
 });
@@ -1529,7 +1529,7 @@ Deno.test('Channel - disconnect dispatches closed event', async () => {
 Deno.test('Channel - disconnect does NOT call transport.nullChannel', async () => {
 	const { channel, token, transport } = makeChannel();
 
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	// nullChannel should NOT have been called (transport handles its own cleanup)
 	assertEquals(transport.nulledChannels.length, 0);
@@ -1542,7 +1542,7 @@ Deno.test('Channel - disconnect rejects pending read', async () => {
 	const readPromise = channel.read({ timeout: 5000 });
 
 	// Disconnect
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	// The pending read should have been rejected with 'Disconnected'
 	let rejected = null;
@@ -1554,23 +1554,18 @@ Deno.test('Channel - disconnect rejects pending read', async () => {
 	assertEquals(rejected, 'Disconnected');
 });
 
-Deno.test('Channel - disconnect rejects pending close() promise', async () => {
+Deno.test('Channel - disconnect resolves close() with "Disconnected"', async () => {
 	const { channel, token } = makeChannel();
 
 	// Start a graceful close (will wait for ACKs and remote chanClosed)
 	const closePromise = channel.close();
 
 	// Disconnect while closing
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	// The graceful close promise should be rejected with 'Disconnected'
-	let rejected = null;
-	try {
-		await closePromise;
-	} catch (err) {
-		rejected = err;
-	}
-	assertEquals(rejected, 'Disconnected');
+	const result = await closePromise;
+	assertEquals(result, 'Disconnected');
 });
 
 Deno.test('Channel - disconnect from STATE_CLOSED is a no-op', async () => {
@@ -1584,7 +1579,7 @@ Deno.test('Channel - disconnect from STATE_CLOSED is a no-op', async () => {
 	assertEquals(channel.state, Channel.STATE_CLOSED);
 
 	// Disconnect from closed state should be a no-op (no throw)
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	// State should remain CLOSED (not change to DISCONNECTED)
 	assertEquals(channel.state, Channel.STATE_CLOSED);
@@ -1594,18 +1589,18 @@ Deno.test('Channel - disconnect from STATE_DISCONNECTED is a no-op', async () =>
 	const { channel, token } = makeChannel();
 
 	// First disconnect
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 
 	// Second disconnect should be a no-op
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 });
 
 Deno.test('Channel - write throws StateError after disconnect', async () => {
 	const { channel, token } = makeChannel();
 
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 
@@ -1618,7 +1613,7 @@ Deno.test('Channel - write throws StateError after disconnect', async () => {
 Deno.test('Channel - addMessageTypes throws StateError after disconnect', async () => {
 	const { channel, token } = makeChannel();
 
-	await channel.close({ disconnect: token });
+	await channel.close({ disconnected: token });
 
 	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 

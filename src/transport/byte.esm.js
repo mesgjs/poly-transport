@@ -197,12 +197,22 @@ export class ByteTransport extends Transport {
 			_thys.scheduleWrite(true);
 		},
 
-		// Transport-specific startup - start the byte-stream reader
+		// Transport-specific startup
 		/* async */ startReader () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			super.startReader();
-			thys.#byteReader();
+			super.startReader(); // Start the byte-stream common reader
+			(async () => {
+				try {
+					// Run our transport-specific reader
+					await thys.#byteReader();
+				} catch (err) {
+					// Disconnected is a condition, as opposed to an error
+					if (err instanceof Error) {
+						thys.logger.error(err);
+					}
+				}
+			})();
 		},
 
 		/**
@@ -269,11 +279,15 @@ export class ByteTransport extends Transport {
 		const _thys = this.#_;
 		const { bufferPool, inputBuffer } = _thys;
 		const newLine = 10, stx = 2;
+		const transportActive = () => {
+			const state = _thys.state;
+			return state !== Transport.STATE_STOPPED && state !== Transport.STATE_DISCONNECTED;
+		};
 		let firstConfig = true;
 		let offset = 0;
 
 		// Line-based config/handshake loop
-		while (_thys.state !== Transport.STATE_STOPPED && _thys.state !== Transport.STATE_DISCONNECTED) {
+		while (transportActive()) {
 			if (offset === inputBuffer.length) {
 				await this.#readable(offset + 1);
 			}
@@ -310,7 +324,7 @@ export class ByteTransport extends Transport {
 		}
 
 		// Byte-stream-based message loop
-		while (_thys.state !== Transport.STATE_STOPPED && _thys.state !== Transport.STATE_DISCONNECTED) {
+		while (transportActive()) {
 			// Read a message header
 			if (inputBuffer.length < 2) {
 				await this.#readable(2);

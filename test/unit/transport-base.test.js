@@ -603,31 +603,20 @@ Deno.test('Transport - stop({ disconnected: true }) rejects pending channel requ
 	assertEquals(rejected, 'Disconnected');
 });
 
-Deno.test('Transport - stop({ disconnected: true }) from STATE_STOPPING rejects prior stopped promise', async () => {
+Deno.test('Transport - stop({ disconnected: true }) from STATE_STOPPING resolves', async () => {
 	const { transport, _thys } = await startMockTransport();
 
 	// Start a graceful stop but don't let it complete (no TCC)
 	// We'll manually set state to STOPPING and create a stopped promise
 	_thys.state = Transport.STATE_STOPPING;
-	const priorStopped = _thys.stopped = { promise: null };
-	let priorRejected = null;
-	priorStopped.promise = new Promise((resolve, reject) => {
-		priorStopped.resolve = resolve;
-		priorStopped.reject = reject;
-	});
+	const stopPromise = _thys.stopped = { };
+	stopPromise.promise = new Promise((...r) => [stopPromise.resolve, stopPromise.reject] = r);
 
 	// Now disconnect
 	const disconnectPromise = transport.stop({ disconnected: true });
 
-	// Prior stopped promise should be rejected
-	try {
-		await priorStopped.promise;
-	} catch (err) {
-		priorRejected = err;
-	}
-
 	await disconnectPromise;
-	assertEquals(priorRejected, 'Disconnected');
+	assertEquals(stopPromise.promise, disconnectPromise);
 	assertEquals(transport.state, Transport.STATE_DISCONNECTED);
 });
 
