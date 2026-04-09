@@ -7,8 +7,7 @@
  * and range-based acknowledgment processing.
  */
 
-import { MAX_ACK_RANGES, ProtocolViolationError } from './protocol.esm.js';
-export { ProtocolViolationError };
+import { MAX_ACK_RANGES } from './protocol.esm.js';
 
 /**
  * ChannelFlowControl manages inbound and outbound data flow for a channel.

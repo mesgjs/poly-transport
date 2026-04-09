@@ -400,24 +400,6 @@ export function maxAckRanges (availableBytes) {
 }
 
 /**
- * Protocol violation error for flow control issues.
- */
-export class ProtocolViolationError extends Error {
-	/**
-	 * Create a new ProtocolViolationError.
-	 * @param {string} description - Description ('Out of order', 'Over budget', 'Duplicate ACK', etc)
-	 * @param {object} details - Additional context
-	 */
-	constructor (description, details) {
-		super(`Protocol violation: ${description}`);
-		this.description = this.reason = description;
-		this.details = details;
-	}
-
-	get name () { return this.constructor.name; }
-}
-
-/**
  * State error for operations incompatible with current channel/transport state.
  */
 export class StateError extends Error {

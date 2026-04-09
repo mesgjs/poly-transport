@@ -348,14 +348,6 @@ transport.addEventListener('stopped', (event) => { /* ... */ });
 ```
 Transport lifecycle events.
 
-```javascript
-transport.addEventListener('protocolViolation', (event) => {
-    const { type, description } = event.detail;
-    // Default action: stop transport
-    // Call event.preventDefault() to suppress default
-});
-```
-
 #### Transport State
 
 ```javascript
@@ -453,6 +445,14 @@ channel.addEventListener('newMessageType', (event) => {
 });
 ```
 
+```javascript
+transport.addEventListener('protocolViolation', (event) => {
+    const { type, description } = event.detail;
+    // Default action: stop transport
+    // Call event.preventDefault() to suppress default
+});
+```
+
 #### Channel State
 
 ```javascript
@@ -469,8 +469,6 @@ channel.ids    // All channel IDs (array)
 | Class | Description |
 |-------|-------------|
 | `StateError` | Operation invalid for current state (e.g. write on a closing channel) |
-| `TimeoutError` | Operation timed out (channel request, read, close) |
-| `ProtocolViolationError` | Internal: protocol violation detected (surfaced via events) |
 
 ## Testing
 
