@@ -141,8 +141,6 @@ Deno.test('Transport - constructor with options', () => {
 	});
 
 	assertEquals(transport.maxChunkBytes, 8192);
-	assertExists(transport.logChannelId);
-	assert(typeof transport.logChannelId === 'symbol');
 });
 
 // Tests for lifecycle management
@@ -454,12 +452,6 @@ Deno.test('Transport - onRemoteConfig does not create C2C if not mutually enable
 Deno.test('Transport - needsEncodedText defaults to true', () => {
 	const transport = new MockTransport();
 	assertEquals(transport.needsEncodedText, true);
-});
-
-Deno.test('Transport - logChannelId returns symbol', () => {
-	const transport = new MockTransport();
-	const logId = transport.logChannelId;
-	assert(typeof logId === 'symbol');
 });
 
 // Tests for dispatchEvent

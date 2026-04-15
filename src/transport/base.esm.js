@@ -192,7 +192,6 @@ export class Transport extends Eventable {
 			channels: new Map(), // ids / name -> channel
 			channelTokens: new Map(), // token <-> channel
 			id: crypto.randomUUID(),
-			logSymbol: Symbol('log'),
 			lowBufferBytes: options.lowBufferBytes ?? 16 * 1024,
 			maxBufferBytes: options.maxBufferBytes ?? 0, // 0 = unlimited
 			maxChunkBytes: options.maxChunkBytes ?? 16 * 1024,
@@ -219,7 +218,7 @@ export class Transport extends Eventable {
 	 */
 	#createChannel (name, id, options) {
 		const _thys = this.#_;
-		const { channels, channelTokens, pendingChannelRequests, minMessageTypeId, role } = _thys;
+		const { channels, channelTokens, minMessageTypeId, role } = _thys;
 
 		// Calculate initial nextMessageTypeId based on role
 		// Even role: use even ID (e.g., 1024)
@@ -293,18 +292,6 @@ export class Transport extends Eventable {
 	}
 
 	/**
-	 * Get an existing channel by name or symbol (public interface)
-	 * @param {string|symbol} name - Channel name
-	 * @returns {Channel|undefined} The channel, or undefined if not found
-	 */
-	getChannel (name) {
-		if (typeof name === 'string' || typeof name === 'symbol') {
-			// NOTE: Public access by numeric id is NOT permitted
-			return this.#_.channels.get(name);
-		}
-	}
-
-	/**
 	 * Base-class method to distribute private state to subscribers
 	 */
 	_get_ () {
@@ -318,18 +305,21 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Get an existing channel by name or symbol (public interface)
+	 * @param {string|symbol} name - Channel name
+	 * @returns {Channel|undefined} The channel, or undefined if not found
+	 */
+	getChannel (name) {
+		if (typeof name === 'string' || typeof name === 'symbol') {
+			// NOTE: Public access by numeric id is NOT permitted
+			return this.#_.channels.get(name);
+		}
+	}
+
+	/**
 	 * Return the transport ID (UUID)
 	 */
 	get id () { return this.#_.id; }
-
-	/**
-	 * Returns the log channel id (symbol)
-	 * Users only have access to the log channel if they have access to the transport object
-	 * (E.g. not JSMAWS applets post-bootstrap)
-	 */
-	get logChannelId () {
-		return this.#_.logSymbol;
-	}
 
 	/**
 	 * Get logger instance
@@ -475,7 +465,7 @@ export class Transport extends Eventable {
 		if (accepted) {
 			let channel, channelId;
 
-			if (existingAfterEvent && !existingAfterEvent.state === Channel.STATE_CLOSED) {
+			if (existingAfterEvent && existingAfterEvent.state !== Channel.STATE_CLOSED) {
 				// Channel was created while waiting - use its existing ID
 				channel = existingAfterEvent;
 				channelId = channel.id;

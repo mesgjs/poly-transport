@@ -797,7 +797,6 @@ Deno.test('ByteTransport - inherits Transport properties', () => {
 
 	assertExists(transport.id);
 	assertExists(transport.logger);
-	assertExists(transport.logChannelId);
 	assertEquals(transport.state, Transport.STATE_CREATED);
 });
 

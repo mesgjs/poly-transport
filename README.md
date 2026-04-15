@@ -79,7 +79,7 @@ import { PostMessageTransport } from './src/transport/post-message.esm.js';
 const transport = new PostMessageTransport({ gateway: self });
 
 transport.addEventListener('newChannel', (event) => {
-    event.detail.accept();
+    event.accept();
 });
 
 await transport.start();
@@ -112,7 +112,7 @@ const transport = new PipeTransport({
 });
 
 transport.addEventListener('newChannel', (event) => {
-    event.detail.accept();
+    event.accept();
 });
 
 await transport.start();
@@ -137,7 +137,7 @@ const transport = new PipeTransport({
 });
 
 transport.addEventListener('newChannel', (event) => {
-    event.detail.accept();
+    event.accept();
 });
 
 await transport.start();
@@ -163,7 +163,7 @@ Deno.serve((req) => {
     const transport = new WebSocketTransport({ ws: socket });
 
     transport.addEventListener('newChannel', (event) => {
-        event.detail.accept();
+        event.accept();
     });
 
     transport.start().then(async () => {
@@ -188,7 +188,7 @@ const ws = new WebSocket('ws://localhost:8000');
 const transport = new WebSocketTransport({ ws });
 
 transport.addEventListener('newChannel', (event) => {
-    event.detail.accept();
+    event.accept();
 });
 
 await transport.start();
@@ -220,7 +220,7 @@ const nestedA = new NestedTransport({ channel: parentChannelA, messageType: 'pto
 const nestedB = new NestedTransport({ channel: parentChannelB, messageType: 'ptoc' });
 
 nestedB.addEventListener('newChannel', (event) => {
-    event.detail.accept();
+    event.accept();
 });
 
 await Promise.all([nestedA.start(), nestedB.start()]);

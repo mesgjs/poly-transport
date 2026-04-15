@@ -612,7 +612,7 @@ export class Channel extends Eventable {
 	 * @param {boolean} options.decode - Auto-decode Uint8 data to text
 	 * @param {undefined|number|string|Array|Set} options.only - Message-type(s) of reader(s) to check
 	 * @param {number|undefined} options.timeout - Maximum time to wait (in msec)
-	 * @returns
+	 * @returns {Promise<{ messageType, messageTypeId, dataSize, text, data, eom, done, process }>}
 	 */
 	async read ({ dechunk = true, decode = false, only, timeout } = {}) {
 		const idSet = this.#getTypeIdSet(only);
@@ -660,7 +660,7 @@ export class Channel extends Eventable {
 	 * If there are no conflicting readers, return a matching chunk or message available now (if any)
 	 * @param {Object} options
 	 * @param {Object} options.only
-	 * @returns
+	 * @returns {{ messageType, messageTypeId, dataSize, text, data, eom, done, process }}
 	 */
 	readSync (options = {}) {
 		const idSet = this.#getTypeIdSet(options.only);
@@ -673,7 +673,7 @@ export class Channel extends Eventable {
 	/**
 	 * Post-validation common-code for reading chunks or messages
 	 * @param {IdSet} idSet - Set of message types to consider
-	 * @returns
+	 * @returns {{ messageType, messageTypeId, dataSize, text, data, eom, done, process }}
 	 */
 	#readSync (idSet, { dechunk, decode, withHeaders }) {
 		const dataChunks = this.#dataChunks, eomChunks = this.#eomChunks;
