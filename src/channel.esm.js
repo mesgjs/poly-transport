@@ -477,7 +477,7 @@ export class Channel extends Eventable {
 				// Check for existing registration
 				const existing = messageTypes.get(name);
 				let typeId;
-
+	
 				if (existing?.ids?.length) {
 					// Reuse existing ID
 					typeId = existing.ids[0];
@@ -485,13 +485,19 @@ export class Channel extends Eventable {
 					// Assign new ID
 					typeId = this.#nextMessageTypeId;
 					this.#nextMessageTypeId += 2; // Increment by 2 for even/odd separation
-
-					// Create/update record
-					const record = { name, ids: [typeId] };
-					messageTypes.set(name, record);
-					messageTypes.set(typeId, record); // Bidirectional mapping
+	
+					if (existing) {
+						// Update existing entry in-place (preserves promise/resolve/reject
+						// from a simultaneous addMessageTypes() call on this side)
+						existing.ids[0] = typeId;
+					} else {
+						// Create new entry
+						const record = { name, ids: [typeId] };
+						messageTypes.set(name, record);
+					}
+					messageTypes.set(typeId, messageTypes.get(name)); // Bidirectional mapping
 				}
-
+	
 				accept[name] = typeId;
 			}
 		}

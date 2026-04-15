@@ -19,6 +19,7 @@ import {
 	GREET_CONFIG_PREFIX, GREET_CONFIG_SUFFIX, START_BYTE_STREAM,
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
 	RESERVE_ACK_BYTES, DATA_HEADER_BYTES, FLAG_EOM,
+	CHANNEL_TCC, TCC_DTAM_CHAN_RESPONSE,
 	decodeAckHeaderFrom, decodeChannelHeaderFrom,
 	encAddlToTotal, encodeAckHeaderInto, encodeChannelHeaderInto,
 } from '../protocol.esm.js';
@@ -364,6 +365,11 @@ export class ByteTransport extends Transport {
 			}
 
 			_thys.receiveMessage(header, data);
+			if (header.channelId === CHANNEL_TCC && header.messageType === TCC_DTAM_CHAN_RESPONSE[0]) {
+				// Yield to the next macrotask when potentially adding alternate channel IDs
+				// in case there's imminent pending traffic on the new ID
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			}
 		}
 	}
 
