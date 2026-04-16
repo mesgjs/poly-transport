@@ -94,7 +94,7 @@ export function registerMessageTypeTests (makeTransportPair) {
 
 		// B accepts 'typeA' but rejects 'typeB'
 		channelB.addEventListener('newMessageType', (event) => {
-			if (event.detail.name === 'typeB') {
+			if (event.detail.type === 'typeB') {
 				event.preventDefault();
 			}
 		});

@@ -34,7 +34,7 @@ export class Channel extends Eventable {
 		async onDisconnect () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
-			return thys.#onDisconnect();
+			await thys.#onDisconnect();
 		},
 	});
 
@@ -159,7 +159,7 @@ export class Channel extends Eventable {
 	 * Pause until the channel is "idle" (all pending data chunks processed)
 	 * @returns {Promise}
 	 */
-	async allDataProcessed () {
+	/* async */ allDataProcessed () {
 		if (this.#dataChunks.size === 0) return;
 		if (this.#idlePromise) return this.#idlePromise.promise;
 		const promise = this.#idlePromise = {};
@@ -261,46 +261,6 @@ export class Channel extends Eventable {
 	}
 
 	/**
-	 * Immediately disconnect the channel (abrupt, non-negotiated termination).
-	 * Called by the transport when it is being disconnected.
-	 * Does NOT send any TCC messages (chanClose, chanClosed).
-	 * Does NOT call transport.nullChannel() — transport handles its own cleanup.
-	 */
-	async #onDisconnect () {
-		const state = this.#state;
-		if (state === Channel.STATE_CLOSED || state === Channel.STATE_DISCONNECTED) {
-			return this.#closingPromise?.promise;
-		}
-
-		// Transition to disconnected state immediately
-		this.#state = Channel.STATE_DISCONNECTED;
-
-		// Reject pending message-type registrations
-		for (const [_type, entry] of this.#_.messageTypes) {
-			entry.reject?.('Disconnected');
-		}
-
-		// Reject pending reads
-		if (this.#allReader?.reject) this.#allReader.reject('Disconnected');
-		for (const [_type, entry] of this.#filteredReaders) {
-			if (entry.reject) entry.reject('Disconnected');
-		}
-
-		// Reject pending close() promise
-		this.#closingPromise?.resolve('Disconnected');
-
-		// Clear message type registrations
-		this.#_.messageTypes.clear();
-
-		// Stop flow control (rejects pending writable() and allWritesAcked() waiters)
-		this.#_.flowControl.stop({ disconnected: true });
-
-		// Dispatch 'closed' event (channel IS closed, just abruptly)
-		await this.dispatchEvent('closed');
-		// Note: No transport.nullChannel() call — transport handles its own cleanup
-	}
-
-	/**
 	 * Dispatch an event and await all handlers
 	 * @protected
 	 * @returns {Promise<void>}
@@ -382,8 +342,8 @@ export class Channel extends Eventable {
 	getMessageType (type) {
 		const { messageTypes } = this.#_;
 		const entry = messageTypes.get(type);
-		const { ids, name } = entry;
-		return { ids: [...ids], name };
+		const { ids } = entry;
+		return { ids: [...ids], type };
 	}
 
 	/**
@@ -464,6 +424,46 @@ export class Channel extends Eventable {
 	}
 
 	/**
+	 * Immediately disconnect the channel (abrupt, non-negotiated termination).
+	 * Called by the transport when it is being disconnected.
+	 * Does NOT send any TCC messages (chanClose, chanClosed).
+	 * Does NOT call transport.nullChannel() — transport handles its own cleanup.
+	 */
+	async #onDisconnect () {
+		const state = this.#state;
+		if (state === Channel.STATE_CLOSED || state === Channel.STATE_DISCONNECTED) {
+			return this.#closingPromise?.promise;
+		}
+
+		// Transition to disconnected state immediately
+		this.#state = Channel.STATE_DISCONNECTED;
+
+		// Reject pending message-type registrations
+		for (const [_type, entry] of this.#_.messageTypes) {
+			entry.reject?.('Disconnected');
+		}
+
+		// Reject pending reads
+		if (this.#allReader?.reject) this.#allReader.reject('Disconnected');
+		for (const [_type, entry] of this.#filteredReaders) {
+			if (entry.reject) entry.reject('Disconnected');
+		}
+
+		// Reject pending close() promise
+		this.#closingPromise?.resolve('Disconnected');
+
+		// Clear message type registrations
+		this.#_.messageTypes.clear();
+
+		// Stop flow control (rejects pending writable() and allWritesAcked() waiters)
+		this.#_.flowControl.stop({ disconnected: true });
+
+		// Dispatch 'closed' event (channel IS closed, just abruptly)
+		await this.dispatchEvent('closed');
+		// Note: No transport.nullChannel() call — transport handles its own cleanup
+	}
+
+	/**
 	 * Handle remote message-type registration request
 	 * @param {Object} request - The registration request object
 	 * request: {
@@ -475,20 +475,20 @@ export class Channel extends Eventable {
 		const { messageTypes } = _thys;
 		const accept = {}, reject = [];
 
-		for (const name of request.request) {
+		for (const type of request.request) {
 			// Emit event for each type
 			const event = new AsyncAppEvent('newMessageType', {
 				cancelable: true,
-				detail: { name }
+				detail: { type }
 			});
 			await this.dispatchEvent(event);
 
 			if (event.defaultPrevented) {
 				// Rejected by handler
-				reject.push(name);
+				reject.push(type);
 			} else {
 				// Check for existing registration
-				const existing = messageTypes.get(name);
+				const existing = messageTypes.get(type);
 				let typeId;
 	
 				if (existing?.ids?.length) {
@@ -505,13 +505,13 @@ export class Channel extends Eventable {
 						existing.ids[0] = typeId;
 					} else {
 						// Create new entry
-						const record = { name, ids: [typeId] };
-						messageTypes.set(name, record);
+						const record = { type, ids: [typeId] };
+						messageTypes.set(type , record);
 					}
-					messageTypes.set(typeId, messageTypes.get(name)); // Bidirectional mapping
+					messageTypes.set(typeId, messageTypes.get(type)); // Bidirectional mapping
 				}
 	
-				accept[name] = typeId;
+				accept[type] = typeId;
 			}
 		}
 
@@ -535,21 +535,21 @@ export class Channel extends Eventable {
 
 		// Process accepted types
 		if (response.accept) {
-			for (const [name, id] of Object.entries(response.accept)) {
-				let entry = messageTypes.get(name);
+			for (const [type, id] of Object.entries(response.accept)) {
+				let entry = messageTypes.get(type);
 
 				if (entry) {
 					// Add ID to existing entry (handles jitter settlement)
 					if (!addRoleId(id, entry.ids)) {
-						this.#_.transport.logger.error(`Invalid additional id ${id} for message type "${name}"`);
+						this.#_.transport.logger.error(`Invalid additional id ${id} for message type "${type}"`);
 						this.close({ discard: true });
 						return;
 					}
 					this.#settleMessageType(...entry.ids);
 				} else {
 					// Create new entry
-					entry = { name, ids: [id] };
-					messageTypes.set(name, entry);
+					entry = { type, ids: [id] };
+					messageTypes.set(type, entry);
 				}
 
 				// Create reverse mapping (ID to same record object)
@@ -567,11 +567,11 @@ export class Channel extends Eventable {
 
 		// Process rejected types
 		if (response.reject) {
-			for (const name of response.reject) {
-				const entry = messageTypes.get(name);
+			for (const type of response.reject) {
+				const entry = messageTypes.get(type);
 				if (entry?.reject) {
 					entry.reject('Type rejected'); // Non-Error rejection (no stack trace overhead)
-					messageTypes.delete(name);
+					messageTypes.delete(type);
 				}
 			}
 		}
@@ -777,7 +777,7 @@ export class Channel extends Eventable {
 		const eom = dechunk || selected[0].eom;
 		const messageTypeId = selected[0].activeType;
 		const typeEntry = this.#_.messageTypes.get(messageTypeId);
-		const messageType = typeEntry?.name ?? messageTypeId;
+		const messageType = typeEntry?.type ?? messageTypeId;
 		const flowControl = this.#_.flowControl;
 
 		const result = {
