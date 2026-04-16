@@ -631,16 +631,18 @@ export class Channel extends Eventable {
 	 * @param {boolean} options.decode - Auto-decode Uint8 data to text
 	 * @param {undefined|number|string|Array|Set} options.only - Message-type(s) of reader(s) to check
 	 * @param {number|undefined} options.timeout - Maximum time to wait (in msec)
+	 * @param {boolean} options.withHeaders - Include chunk headers in result
 	 * @returns {Promise<{ messageType, messageTypeId, dataSize, text, data, eom, done, process }>}
 	 */
-	async read ({ dechunk = true, decode = false, only, timeout } = {}) {
+	async read (options = {}) {
+		const { dechunk = true, only, timeout } = options;
 		const idSet = this.#getTypeIdSet(only);
 		if (this.hasReader(idSet)) {
 			throw new Error('Conflicting readers');
 		}
 
 		// If a matching message is already available, return it
-		const ready = this.#readSync(idSet, { dechunk, decode });
+		const ready = this.#readSync(idSet, options);
 		if (ready) return ready;
 
 		// Nothing matching is ready; set up to wait
@@ -673,7 +675,7 @@ export class Channel extends Eventable {
 			reader.waiting = false; // Expire reader registration(s)
 		}
 		if (messageType === null) return null; // Closed, disconnected, or timeout
-		return this.#readSync(new IdSet([messageType]), { dechunk, decode });
+		return this.#readSync(new IdSet([messageType]), options);
 	}
 
 	/**
@@ -695,7 +697,7 @@ export class Channel extends Eventable {
 	 * @param {IdSet} idSet - Set of message types to consider
 	 * @returns {{ messageType, messageTypeId, dataSize, text, data, eom, done, process }}
 	 */
-	#readSync (idSet, { dechunk, decode, withHeaders }) {
+	#readSync (idSet, { dechunk = true, decode, withHeaders }) {
 		const dataChunks = this.#dataChunks, eomChunks = this.#eomChunks;
 		const typeChain = this.#typeChain, selected = [];
 

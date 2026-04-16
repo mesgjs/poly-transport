@@ -52,11 +52,11 @@ const worker = new Worker('./worker.js', { type: 'module' });
 const transport = new PostMessageTransport({ gateway: worker });
 
 transport.addEventListener('newChannel', (event) => {
-    const { channelName, accept, reject } = event.detail;
+    const { channelName } = event.detail;
     if (channelName === 'my-channel') {
-        accept();
+        event.accept();
     } else {
-        reject();
+        event.reject();
     }
 });
 
@@ -336,8 +336,8 @@ Returns an existing channel by name, or `undefined`.
 
 ```javascript
 transport.addEventListener('newChannel', (event) => {
-    const { channelName, remoteLimits, accept, reject } = event.detail;
-    accept(options); // or reject()
+    const { channelName, remoteLimits } = event.detail;
+    event.accept(options); // or event.reject()
 });
 ```
 Fired when the remote requests a new channel. Call `accept(options)` or `reject()`.
@@ -352,7 +352,7 @@ Transport lifecycle events.
 
 ```javascript
 transport.state        // Numeric state constant
-transport.stateString  // 'created' | 'starting' | 'active' | 'stopping' | 'stopped' | 'disconnected'
+transport.stateString  // 'created' | 'starting' | 'active' | 'stopping' | 'localStopping' | 'remoteStopping' | 'stopped' | 'disconnected'
 transport.id           // Transport UUID
 ```
 
@@ -468,7 +468,7 @@ transport.addEventListener('protocolViolation', (event) => {
 #### Channel State
 
 ```javascript
-channel.state  // 'open' | 'closing' | 'localClosing' | 'remoteClosing' | 'closed'
+channel.state  // 'open' | 'closing' | 'localClosing' | 'remoteClosing' | 'closed' | 'disconnected'
 channel.name   // Channel name
 channel.id     // Active channel ID (lowest)
 channel.ids    // All channel IDs (array)
@@ -496,8 +496,6 @@ deno test test/unit
 # Run integration tests only
 deno test test/integration
 ```
-
-**Test counts**: 500 unit + 61 transport-unit + 200 integration = **761 tests**, all passing.
 
 ## Architecture
 
