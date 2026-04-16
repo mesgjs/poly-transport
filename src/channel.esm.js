@@ -51,6 +51,7 @@ export class Channel extends Eventable {
 	#filteredReaders = new Map(); // Map<type, {waiting: boolean, resolve}>
 	#forceAckBytes;             // ACK-bytes threshold to force early ACK
 	#forceAckChunks;            // ACK-chunks threshold to force early ACK
+	#idlePromise = null;
 	#ids;
 	#lowWaterBytes;
 	#maxDataBytes;
@@ -152,6 +153,18 @@ export class Channel extends Eventable {
 		}
 
 		return Promise.allSettled(promises);
+	}
+
+	/**
+	 * Pause until the channel is "idle" (all pending data chunks processed)
+	 * @returns {Promise}
+	 */
+	async allDataProcessed () {
+		if (this.#dataChunks.size === 0) return;
+		if (this.#idlePromise) return this.#idlePromise.promise;
+		const promise = this.#idlePromise = {};
+		promise.promise = new Promise((resolve) => promise.resolve = resolve);
+		return promise.promise;
 	}
 
 	/**
@@ -772,6 +785,11 @@ export class Channel extends Eventable {
 			done: () => {
 				for (const chunk of selected) {
 					flowControl.markProcessed(chunk.header.sequence);
+				}
+				if (this.#idlePromise && dataChunks.size === 0) {
+					const resolve = this.#idlePromise.resolve;
+					this.#idlePromise = null;
+					resolve();
 				}
 			},
 			process: async (callback) => {

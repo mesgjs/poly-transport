@@ -278,7 +278,7 @@ export class ByteTransport extends Transport {
 	 */
 	async #byteReader () {
 		const _thys = this.#_;
-		const { bufferPool, inputBuffer } = _thys;
+		const { bufferPool, channels, inputBuffer } = _thys;
 		const newLine = 10, stx = 2;
 		const transportActive = () => {
 			const state = _thys.state;
@@ -325,6 +325,7 @@ export class ByteTransport extends Transport {
 		}
 
 		// Byte-stream-based message loop
+		const tcc = channels.get(0);
 		while (transportActive()) {
 			// Read a message header
 			if (inputBuffer.length < 2) {
@@ -366,9 +367,8 @@ export class ByteTransport extends Transport {
 
 			_thys.receiveMessage(header, data);
 			if (header.channelId === CHANNEL_TCC && header.messageType === TCC_DTAM_CHAN_RESPONSE[0]) {
-				// Yield to the next macrotask when potentially adding alternate channel IDs
-				// in case there's imminent pending traffic on the new ID
-				await new Promise((resolve) => setTimeout(resolve, 0));
+				// Synchronously process potential channel ID additions in case imminent traffic references them
+				await tcc.allDataProcessed();
 			}
 		}
 	}

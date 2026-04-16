@@ -8,10 +8,11 @@ import { Channel } from '../channel.esm.js';
 import { Transport } from './base.esm.js';
 import {
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, HDR_TYPE_HANDSHAKE,
-	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL,
+	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL, CHANNEL_TCC, TCC_DTAM_CHAN_RESPONSE,
 	ackHeaderSize,
 } from '../protocol.esm.js';
 import { VirtualBuffer, VirtualRWBuffer } from '../virtual-buffer.esm.js';
+import { TaskQueue } from '@task-queue';
 
 export class PostMessageTransport extends Transport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
@@ -44,6 +45,7 @@ export class PostMessageTransport extends Transport {
 
 	#_;
 	#gateway;
+	#receiveQueue = new TaskQueue();
 
 	/**
 	 * @param {Object} options 
@@ -82,7 +84,7 @@ export class PostMessageTransport extends Transport {
 	 * @param {Event} event 
 	 */
 	#onMessage (event) {
-		const _thys = this.#_;
+		const _thys = this.#_, queue = this.#receiveQueue;
 		const message = event?.data, proto = message?.protocol;
 		if (proto !== PROTOCOL) return;
 		const { header, data: rawData } = message, type = header?.type;
@@ -101,7 +103,7 @@ export class PostMessageTransport extends Transport {
 			const ranges = header?.ranges || [], rangeSize = ranges?.length || 0;
 			header.headerSize = ackHeaderSize(rangeSize);
 			header.dataSize = 0;
-			_thys.receiveMessage(header);
+			queue.add(() => _thys.receiveMessage(header));
 			break;
 		}
 		case HDR_TYPE_CHAN_CONTROL:
@@ -117,7 +119,14 @@ export class PostMessageTransport extends Transport {
 				if (data instanceof VirtualBuffer) return data.length;
 				return 0;
 			})();
-			_thys.receiveMessage(header, data);
+			queue.add(async () => {
+				_thys.receiveMessage(header, data);
+				if (header.channelId === CHANNEL_TCC && header.messageType === TCC_DTAM_CHAN_RESPONSE[0]) {
+					// Process potential channel ID additions synchronously in case of imminent reference
+					const tcc = _thys.channels.get(0);
+					await tcc.allDataProcessed();
+				}
+			});
 			break;
 		}
 		}
