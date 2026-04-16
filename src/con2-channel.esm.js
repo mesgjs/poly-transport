@@ -34,7 +34,7 @@ export class Con2Channel extends Channel {
 	}
 
 	/*
-	 * Pre-load channel's message-type id <-> name mappings
+	 * Pre-load channel's message-type id <-> type mappings
 	 */
 	#preloadMessageTypes () {
 		const types = this.#_.messageTypes;
@@ -45,7 +45,7 @@ export class Con2Channel extends Channel {
 			C2C_MESG_WARN,
 			C2C_MESG_ERROR
 		]) {
-			const entry = { type, ids: [id] };
+			const entry = { ids: [id], type };
 			types.set(id, entry);
 			types.set(type, entry);
 		}

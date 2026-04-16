@@ -42,7 +42,7 @@ export class ControlChannel extends Channel {
 	}
 
 	/**
-	 * Pre-load channel's message-type id <-> name mappings
+	 * Pre-load channel's message-type id <-> type mappings
 	 * This avoids round-trip negotiation for foundational message types
 	 * @private
 	 */
@@ -56,7 +56,7 @@ export class ControlChannel extends Channel {
 			TCC_DTAM_TRAN_STOP,
 			TCC_DTAM_TRAN_STOPPED,
 		]) {
-			const entry = { type, ids: [id] };
+			const entry = { ids: [id], type };
 			types.set(id, entry);
 			types.set(type, entry);
 		}
