@@ -369,7 +369,7 @@ Registers named message types with the remote. Returns `Promise.allSettled(...)`
 
 ```javascript
 const info = channel.getMessageType('type-a')
-// Returns: { ids: number[], name: string }
+// Returns: { ids: number[], type: string }
 ```
 
 #### Write
@@ -440,7 +440,7 @@ channel.addEventListener('closed', (event) => { /* ... */ });
 
 ```javascript
 channel.addEventListener('newMessageType', (event) => {
-    const { name } = event.detail;
+    const { type } = event.detail;
     // Call event.preventDefault() to reject the registration
 });
 ```

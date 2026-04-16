@@ -1020,8 +1020,8 @@ async addMessageTypes(types)
 getMessageType(type)
 ```
 - Gets message type info
-- `type`: String name or numeric ID
-- Returns: `{ ids: number[], name: string }`
+- `type`: String type name or numeric ID
+- Returns: `{ ids: number[], type: string }`
 
 #### Write Methods
 
@@ -1133,7 +1133,7 @@ channel.addEventListener('closed', (event) => {
 **`newMessageType`**: Emitted when remote requests message type registration
 ```javascript
 channel.addEventListener('newMessageType', (event) => {
-  const { name } = event.detail;
+  const { type } = event.detail;
   // Call event.preventDefault() to reject
 });
 ```
