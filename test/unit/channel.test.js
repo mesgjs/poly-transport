@@ -554,14 +554,12 @@ Deno.test('Channel - read waits for data', async () => {
 	result.done();
 });
 
-Deno.test('Channel - read with timeout rejects on timeout', async () => {
+Deno.test('Channel - read with timeout returns null on timeout', async () => {
 	const { channel } = makeChannel();
 
-	await assertRejects(
-		() => channel.read({ timeout: 10 }),
-		undefined,
-		'Reader timeout'
-	);
+	const result = await channel.read({ timeout: 10 });
+	assertEquals(result, null);
+	assertEquals(channel.state, Channel.STATE_OPEN); // Channel still open after timeout
 });
 
 Deno.test('Channel - read throws on conflicting reader', async () => {
@@ -1302,10 +1300,10 @@ Deno.test('Channel - data received during discard mode is discarded', async () =
 });
 
 // ============================================================================
-// Channel close - pending readers rejected on close
+// Channel close - pending readers return null on close
 // ============================================================================
 
-Deno.test('Channel - pending read is rejected when channel closes', async () => {
+Deno.test('Channel - pending read returns null when channel closes', async () => {
 	const { channel, token } = makeChannel();
 
 	// Start a read that will wait
@@ -1316,8 +1314,9 @@ Deno.test('Channel - pending read is rejected when channel closes', async () => 
 	await channel.onRemoteChanClosed(token);
 	await closePromise;
 
-	// The pending read should have been rejected
-	await assertRejects(() => readPromise);
+	// The pending read should have returned null (graceful close is a normal condition)
+	const result = await readPromise;
+	assertEquals(result, null);
 });
 
 // ============================================================================
@@ -1535,7 +1534,7 @@ Deno.test('Channel - disconnect does NOT call transport.nullChannel', async () =
 	assertEquals(transport.nulledChannels.length, 0);
 });
 
-Deno.test('Channel - disconnect rejects pending read', async () => {
+Deno.test('Channel - disconnect returns null for pending read', async () => {
 	const { channel, token } = makeChannel();
 
 	// Start a read that will wait
@@ -1544,14 +1543,10 @@ Deno.test('Channel - disconnect rejects pending read', async () => {
 	// Disconnect
 	await channel.close({ disconnected: token });
 
-	// The pending read should have been rejected with 'Disconnected'
-	let rejected = null;
-	try {
-		await readPromise;
-	} catch (err) {
-		rejected = err;
-	}
-	assertEquals(rejected, 'Disconnected');
+	// The pending read should return null; channel.state reveals the reason
+	const result = await readPromise;
+	assertEquals(result, null);
+	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 });
 
 Deno.test('Channel - disconnect resolves close() with "Disconnected"', async () => {

@@ -401,7 +401,7 @@ const message = await channel.read(options = {})
 | `decode` | boolean | Auto-decode binary data to text (default: `false`) |
 | `withHeaders` | boolean | Include chunk headers in result (default: `false`) |
 
-Returns a **message object** (or `null` if the channel closed):
+Returns a **message object**, or `null` if the channel was closed, disconnected, or the timeout expired. Check `channel.state` after a `null` return to determine why: `Channel.STATE_OPEN` means timeout (channel still open); `Channel.STATE_CLOSED` means graceful close; `Channel.STATE_DISCONNECTED` means abrupt disconnect.
 
 ```javascript
 {
@@ -418,6 +418,18 @@ Returns a **message object** (or `null` if the channel closed):
 ```
 
 > **Important**: Call `message.done()` (or use `message.process(cb)`) after processing each message to release flow control budget and allow the remote to send more data.
+
+Typical reader loop:
+
+```javascript
+while (true) {
+    const msg = await channel.read();
+    if (!msg) break; // Channel closed or disconnected
+    await msg.process(async (m) => {
+        // handle message
+    });
+}
+```
 
 ```javascript
 const message = channel.readSync(options = {})

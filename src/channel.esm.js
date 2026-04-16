@@ -289,10 +289,10 @@ export class Channel extends Eventable {
 			entry.reject?.('Closed');
 		}
 
-		// Reject any pending readers
-		if (this.#allReader?.reject) this.#allReader.reject('Closed');
+		// Resolve any pending readers with null (graceful close is a normal condition)
+		if (this.#allReader?.resolve) this.#allReader.resolve(null);
 		for (const [_type, entry] of this.#filteredReaders) {
-			if (entry.reject) entry.reject('Closed');
+			if (entry.resolve) entry.resolve(null);
 		}
 
 		// Clear message type registrations
@@ -443,10 +443,10 @@ export class Channel extends Eventable {
 			entry.reject?.('Disconnected');
 		}
 
-		// Reject pending reads
-		if (this.#allReader?.reject) this.#allReader.reject('Disconnected');
+		// Resolve pending reads with null (disconnect is surfaced via channel.state)
+		if (this.#allReader?.resolve) this.#allReader.resolve(null);
 		for (const [_type, entry] of this.#filteredReaders) {
-			if (entry.reject) entry.reject('Disconnected');
+			if (entry.resolve) entry.resolve(null);
 		}
 
 		// Reject pending close() promise
@@ -650,7 +650,7 @@ export class Channel extends Eventable {
 		const promise = new Promise((...r) => [reader.resolve, reader.reject] = r);
 
 		if (typeof timeout === 'number' && timeout > 0) {
-			reader.timer = setTimeout(() => reader.reject('Reader timeout'), timeout);
+			reader.timer = setTimeout(() => reader.resolve(null), timeout);
 		}
 
 		// Register reader for specific or any/all types, as appropriate
@@ -672,6 +672,7 @@ export class Channel extends Eventable {
 			if (reader.timer) clearTimeout(reader.timer); // Cancel timeout if still active
 			reader.waiting = false; // Expire reader registration(s)
 		}
+		if (messageType === null) return null; // Closed, disconnected, or timeout
 		return this.#readSync(new IdSet([messageType]), { dechunk, decode });
 	}
 

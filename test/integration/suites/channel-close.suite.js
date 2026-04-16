@@ -390,9 +390,9 @@ export function registerChannelCloseTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Pending read rejected when channel closes ─────────────────────────
+	// ─── Test: Pending read returns null when channel closes ─────────────────────
 
-	Deno.test('pending read is rejected when channel closes', async () => {
+	Deno.test('pending read returns null when channel closes', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
 		const [channelA, channelB] = await makeConnectedChannel(transportA, transportB);
 
@@ -403,8 +403,9 @@ export function registerChannelCloseTests (makeTransportPair) {
 		const closeA = channelA.close();
 		const closeB = channelB.close();
 
-		// The pending read on B should be rejected
-		await assertRejects(() => readPromise);
+		// The pending read on B should return null (graceful close is a normal condition)
+		const result = await readPromise;
+		assertEquals(result, null);
 
 		await Promise.all([closeA, closeB]);
 
