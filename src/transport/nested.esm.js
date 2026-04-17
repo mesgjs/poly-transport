@@ -59,29 +59,33 @@ export class NestedTransport extends ByteTransport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			const { outputBuffer } = _thys;
-			const committed = outputBuffer.committed;
-			if (committed === 0) return;
 
-			const buffers = outputBuffer.getBuffers(committed);
+			// Loop to drain all committed data, including any newly committed
+			// while we were awaiting channel.write() in a previous iteration.
+			while (outputBuffer.committed > 0) {
+				const committed = outputBuffer.committed;
+				const buffers = outputBuffer.getBuffers(committed);
 
-			try {
-				const channel = thys.#channel;
-				if (!channel) return;
-				for (const buf of buffers) {
-					// Write with eom: false - PTOC is a raw byte stream
-					await channel.write(thys.#messageType, buf, { eom: false });
+				try {
+					const channel = thys.#channel;
+					if (!channel) break;
+					for (const buf of buffers) {
+						// Write with eom: false - PTOC is a raw byte stream
+						await channel.write(thys.#messageType, buf, { eom: false });
+					}
+				} catch (err) {
+					// Write failed - connection lost or channel closing
+					// StateError is expected when the parent channel is closing/closed during shutdown
+					if (!(err instanceof StateError)) {
+						thys.logger.error('NestedTransport: write error', err);
+					}
+					_thys.onDisconnect();
+					return;
 				}
-			} catch (err) {
-				// Write failed - connection lost or channel closing
-				// StateError is expected when the parent channel is closing/closed during shutdown
-				if (!(err instanceof StateError)) {
-					thys.logger.error('NestedTransport: write error', err);
-				}
-				_thys.onDisconnect();
-				return;
+
+				outputBuffer.release(committed);
 			}
 
-			outputBuffer.release(committed);
 			_thys.afterWrite();
 		},
 	}, super.__protected));

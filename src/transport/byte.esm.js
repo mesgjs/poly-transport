@@ -35,6 +35,7 @@ export class ByteTransport extends Transport {
 			super.afterWrite();
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			thys.#writing = false;
 			// Wake a pending reservation if a ring-buffer release enables it
 			const { outputBuffer, reserveWaiter } = _thys;
 			if (reserveWaiter && outputBuffer.available >= reserveWaiter.size) {
@@ -116,7 +117,7 @@ export class ByteTransport extends Transport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			const { outputBuffer } = _thys;
 			const committed = outputBuffer.committed;
-			if (committed === 0) return; // Nothing to write
+			if (thys.#writing || committed === 0) return; // Busy or nothing to write
 
 			if (!thys.#writeBatchTime || committed >= (immediate ? 1 : thys.#forceWriteBytes)) {
 				// Send if immediate-mode, no batch time, or over byte threshold
@@ -124,6 +125,7 @@ export class ByteTransport extends Transport {
 					clearTimeout(thys.#writeBatchTimer);
 					thys.#writeBatchTimer = null;
 				}
+				thys.#writing = true;
 				_thys.writeBytes();
 			} else if (!thys.#writeBatchTimer) {
 				// Send when we've waited the maximum batching time
@@ -252,6 +254,7 @@ export class ByteTransport extends Transport {
 	#forceWriteBytes;
 	#writeBatchTime;
 	#writeBatchTimer = null;
+	#writing = false;
 
 	/**
 	 * Base class of hierarchy for byte-stream transports

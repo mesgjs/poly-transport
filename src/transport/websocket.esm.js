@@ -58,25 +58,29 @@ export class WebSocketTransport extends ByteTransport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			const { outputBuffer } = _thys;
-			const committed = outputBuffer.committed;
-			if (committed === 0) return;
 
-			const buffers = outputBuffer.getBuffers(committed);
+			// Loop to drain all committed data, including any newly committed
+			// while we were sending in a previous iteration.
+			while (outputBuffer.committed > 0) {
+				const committed = outputBuffer.committed;
+				const buffers = outputBuffer.getBuffers(committed);
 
-			try {
-				const ws = thys.#ws;
-				if (!ws || ws.readyState !== WebSocket.OPEN) return;
-				for (const buf of buffers) {
-					ws.send(buf);
+				try {
+					const ws = thys.#ws;
+					if (!ws || ws.readyState !== WebSocket.OPEN) break;
+					for (const buf of buffers) {
+						ws.send(buf);
+					}
+				} catch (err) {
+					// Write failed — connection lost
+					thys.logger.error('WebSocketTransport: write error', err);
+					_thys.onDisconnect();
+					return;
 				}
-			} catch (err) {
-				// Write failed — connection lost
-				thys.logger.error('WebSocketTransport: write error', err);
-				_thys.onDisconnect();
-				return;
+
+				outputBuffer.release(committed);
 			}
 
-			outputBuffer.release(committed);
 			_thys.afterWrite();
 		},
 	}, super.__protected));

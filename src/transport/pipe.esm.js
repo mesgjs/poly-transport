@@ -70,25 +70,29 @@ export class PipeTransport extends ByteTransport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			const { outputBuffer } = _thys;
-			const committed = outputBuffer.committed;
-			if (committed === 0) return;
 
-			const buffers = outputBuffer.getBuffers(committed);
+			// Loop to drain all committed data, including any newly committed
+			// while we were awaiting writer.write() in a previous iteration.
+			while (outputBuffer.committed > 0) {
+				const committed = outputBuffer.committed;
+				const buffers = outputBuffer.getBuffers(committed);
 
-			try {
-				const writer = thys.#writer;
-				if (!writer) return;
-				for (const buf of buffers) {
-					await writer.write(buf);
+				try {
+					const writer = thys.#writer;
+					if (!writer) break;
+					for (const buf of buffers) {
+						await writer.write(buf);
+					}
+				} catch (err) {
+					// Write failed — connection lost
+					thys.logger.error('PipeTransport: write error', err);
+					_thys.onDisconnect();
+					return;
 				}
-			} catch (err) {
-				// Write failed — connection lost
-				thys.logger.error('PipeTransport: write error', err);
-				_thys.onDisconnect();
-				return;
+
+				outputBuffer.release(committed);
 			}
 
-			outputBuffer.release(committed);
 			_thys.afterWrite();
 		},
 	}, super.__protected));
