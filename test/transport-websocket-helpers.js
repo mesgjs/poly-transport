@@ -6,6 +6,7 @@
 
 import { WebSocketTransport } from '../src/transport/websocket.esm.js';
 import { BufferPool } from '../src/buffer-pool.esm.js';
+import { PromiseTracer } from '../src/promise-tracer.esm.js';
 
 /**
  * Create a pair of in-memory mock WebSocket objects that are connected to each other.
@@ -116,10 +117,22 @@ export async function makeWebSocketTransportPair (optionsA = {}, optionsB = {}) 
 	const bufferPool = new BufferPool();
 	const { a: wsA, b: wsB } = makeMemoryWebSocketPair();
 
+	// Create separate promise tracers for each transport (5 second threshold, with rejection logging)
+	const promiseTracerA = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
+	const promiseTracerB = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
 	const transportA = new WebSocketTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerA,
 		...optionsA,
 		ws: wsA,
 	});
@@ -128,6 +141,7 @@ export async function makeWebSocketTransportPair (optionsA = {}, optionsB = {}) 
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerB,
 		...optionsB,
 		ws: wsB,
 	});

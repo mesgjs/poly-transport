@@ -7,6 +7,7 @@
 import { NestedTransport } from '../src/transport/nested.esm.js';
 import { BufferPool } from '../src/buffer-pool.esm.js';
 import { makeByteTransportPair, makeConnectedChannel } from './integration/helpers.js';
+import { PromiseTracer } from '../src/promise-tracer.esm.js';
 
 /**
  * Create a pair of connected NestedTransport instances over an in-memory parent transport.
@@ -37,11 +38,23 @@ export async function makeNestedTransportPair (optionsA = {}, optionsB = {}) {
 	// Use numeric message type 0 for PTOC traffic (no registration needed)
 	const messageType = 0;
 
+	// Create separate promise tracers for each nested transport (5 second threshold, with rejection logging)
+	const promiseTracerA = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
+	const promiseTracerB = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
 	// Create nested transports
 	const nestedA = new NestedTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerA,
 		...optionsA,
 		channel: chanA,
 		messageType,
@@ -51,6 +64,7 @@ export async function makeNestedTransportPair (optionsA = {}, optionsB = {}) {
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerB,
 		...optionsB,
 		channel: chanB,
 		messageType,

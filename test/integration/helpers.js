@@ -12,6 +12,7 @@ import { Transport } from '../../src/transport/base.esm.js';
 import { BufferPool } from '../../src/buffer-pool.esm.js';
 import { Channel } from '../../src/channel.esm.js';
 import { VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
+import { PromiseTracer } from '../../src/promise-tracer.esm.js';
 
 // ─── PostMessageTransport Helpers ─────────────────────────────────────────────
 
@@ -84,10 +85,22 @@ export async function makeMessageTransportPair (optionsA = {}, optionsB = {}) {
 	const [gatewayA, gatewayB] = makePairedGateways();
 	const bufferPool = new BufferPool();
 
+	// Create separate promise tracers for each transport (5 second threshold, with rejection logging)
+	const promiseTracerA = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
+	const promiseTracerB = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
 	const transportA = new PostMessageTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerA,
 		...optionsA,
 		gateway: gatewayA,
 	});
@@ -96,6 +109,7 @@ export async function makeMessageTransportPair (optionsA = {}, optionsB = {}) {
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerB,
 		...optionsB,
 		gateway: gatewayB,
 	});
@@ -198,10 +212,22 @@ export class ConnectedByteTransport extends ByteTransport {
 export async function makeByteTransportPair (optionsA = {}, optionsB = {}) {
 	const bufferPool = new BufferPool();
 
+	// Create separate promise tracers for each transport (5 second threshold, with rejection logging)
+	const promiseTracerA = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
+	const promiseTracerB = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
 	const transportA = new ConnectedByteTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerA,
 		...optionsA,
 	});
 
@@ -209,6 +235,7 @@ export async function makeByteTransportPair (optionsA = {}, optionsB = {}) {
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerB,
 		...optionsB,
 	});
 

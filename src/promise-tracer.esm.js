@@ -31,25 +31,25 @@
 export class PromiseTracer {
 	/** @type {Map<Promise, { trace: Error, timestamp: number, eventId: number|null }>} */
 	#registry = new Map();
-	
+
 	/** @type {number} Next event ID to assign */
 	#nextEventId = 1;
-	
+
 	/** @type {number} Milliseconds before a wait is considered overdue */
 	#thresholdMs;
-	
+
 	/** @type {number} Auto-report interval in milliseconds */
 	#intervalMs;
-	
+
 	/** @type {function} Bound log function for all output */
 	#log;
-	
+
 	/** @type {boolean} Whether to unconditionally log rejections */
 	#logRejections;
-	
+
 	/** @type {number|null} Auto-report timer ID */
 	#timer = null;
-	
+
 	/**
 	 * Create a new PromiseTracer.
 	 *
@@ -64,11 +64,49 @@ export class PromiseTracer {
 		this.#intervalMs = intervalMs ?? thresholdMs;
 		this.#log = log ?? console.warn.bind(console);
 		this.#logRejections = logRejections;
-		
+
 		// Start interval timer
 		this.#timer = setInterval(() => this.#scan(), this.#intervalMs);
 	}
-	
+
+	/**
+	 * Explicitly remove a promise from the registry before it settles.
+	 * No-op if the promise is not registered.
+	 * 
+	 * @param {Promise} promise - Promise to stop tracking
+	 */
+	clear (promise) {
+		this.#registry.delete(promise);
+	}
+
+	/**
+	 * Immediately log all currently-tracked promises.
+	 * 
+	 * @param {Object} [options]
+	 * @param {boolean} [options.overdueOnly=false] - Only report waits past threshold
+	 * @param {boolean} [options.quiet=false] - Suppress "No pending waits" message
+	 */
+	report ({ overdueOnly = false, quiet = false } = {}) {
+		const now = Date.now();
+		const threshold = this.#thresholdMs;
+		const entries = [...this.#registry.values()].sort((a, b) => a.timestamp - b.timestamp);
+
+		if (!entries.length) {
+			if (!quiet) this.#log('[TRACE] No pending waits.');
+			return;
+		}
+
+		for (const entry of entries) {
+			const age = now - entry.timestamp;
+			if (!overdueOnly || age >= threshold) {
+				const idPart = entry.eventId !== null ? ` #${entry.eventId}` : '';
+				this.#log(
+					`[TRACE${idPart}] ${new Date(entry.timestamp).toISOString()} (${age}ms)\n${entry.trace.stack}`
+				);
+			}
+		}
+	}
+
 	/**
 	 * Interval scan for overdue waits.
 	 * Reports each overdue wait exactly once (assigns event ID on first report).
@@ -77,10 +115,10 @@ export class PromiseTracer {
 	#scan () {
 		const now = Date.now();
 		const threshold = this.#thresholdMs;
-		
+
 		for (const [_promise, entry] of this.#registry) {
 			if (entry.eventId !== null) continue; // Already reported; skip
-			
+
 			const age = now - entry.timestamp;
 			if (age >= threshold) {
 				entry.eventId = this.#nextEventId++;
@@ -90,7 +128,21 @@ export class PromiseTracer {
 			}
 		}
 	}
-	
+
+	/**
+	 * Stop the interval timer and auto-report any pending waits (quiet mode).
+	 * 
+	 * Pending waits at stop time are likely a sign of issues, so they are always reported.
+	 * The "No pending waits" message is suppressed since clean shutdown is normal.
+	 */
+	stop () {
+		if (this.#timer) {
+			clearInterval(this.#timer);
+			this.#timer = null;
+		}
+		this.report({ quiet: true }); // Report pending waits; suppress "No pending waits"
+	}
+
 	/**
 	 * Register a promise for tracing.
 	 * 
@@ -105,9 +157,9 @@ export class PromiseTracer {
 	trace (promise, description) {
 		const timestamp = Date.now();
 		const trace = new Error(description); // Captures stack now; .stack formatted lazily
-		
+
 		this.#registry.set(promise, { trace, timestamp, eventId: null });
-		
+
 		// Use .then/.catch to optionally log rejections
 		// Note: We don't re-throw in the catch handler to avoid creating a new uncaught rejection
 		promise.then(
@@ -137,59 +189,7 @@ export class PromiseTracer {
 				// Don't re-throw - the original promise is already rejected
 			}
 		);
-		
+
 		return promise;
-	}
-	
-	/**
-	 * Explicitly remove a promise from the registry before it settles.
-	 * No-op if the promise is not registered.
-	 * 
-	 * @param {Promise} promise - Promise to stop tracking
-	 */
-	clear (promise) {
-		this.#registry.delete(promise);
-	}
-	
-	/**
-	 * Immediately log all currently-tracked promises.
-	 * 
-	 * @param {Object} [options]
-	 * @param {boolean} [options.overdueOnly=false] - Only report waits past threshold
-	 * @param {boolean} [options.quiet=false] - Suppress "No pending waits" message
-	 */
-	report ({ overdueOnly = false, quiet = false } = {}) {
-		const now = Date.now();
-		const threshold = this.#thresholdMs;
-		const entries = [...this.#registry.values()].sort((a, b) => a.timestamp - b.timestamp);
-		
-		if (!entries.length) {
-			if (!quiet) this.#log('[TRACE] No pending waits.');
-			return;
-		}
-		
-		for (const entry of entries) {
-			const age = now - entry.timestamp;
-			if (!overdueOnly || age >= threshold) {
-				const idPart = entry.eventId !== null ? ` #${entry.eventId}` : '';
-				this.#log(
-					`[TRACE${idPart}] ${new Date(entry.timestamp).toISOString()} (${age}ms)\n${entry.trace.stack}`
-				);
-			}
-		}
-	}
-	
-	/**
-	 * Stop the interval timer and auto-report any pending waits (quiet mode).
-	 * 
-	 * Pending waits at stop time are likely a sign of issues, so they are always reported.
-	 * The "No pending waits" message is suppressed since clean shutdown is normal.
-	 */
-	stop () {
-		if (this.#timer) {
-			clearInterval(this.#timer);
-			this.#timer = null;
-		}
-		this.report({ quiet: true }); // Report pending waits; suppress "No pending waits"
 	}
 }

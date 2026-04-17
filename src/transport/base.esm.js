@@ -18,6 +18,7 @@ import { Channel } from '../channel.esm.js';
 import { ControlChannel } from '../control-channel.esm.js';
 import { Con2Channel } from '../con2-channel.esm.js';
 import { VirtualBuffer } from '../virtual-buffer.esm.js';
+import { PromiseTracer } from '../promise-tracer.esm.js';
 export { StateError };
 
 /**
@@ -167,6 +168,7 @@ export class Transport extends Eventable {
 	#_; // Base-class view of protected state (sub-classes must have one also)
 	#_subs = new Set(); // Protected-state subscriptions (setter functions)
 	#logger;
+	#promiseTracer; // Optional PromiseTracer instance for tracing long-lived waits
 
 	/**
 	 * Create a new Transport instance
@@ -179,6 +181,7 @@ export class Transport extends Eventable {
 	 * @param {Object} options.logger - Logger instance (default: console)
 	 * @param {number} options.lowBufferBytes - ACK threshold
 	 * @param {number} options.maxChunkBytes - Maximum chunk size
+	 * @param {PromiseTracer} options.promiseTracer - Promise tracer for monitoring long-lived waits
 	 * @param {number} options.tcc.lowBufferBytes - TCC ACK threshold
 	 * @param {number} options.tcc.maxChunkBytes - TCC maximum chunk size
 	 */
@@ -205,6 +208,7 @@ export class Transport extends Eventable {
 			tccOptions: options.tcc ?? {},
 		});
 		this.#logger = options.logger || console;
+		this.#promiseTracer = options.promiseTracer ?? null;
 		this._sub_(this.#_subs);
 	}
 
@@ -235,7 +239,8 @@ export class Transport extends Eventable {
 			localLimit: options.localLimit,
 			remoteLimit: options.remoteLimit,
 			maxChunkBytes: options.maxChunkBytes,
-			nextMessageTypeId
+			nextMessageTypeId,
+			promiseTracer: this.#promiseTracer
 		});
 
 		// Register channel in maps
@@ -287,6 +292,10 @@ export class Transport extends Eventable {
 		// Clear write batch timer (must happen after tranStopped is scheduled)
 		await _thys.stop();
 		_thys.bufferPool?.stop();
+
+		// Stop promise tracer
+		this.#promiseTracer?.stop();
+
 		_thys.stopped?.resolve();
 		await this.dispatchEvent('stopped', {});
 	}
@@ -320,6 +329,11 @@ export class Transport extends Eventable {
 	 * Return the transport ID (UUID)
 	 */
 	get id () { return this.#_.id; }
+
+	/**
+	 * Return the last characters of the transport ID (for compact logging)
+	 */
+	get idTail () { return this.#_.id.slice(-6); }
 
 	/**
 	 * Get logger instance
@@ -646,6 +660,9 @@ export class Transport extends Eventable {
 
 		_thys.bufferPool?.stop();
 
+		// Stop promise tracer
+		this.#promiseTracer?.stop();
+
 		// Resolve stopped promise
 		_thys.stopped.resolve();
 
@@ -693,6 +710,12 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Get the promise tracer instance (if any)
+	 * @returns {PromiseTracer|null}
+	 */
+	get promiseTracer () { return this.#promiseTracer; }
+
+	/**
 	 * Request a new channel
 	 * @param {string} name - Channel name
 	 * @param {Object} options - Channel options
@@ -738,6 +761,9 @@ export class Transport extends Eventable {
 		const request = { options: channelOptions };
 		request.promise = new Promise((resolve, reject) => [request.resolve, request.reject] = [resolve, reject]);
 		pendingChannelRequests.set(name, request);
+
+		// 5b. Trace promise if tracer is enabled
+		this.#promiseTracer?.trace(request.promise, `Transport ${this.idTail} (${this.role}) requesting channel "${name}"`);
 
 		// 6. Send control message via TCC
 		const tcc = channels.get(CHANNEL_TCC);

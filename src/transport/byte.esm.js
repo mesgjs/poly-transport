@@ -53,9 +53,9 @@ export class ByteTransport extends Transport {
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			// Wake the read waiter (if any) so the reader loop can exit
 			if (_thys.readWaiter) {
-				const { reject } = _thys.readWaiter;
+				const { resolve } = _thys.readWaiter;
 				_thys.readWaiter = null;
-				reject?.('Disconnected');
+				resolve?.(false);
 			}
 			// Wake the reserve waiter (if any)
 			if (_thys.reserveWaiter) {
@@ -81,7 +81,7 @@ export class ByteTransport extends Transport {
 			if (readWaiter && inputBuffer.length >= readWaiter.count) {
 				const resolve = readWaiter.resolve;
 				_thys.readWaiter = null;
-				resolve();
+				resolve(true);
 			}
 		},
 
@@ -97,6 +97,11 @@ export class ByteTransport extends Transport {
 
 			const waiter = _thys.reserveWaiter = { size };
 			const promise = waiter.promise = new Promise((...r) => [waiter.resolve, waiter.reject] = r);
+
+			// Trace promise if tracer is enabled
+			thys.promiseTracer?.trace(promise,
+				`Transport ${thys.idTail} (${thys.role}) ring-buffer reservation blocked: need ${size} bytes, available ${outputBuffer.available} / size ${outputBuffer.size}`);
+
 			return promise;
 		},
 
@@ -203,17 +208,7 @@ export class ByteTransport extends Transport {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 			super.startReader(); // Start the byte-stream common reader
-			(async () => {
-				try {
-					// Run our transport-specific reader
-					await thys.#byteReader();
-				} catch (err) {
-					// Disconnected is a condition, as opposed to an error
-					if (err instanceof Error) {
-						thys.logger.error(err);
-					}
-				}
-			})();
+			thys.#byteReader(); // Start our transport-specific reader
 		},
 
 		/**
@@ -234,6 +229,12 @@ export class ByteTransport extends Transport {
 			if (thys.#writeBatchTimer) {
 				clearTimeout(thys.#writeBatchTimer);
 				thys.#writeBatchTimer = null;
+			}
+			// Wake the read waiter (if any) so the reader loop can exit
+			if (_thys.readWaiter) {
+				const { resolve } = _thys.readWaiter;
+				_thys.readWaiter = null;
+				resolve?.(false);
 			}
 		},
 
@@ -289,9 +290,7 @@ export class ByteTransport extends Transport {
 
 		// Line-based config/handshake loop
 		while (transportActive()) {
-			if (offset === inputBuffer.length) {
-				await this.#readable(offset + 1);
-			}
+			if (offset === inputBuffer.length && !(await this.#readable(offset + 1))) return;
 
 			const nextByte = inputBuffer.getUint8(offset);
 
@@ -328,9 +327,8 @@ export class ByteTransport extends Transport {
 		const tcc = channels.get(0);
 		while (transportActive()) {
 			// Read a message header
-			if (inputBuffer.length < 2) {
-				await this.#readable(2);
-			}
+			if (inputBuffer.length < 2 && !(await this.#readable(2))) return;
+
 			const type = inputBuffer.getUint8(0);
 			const encAddl = inputBuffer.getUint8(1);
 			const totalHeaderSize = encAddlToTotal(encAddl);
@@ -358,9 +356,7 @@ export class ByteTransport extends Transport {
 			inputBuffer.release(totalHeaderSize, bufferPool);
 			const dataSize = header.dataSize ?? 0;
 			if (dataSize > 0) {
-				if (dataSize > inputBuffer.length) {
-					await this.#readable(dataSize);
-				}
+				if (dataSize > inputBuffer.length && !(await this.#readable(dataSize))) return;
 				data = inputBuffer.slice(0, dataSize).toPool(bufferPool);
 				inputBuffer.release(dataSize, bufferPool);
 			}
@@ -384,8 +380,13 @@ export class ByteTransport extends Transport {
 
 		// Wait on the necessary additional bytes
 		const waiter = { count };
-		const promise = new Promise((...r) => [ waiter.resolve, waiter.reject] = r);
+		const promise = new Promise((resolve) => waiter.resolve = resolve);
 		_thys.readWaiter = waiter;
+
+		// Trace promise if tracer is enabled
+		this.promiseTracer?.trace(promise,
+			`Transport ${this.idTail} (${this.role}) byte-stream reader waiting for ${count} bytes (have ${inputBuffer.length})`);
+
 		return promise;
 	}
 

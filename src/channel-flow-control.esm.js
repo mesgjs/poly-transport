@@ -59,6 +59,7 @@ export class ChannelFlowControl {
 
 	#channel;
 	#logger;
+	#promiseTracer; // Optional PromiseTracer instance for tracing long-lived waits
 	#stopped = false;
 
 	/**
@@ -72,8 +73,9 @@ export class ChannelFlowControl {
 	 * @param {number} options.forceAckBytes - number of ACKable bytes that overrides ackBatchTime
 	 * @param {number} options.forceAckChunks - number of ACKable chunks that overrides ackBatchTime
 	 * @param {number} options.lowWaterBytes - read-level below which to start sending ACKs
+	 * @param {PromiseTracer} options.promiseTracer - Promise tracer for monitoring long-lived waits
 	 */
-	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, channel, forceAckBytes, forceAckChunks, logger, lowWaterBytes } = {}) {
+	constructor (readLimit, writeLimit, { ackBatchTime, ackCallback, channel, forceAckBytes, forceAckChunks, logger, lowWaterBytes, promiseTracer } = {}) {
 		this.#ackBatchTime = ackBatchTime ?? 0; // Default 0 = no minimum delay between ACKs
 		this.#ackCallback = ackCallback;
 		this.#forceAckBytes = forceAckBytes ?? 0; // Default 0 = no delay override
@@ -84,6 +86,7 @@ export class ChannelFlowControl {
 
 		this.#channel = channel;
 		this.#logger = logger || console;
+		this.#promiseTracer = promiseTracer ?? null;
 
 		if (channel && !ackCallback) {
 			this.#logger.warn(`No ACK callback for channel ${channel?.name}!`);
@@ -116,6 +119,12 @@ export class ChannelFlowControl {
 
 		const promise = this.#allWritesAcked = {}; // No existing promise yet, so create one
 		promise.promise = new Promise((...r) => [promise.resolve, promise.reject] = r);
+
+		// Trace promise if tracer is enabled
+		const channelName = this.#channel?.name ?? 'unknown';
+		this.#promiseTracer?.trace(promise.promise,
+			`Channel "${channelName}" close waiting for ${this.#writeAckInfo.size} in-flight write(s) to be ACKed`);
+
 		return promise.promise;
 	}
 
@@ -497,9 +506,16 @@ export class ChannelFlowControl {
 
 		// Otherwise, wait for budget to become available
 		// Note: TaskQueue ensures only one chunk waiting at a time per channel
-		return new Promise((resolve, reject) => {
+		const promise = new Promise((resolve, reject) => {
 			this.#writer = { bytes, resolve, reject };
 		});
+
+		// Trace promise if tracer is enabled
+		const channelName = this.#channel?.name ?? 'unknown';
+		this.#promiseTracer?.trace(promise,
+			`Channel "${channelName}" write blocked: need ${bytes} bytes, budget ${this.writeBudget} / limit ${this.#writeLimit}`);
+
+		return promise;
 	}
 
 	/**

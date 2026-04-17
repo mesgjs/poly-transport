@@ -6,6 +6,7 @@
 
 import { PipeTransport } from '../src/transport/pipe.esm.js';
 import { BufferPool } from '../src/buffer-pool.esm.js';
+import { PromiseTracer } from '../src/promise-tracer.esm.js';
 
 /**
  * Create a pair of in-memory byte streams that are connected to each other.
@@ -54,10 +55,22 @@ export async function makePipeTransportPair (optionsA = {}, optionsB = {}) {
 	const bufferPool = new BufferPool();
 	const pipes = makeMemoryPipePair();
 
+	// Create separate promise tracers for each transport (5 second threshold, with rejection logging)
+	const promiseTracerA = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
+	const promiseTracerB = new PromiseTracer(5000, {
+		log: console.warn.bind(console),
+		logRejections: true
+	});
+
 	const transportA = new PipeTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerA,
 		...optionsA,
 		readable: pipes.a.readable,
 		writable: pipes.a.writable,
@@ -67,6 +80,7 @@ export async function makePipeTransportPair (optionsA = {}, optionsB = {}) {
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
+		promiseTracer: promiseTracerB,
 		...optionsB,
 		readable: pipes.b.readable,
 		writable: pipes.b.writable,

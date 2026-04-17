@@ -58,6 +58,7 @@ export class Channel extends Eventable {
 	#mesgTypeRemapping = new Map(); // Map<highId, lowId> message-type id remapping
 	#name;
 	#nextMessageTypeId;         // Private field for message-type ID assignment
+	#promiseTracer;             // Optional PromiseTracer instance  for tracing long-lived waits
 	#readyToAck = false;
 	#sendAckNow;
 	#state = Channel.STATE_OPEN;
@@ -74,11 +75,12 @@ export class Channel extends Eventable {
 	 * @param {number} config.maxChunkBytes - Maximum chunk size
 	 * @param {string} config.name - Channel name
 	 * @param {number} config.nextMessageTypeId - Initial message-type ID for assignment
+	 * @param {PromiseTracer} config.promiseTracer - Promise tracer for monitoring long-lived waits
 	 * @param {number} config.remoteLimit - Remote buffer limit
 	 * @param {symbol} config.token - Unique channel auth token
 	 * @param {Transport} config.transport - The associated transport
 	 */
-	constructor ({ ackBatchTime, dechunk = true, forceAckBytes, forceAckChunks, id, localLimit, lowWaterBytes, maxChunkBytes, name, nextMessageTypeId, remoteLimit, token, transport }) {
+	constructor ({ ackBatchTime, dechunk = true, forceAckBytes, forceAckChunks, id, localLimit, lowWaterBytes, maxChunkBytes, name, nextMessageTypeId, promiseTracer, remoteLimit, token, transport }) {
 		super();
 		if (maxChunkBytes < minChunkBytes) throw new RangeError(`maxChunkBytes must be at least ${minChunkBytes}`);
 		this.#dechunk = dechunk;
@@ -89,6 +91,7 @@ export class Channel extends Eventable {
 		this.#maxDataBytes = maxChunkBytes - DATA_HEADER_BYTES;
 		this.#name = name;
 		this.#nextMessageTypeId = nextMessageTypeId;
+		this.#promiseTracer = promiseTracer ?? null;
 		this.#sendAckNow = () => this.#sendAckMessage(true);
 
 		this.#_ = Object.assign(Object.create(this.constructor.__protected), {
@@ -97,7 +100,8 @@ export class Channel extends Eventable {
 				channel: this, logger: transport.logger,
 				ackBatchTime: ackBatchTime ?? 5, ackCallback: () => this.#sendAckMessage(),
 				forceAckBytes: this.#forceAckBytes, forceAckChunks: this.#forceAckChunks,
-				lowWaterBytes: this.#lowWaterBytes
+				lowWaterBytes: this.#lowWaterBytes,
+				promiseTracer: this.#promiseTracer
 			}),
 			messageTypes: new Map(), // Map<number|string, {ids: number[], type: string, promise, resolve, reject}>
 			token,
@@ -650,6 +654,10 @@ export class Channel extends Eventable {
 			waiting: true, dechunk
 		};
 		const promise = new Promise((...r) => [reader.resolve, reader.reject] = r);
+
+		// Trace promise if tracer is enabled
+		const onlyDesc = () => only ? JSON.stringify(only) : 'any';
+		this.#promiseTracer?.trace(promise, `Channel "${this.#name}" read waiting for ${onlyDesc()} message`);
 
 		if (typeof timeout === 'number' && timeout > 0) {
 			reader.timer = setTimeout(() => reader.resolve(null), timeout);
