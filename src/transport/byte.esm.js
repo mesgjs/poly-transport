@@ -360,7 +360,8 @@ export class ByteTransport extends Transport {
 			const dataSize = header.dataSize ?? 0;
 			if (dataSize > 0) {
 				if (dataSize > inputBuffer.length && !(await this.#readable(dataSize))) return;
-				data = inputBuffer.slice(0, dataSize).toPool(bufferPool);
+				const dataSlice = inputBuffer.slice(0, dataSize);
+				data = bufferPool ? dataSlice.toPool(bufferPool) : [dataSlice.toUint8Array()];
 				inputBuffer.release(dataSize, bufferPool);
 			}
 

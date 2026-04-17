@@ -227,7 +227,7 @@ export class VirtualBuffer {
 	 * @returns {Array<Uint8Array>} Array of Uint8Array segments
 	 */
 	toPool (pool) {
-		if (typeof pool.acquireSet !== 'function') {
+		if (typeof pool?.acquireSet !== 'function') {
 			throw new TypeError('Pool does not support acquireSet');
 		}
 		const state = this.#state;
