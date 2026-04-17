@@ -248,4 +248,108 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await Promise.all([transportA.stop(), transportB.stop()]);
 		await cleanup?.();
 	});
+
+	// ─── Test: Interleaved writes on multiple channels with mixed text/binary ─────
+
+	Deno.test('interleaved writes on multiple channels with mixed text and binary data', async () => {
+		const [transportA, transportB, cleanup] = await makeTransportPair();
+
+		// Create 3 channels
+		const [channelA1, channelB1] = await makeConnectedChannel(transportA, transportB, 'multi-ch-1');
+		const [channelA2, channelB2] = await makeConnectedChannel(transportA, transportB, 'multi-ch-2');
+		const [channelA3, channelB3] = await makeConnectedChannel(transportA, transportB, 'multi-ch-3');
+
+		// Prepare test data with different message type IDs
+		const textData1 = 'Message on channel 1';
+		const textData2 = 'Message on channel 2';
+		const binaryData3 = new Uint8Array([0xCA, 0xFE, 0xBA, 0xBE]);
+		const textData1b = 'Second message on channel 1';
+		const binaryData2 = new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]);
+		const textData3 = 'Text message on channel 3';
+
+		// Interleave writes across all 3 channels (text and binary mixed)
+		// Use different message type IDs to allow concurrent filtered reads
+		// Pattern: ch1(type1) → ch2(type2) → ch3(type3) → ch1(type4) → ch2(type5) → ch3(type6)
+		const writePromises = [
+			channelA1.write(1, textData1),
+			channelA2.write(2, textData2),
+			channelA3.write(3, binaryData3),
+			channelA1.write(4, textData1b),
+			channelA2.write(5, binaryData2),
+			channelA3.write(6, textData3),
+		];
+
+		// Read from all channels concurrently using 'only' filter for each message type
+		const readPromises = [
+			// Channel 1: expect 2 text messages (types 1 and 4)
+			channelB1.read({ only: 1, decode: true, timeout: 2000 }),
+			channelB1.read({ only: 4, decode: true, timeout: 2000 }),
+			// Channel 2: expect 1 text (type 2), 1 binary (type 5)
+			channelB2.read({ only: 2, decode: true, timeout: 2000 }),
+			channelB2.read({ only: 5, decode: false, timeout: 2000 }),
+			// Channel 3: expect 1 binary (type 3), 1 text (type 6)
+			channelB3.read({ only: 3, decode: false, timeout: 2000 }),
+			channelB3.read({ only: 6, decode: true, timeout: 2000 }),
+		];
+
+		// Wait for all writes and reads to complete
+		await Promise.all(writePromises);
+		const [
+			result1a, result1b,
+			result2a, result2b,
+			result3a, result3b
+		] = await Promise.all(readPromises);
+
+		// Verify channel 1 received both text messages
+		assertExists(result1a);
+		assertEquals(result1a.text, textData1);
+		assertEquals(result1a.messageType, 1);
+		result1a.done();
+
+		assertExists(result1b);
+		assertEquals(result1b.text, textData1b);
+		assertEquals(result1b.messageType, 4);
+		result1b.done();
+
+		// Verify channel 2 received text and binary
+		assertExists(result2a);
+		assertEquals(result2a.text, textData2);
+		assertEquals(result2a.messageType, 2);
+		result2a.done();
+
+		assertExists(result2b);
+		assertExists(result2b.data);
+		assertEquals(result2b.messageType, 5);
+		const receivedBinary2 = result2b.data.toUint8Array();
+		assertEquals(receivedBinary2.length, binaryData2.length);
+		for (let i = 0; i < binaryData2.length; i++) {
+			assertEquals(receivedBinary2[i], binaryData2[i], `Channel 2 binary byte ${i} mismatch`);
+		}
+		result2b.done();
+
+		// Verify channel 3 received binary and text
+		assertExists(result3a);
+		assertExists(result3a.data);
+		assertEquals(result3a.messageType, 3);
+		const receivedBinary3 = result3a.data.toUint8Array();
+		assertEquals(receivedBinary3.length, binaryData3.length);
+		for (let i = 0; i < binaryData3.length; i++) {
+			assertEquals(receivedBinary3[i], binaryData3[i], `Channel 3 binary byte ${i} mismatch`);
+		}
+		result3a.done();
+
+		assertExists(result3b);
+		assertEquals(result3b.text, textData3);
+		assertEquals(result3b.messageType, 6);
+		result3b.done();
+
+		// Clean up all channels
+		await Promise.all([
+			channelA1.close(), channelB1.close(),
+			channelA2.close(), channelB2.close(),
+			channelA3.close(), channelB3.close(),
+		]);
+		await Promise.all([transportA.stop(), transportB.stop()]);
+		await cleanup?.();
+	});
 }
