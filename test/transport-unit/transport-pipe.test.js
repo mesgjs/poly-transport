@@ -127,8 +127,7 @@ Deno.test('PipeTransport - requestChannel creates channel on both sides', async 
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -166,8 +165,7 @@ Deno.test('PipeTransport - write and read a message', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('data-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -191,8 +189,7 @@ Deno.test('PipeTransport - write and read binary data', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('binary-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -220,8 +217,7 @@ Deno.test('PipeTransport - bidirectional data exchange', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('bidi-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -248,8 +244,7 @@ Deno.test('PipeTransport - multiple messages in sequence', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('multi-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -277,8 +272,7 @@ Deno.test('PipeTransport - channel close completes gracefully', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('close-test')), 0);
+			resolve(event.accept());
 		});
 	});
 

@@ -635,3 +635,187 @@ Deno.test('Transport - onDisconnect protected method calls stop({ disconnected: 
 
 	assertEquals(transport.state, Transport.STATE_DISCONNECTED);
 });
+
+// ─── newChannel event: accept/reject redesign ─────────────────────────────────
+
+// Helper: simulate an incoming channel request on a started MockTransport
+function simulateChannelRequest (transport, channelName = 'test-channel') {
+	const _thys = transport.getProtectedState();
+	const tcc = _thys.channels.get(CHANNEL_TCC);
+	const data = JSON.stringify({ channelName, maxBufferBytes: 0, maxChunkBytes: 16384 });
+	_thys.receiveMessage({
+		type: HDR_TYPE_CHAN_DATA,
+		headerSize: DATA_HEADER_BYTES,
+		dataSize: data.length * 2,
+		flags: FLAG_EOM,
+		channelId: CHANNEL_TCC,
+		sequence: tcc.nextReadSeq,
+		messageType: 1, // TCC_DTAM_CHAN_REQUEST[0]
+		eom: true,
+	}, data);
+}
+
+Deno.test('Transport - newChannel event: accept() returns a Promise', async () => {
+	const { transport } = await startMockTransport();
+	let acceptResult;
+
+	transport.addEventListener('newChannel', (event) => {
+		acceptResult = event.accept();
+	});
+
+	simulateChannelRequest(transport);
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert(acceptResult instanceof Promise, 'accept() should return a Promise');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: accept() promise resolves to the channel', async () => {
+	const { transport } = await startMockTransport();
+
+	// Capture the channel promise directly from accept()
+	let channelPromise;
+	transport.addEventListener('newChannel', (event) => {
+		channelPromise = event.accept();
+	});
+
+	simulateChannelRequest(transport, 'my-channel');
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assertExists(channelPromise);
+	const channelFromAccept = await channelPromise;
+	assertExists(channelFromAccept);
+	assertEquals(channelFromAccept.name, 'my-channel');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: multiple accept() calls return same Promise', async () => {
+	const { transport } = await startMockTransport();
+	let p1, p2;
+
+	transport.addEventListener('newChannel', (event) => {
+		p1 = event.accept();
+		p2 = event.accept();
+	});
+
+	simulateChannelRequest(transport);
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assertEquals(p1, p2, 'Both accept() calls should return the same Promise');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: accept() options are merged across calls', async () => {
+	const { transport } = await startMockTransport();
+	let channelPromise;
+
+	transport.addEventListener('newChannel', (event) => {
+		event.accept({ maxBufferBytes: 8192 });
+		event.accept({ maxChunkBytes: 4096 });
+		channelPromise = event.accept();
+	});
+
+	simulateChannelRequest(transport, 'opts-channel');
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assertExists(channelPromise);
+	const channelFromAccept = await channelPromise;
+	assertExists(channelFromAccept);
+	assertEquals(channelFromAccept.name, 'opts-channel');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: reject() is a no-op when accept() was also called', async () => {
+	const { transport } = await startMockTransport();
+	let channelPromise;
+
+	transport.addEventListener('newChannel', (event) => {
+		channelPromise = event.accept();
+		event.reject(); // Should be a no-op
+	});
+
+	simulateChannelRequest(transport, 'accept-reject-channel');
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	// Channel should still be created because accept() was called
+	assertExists(channelPromise);
+	const channelFromAccept = await channelPromise;
+	assertExists(channelFromAccept);
+	assertEquals(channelFromAccept.name, 'accept-reject-channel');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: reject() alone does not create channel', async () => {
+	const { transport } = await startMockTransport();
+	let eventFired = false;
+
+	transport.addEventListener('newChannel', (event) => {
+		eventFired = true;
+		event.reject();
+	});
+
+	simulateChannelRequest(transport, 'reject-only-channel');
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assert(eventFired, 'newChannel event should have fired');
+	assertEquals(transport.getChannel('reject-only-channel'), undefined, 'Channel should not be created');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: no accept() or reject() does not create channel', async () => {
+	const { transport } = await startMockTransport();
+
+	transport.addEventListener('newChannel', (_event) => {
+		// Neither accept() nor reject() called
+	});
+
+	simulateChannelRequest(transport, 'no-response-channel');
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	assertEquals(transport.getChannel('no-response-channel'), undefined, 'Channel should not be created');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - newChannel event: accept() before reject() still creates channel', async () => {
+	const { transport } = await startMockTransport();
+	let channelPromise;
+
+	transport.addEventListener('newChannel', (event) => {
+		event.reject(); // Called first
+		channelPromise = event.accept(); // Called second
+	});
+
+	simulateChannelRequest(transport, 'reject-then-accept-channel');
+
+	// Yield to allow the async #tccReader handler to process the request
+	await Promise.resolve();
+	await Promise.resolve();
+
+	// Channel should be created because accept() was called (reject is a no-op)
+	assertExists(channelPromise);
+	const channelFromAccept = await channelPromise;
+	assertExists(channelFromAccept);
+	assertEquals(channelFromAccept.name, 'reject-then-accept-channel');
+	await transport.stop({ disconnected: true });
+});

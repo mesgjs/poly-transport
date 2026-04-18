@@ -462,12 +462,21 @@ export class Transport extends Eventable {
 		}
 
 		// 2. Emit 'newChannel' event with accept/reject methods
+		// accept(options) - any handler calling accept() wins; options are merged across calls
+		// reject() - compatibility no-op; channel is created if any handler calls accept()
 		let accepted = false;
+		const acceptOptions = {};
+		let channelResolve;
+		const channelPromise = new Promise ((res) => channelResolve = res);
 		const event = Object.freeze({
 			type: 'newChannel',
 			detail: Object.freeze({ channelName, remoteLimits: Object.freeze({ maxBufferBytes, maxChunkBytes }) }),
-			accept: () => { accepted = true; },
-			reject: () => { accepted = false; }
+			accept: (options = {}) => {
+				accepted = true;
+				Object.assign(acceptOptions, options);
+				return channelPromise;
+			},
+			reject: () => { } // Compatibility no-op: channel is created if any handler calls accept()
 		});
 		await this.dispatchEvent(event);
 
@@ -493,22 +502,34 @@ export class Transport extends Eventable {
 					_thys.nextChannelId += 2; // Increment by 2 for even/odd separation
 				}
 
+				// Merge acceptOptions with transport defaults
+				const localLimit = acceptOptions.maxBufferBytes ?? _thys.maxBufferBytes;
+				const chunkLimit = acceptOptions.maxChunkBytes
+					? Math.min(acceptOptions.maxChunkBytes, _thys.maxChunkBytes, maxChunkBytes)
+					: Math.min(_thys.maxChunkBytes, maxChunkBytes);
 				channel = this.#createChannel(channelName, channelId, {
-					localLimit: _thys.maxBufferBytes,
+					localLimit,
 					remoteLimit: maxBufferBytes,
-					maxChunkBytes: Math.min(_thys.maxChunkBytes, maxChunkBytes)
+					maxChunkBytes: chunkLimit
 				});
 			}
 
+			// Resolve the channelPromise so accept() callers get the channel
+			channelResolve(channel);
+
 			// Send acceptance response
+			const localMaxBufferBytes = acceptOptions.maxBufferBytes ?? _thys.maxBufferBytes;
+			const localMaxChunkBytes = acceptOptions.maxChunkBytes
+				? Math.min(acceptOptions.maxChunkBytes, _thys.maxChunkBytes)
+				: _thys.maxChunkBytes;
 			const response = JSON.stringify({
 				name: channelName,
 				accepted: true,
 				id: channelId,
-				maxBufferBytes: _thys.maxBufferBytes,
-				maxChunkBytes: _thys.maxChunkBytes
+				maxBufferBytes: localMaxBufferBytes,
+				maxChunkBytes: localMaxChunkBytes
 			});
-			await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
+			if (this.state !== Transport.STATE_DISCONNECTED) await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
 
 			// Resolve local pending request if exists
 			// NOTE: Remote request = remote approval, so channel is ready now
@@ -519,12 +540,14 @@ export class Transport extends Eventable {
 				// The pending request tracks OUR outgoing request lifecycle, not channel availability
 			}
 		} else {
+			channelResolve(null); // Resolve unused .accept promise
+
 			// Send rejection response
 			const response = JSON.stringify({
 				name: channelName,
 				accepted: false
 			});
-			await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
+			if (this.state !== Transport.STATE_DISCONNECTED) await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
 
 			// DON'T reject local pending request here!
 			// "First accept or last reject" rule: Even if we reject the remote request,

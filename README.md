@@ -337,10 +337,12 @@ Returns an existing channel by name, or `undefined`.
 ```javascript
 transport.addEventListener('newChannel', (event) => {
     const { channelName, remoteLimits } = event.detail;
-    event.accept(options); // or event.reject()
+    const channelPromise = event.accept(options); // Returns Promise<Channel>
 });
 ```
-Fired when the remote requests a new channel. Call `accept(options)` or `reject()`.
+Fired when the remote requests a new channel. Call `event.accept(options)` to accept the request. `accept()` returns a `Promise<Channel>` that resolves to the accepted channel once it is created, allowing the event handler to dispatch message processors directly without a separate `getChannel()` call. Options from multiple `accept()` calls across handlers are merged. If no handler calls `accept()`, the request is rejected.
+
+> **Note**: `event.reject()` is deprecated and has no effect. The channel is created if any handler calls `accept()`.
 
 ```javascript
 transport.addEventListener('beforeStopping', (event) => { /* ... */ });

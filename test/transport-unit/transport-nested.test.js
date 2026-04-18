@@ -159,8 +159,7 @@ Deno.test('NestedTransport - requestChannel creates channel on both sides', asyn
 
 	const channelBPromise = new Promise((resolve) => {
 		nestedB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(nestedB.getChannel('test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -200,8 +199,7 @@ Deno.test('NestedTransport - write and read a message', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		nestedB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(nestedB.getChannel('data-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -226,8 +224,7 @@ Deno.test('NestedTransport - write and read binary data', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		nestedB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(nestedB.getChannel('binary-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -256,8 +253,7 @@ Deno.test('NestedTransport - bidirectional data exchange', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		nestedB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(nestedB.getChannel('bidi-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -285,8 +281,7 @@ Deno.test('NestedTransport - multiple messages in sequence', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		nestedB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(nestedB.getChannel('multi-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -315,8 +310,7 @@ Deno.test('NestedTransport - channel close completes gracefully', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		nestedB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(nestedB.getChannel('close-test')), 0);
+			resolve(event.accept());
 		});
 	});
 

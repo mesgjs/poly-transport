@@ -110,8 +110,7 @@ Deno.test('WebSocketTransport - requestChannel creates channel on both sides', a
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -149,8 +148,7 @@ Deno.test('WebSocketTransport - write and read a message', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('data-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -174,8 +172,7 @@ Deno.test('WebSocketTransport - write and read binary data', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('binary-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -203,8 +200,7 @@ Deno.test('WebSocketTransport - bidirectional data exchange', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('bidi-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -231,8 +227,7 @@ Deno.test('WebSocketTransport - multiple messages in sequence', async () => {
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('multi-test')), 0);
+			resolve(event.accept());
 		});
 	});
 
@@ -260,8 +255,7 @@ Deno.test('WebSocketTransport - channel close completes gracefully', async () =>
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			setTimeout(() => resolve(transportB.getChannel('close-test')), 0);
+			resolve(event.accept());
 		});
 	});
 

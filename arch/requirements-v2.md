@@ -645,13 +645,17 @@ class OutputRingBuffer {
 2. Parse JSON body (channelName, maxBufferBytes, maxChunkBytes)
 3. Check if channel already exists and open (reject if so)
 4. Emit 'newChannel' event with accept/reject methods
+   - event.accept(options): marks accepted=true, merges options, returns Promise<Channel>
+   - event.reject(): deprecated no-op (channel created if any handler calls accept())
 5. Wait for all event handlers to complete
-6. If accepted:
+6. If accepted (any handler called accept()):
    a. Create channel (or use existing if created during event)
    b. Assign channel ID (next even or odd based on role)
-   c. Send TCC data message (type: chanResp, accepted: true, id, limits)
-   d. Resolve local pending request if exists (bidirectional case)
-7. If rejected:
+   c. Apply merged accept options (maxBufferBytes, maxChunkBytes) with transport defaults
+   d. Resolve channelPromise (returned by accept()) with the created channel
+   e. Send TCC data message (type: chanResp, accepted: true, id, limits)
+   f. Resolve local pending request if exists (bidirectional case)
+7. If not accepted (no handler called accept()):
    a. Send TCC data message (type: chanResp, accepted: false)
    b. Don't reject local pending request (wait for response to OUR request)
 ```
@@ -947,8 +951,12 @@ get logChannelId()
 **`newChannel`**: Emitted when remote requests a channel
 ```javascript
 transport.addEventListener('newChannel', (event) => {
-  const { channelName, remoteLimits, accept, reject } = event.detail;
-  // Call accept(options) or reject()
+  const { channelName, remoteLimits } = event.detail;
+  // Call event.accept(options) to accept; returns Promise<Channel>
+  // Options from multiple accept() calls are merged
+  // Channel is created if any handler calls accept()
+  // event.reject() is deprecated (no-op); do not use in new code
+  const channelPromise = event.accept(options);
 });
 ```
 

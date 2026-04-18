@@ -256,12 +256,10 @@ export async function makeByteTransportPair (optionsA = {}, optionsB = {}) {
  * Returns [channelA, channelB].
  */
 export async function makeConnectedChannel (transportA, transportB, name = 'test-channel') {
-	// Set up B to accept the channel request
+	// Set up B to accept the channel request; accept() returns a Promise<Channel>
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
-			event.accept();
-			// Get the channel after it's created
-			setTimeout(() => resolve(transportB.getChannel(name)), 0);
+			if (event.detail.channelName === name) resolve(event.accept());
 		});
 	});
 
