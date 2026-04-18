@@ -70,7 +70,7 @@ export class PostMessageTransport extends Transport {
 	#getPoolVRWB (size) {
 		if (!Number.isInteger(size) || size <= 0) return null;
 		const { bufferPool } = this.#_;
-		const byteBuffers = bufferPool.acquireSet(size).map((buffer) => new Uint8Array(buffer));
+		const byteBuffers = bufferPool ? bufferPool.acquireSet(size).map((buffer) => new Uint8Array(buffer)) : [new Uint8Array(size)];
 		const virtual = new VirtualRWBuffer(byteBuffers);
 		virtual.shrink(size);
 		return virtual;
