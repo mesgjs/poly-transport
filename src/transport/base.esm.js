@@ -515,9 +515,6 @@ export class Transport extends Eventable {
 				});
 			}
 
-			// Resolve the channelPromise so accept() callers get the channel
-			channelResolve(channel);
-
 			// Send acceptance response
 			const localMaxBufferBytes = acceptOptions.maxBufferBytes ?? _thys.maxBufferBytes;
 			const localMaxChunkBytes = acceptOptions.maxChunkBytes
@@ -531,6 +528,9 @@ export class Transport extends Eventable {
 				maxChunkBytes: localMaxChunkBytes
 			});
 			if (this.state !== Transport.STATE_DISCONNECTED) await tcc.write(TCC_DTAM_CHAN_RESPONSE[0], response);
+
+			// Resolve the channelPromise so accept() callers get the channel (but only *after* sending request response)
+			channelResolve(channel);
 
 			// Resolve local pending request if exists
 			// NOTE: Remote request = remote approval, so channel is ready now
