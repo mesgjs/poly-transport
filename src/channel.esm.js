@@ -519,11 +519,11 @@ export class Channel extends Eventable {
 			}
 		}
 
-		// Send response
+		// Send our response (if the channel is still open)
 		const response = { accept, reject };
 		const type = HDR_TYPE_CHAN_CONTROL, messageType = TCC_CTLM_MESG_TYPE_REG_RESP[0];
 		const data = JSON.stringify(response);
-		return this.#write(messageType, data, { type });
+		return this.#write(messageType, data, { type, ifOpen: true });
 	}
 
 	/**
