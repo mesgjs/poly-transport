@@ -1159,15 +1159,14 @@ export class Channel extends Eventable {
 		const writeQueue = this.#writeQueue;
 		const { type, eom = true, together = true } = options;
 		const sendAChunk = async () => {
+			flowControl.inFlight(1);
 			if (this.#readyToAck) await this.#sendAckMessage(true);
 			const bytesToReserve = chunker.bytesToReserve();
 			await flowControl.writable(bytesToReserve);
 			const header = { type, flags: 0, messageType };
-			if (this.state === Channel.STATE_CLOSED || this.state === Channel.STATE_DISCONNECTED) {
-				// Don't write any more data if the channel closed while we were waiting on the transport
-				return 0;
-			}
-			return await transport.sendChunk(this.#_.token, flowControl, header, chunker, { eom });
+			const remaining = await transport.sendChunk(this.#_.token, flowControl, header, chunker, { eom });
+			flowControl.inFlight(-1);
+			return remaining;
 		};
 
 		// Now send the chunks (as long as we're not closing in discard mode)

@@ -51,6 +51,7 @@ export class ChannelFlowControl {
 
 	// Private outbound state
 	#allWritesAcked = null;    // Promise for all pending writes ACKed
+	#inFlight = 0;
 	#nextWriteSeq = 1;         // Sequence number to use on next send
 	#writeAckInfo = new Map(); // Map<seq, {bytes}> of sent but not ACK'd chunks
 	#writeLimit;               // Max buffer bytes remote is willing to receive
@@ -112,7 +113,7 @@ export class ChannelFlowControl {
 	 * @returns {Promise<void>} - Resolves when no writes are pending ACKs
 	 */
 	/* async */ allWritesAcked () {
-		if (!this.#writeAckInfo.size) return Promise.resolve(); // Already empty now
+		if (!this.#writeAckInfo.size && !this.#inFlight) return Promise.resolve(); // Already empty now
 
 		const existing = this.#allWritesAcked; // Return existing promise if there is one
 		if (existing) return existing.promise;
@@ -205,7 +206,7 @@ export class ChannelFlowControl {
 			const { resolve } = this.#writer;
 			this.#writer = null;
 			resolve();
-		} else if (this.#allWritesAcked && !this.#writer && !writeAckInfo.size) {
+		} else if (this.#allWritesAcked && !this.#writer && !writeAckInfo.size && !this.#inFlight) {
 			const resolve = this.#allWritesAcked.resolve;
 			this.#allWritesAcked = null;
 			resolve();
@@ -314,6 +315,18 @@ export class ChannelFlowControl {
 			written: this.#written,
 			writer: this.#writer ? this.#writer.bytes : null,
 		};
+	}
+
+	/*
+	 * Track in-flight writes that are "in limbo" (not otherwise on the radar)
+	 */
+	inFlight (delta) {
+		this.#inFlight = Math.max(this.#inFlight + delta, 0);
+		if (this.#allWritesAcked && !this.#inFlight && !this.#writeAckInfo.size && !this.#writer) {
+			const { resolve } = this.#allWritesAcked;
+			this.#allWritesAcked = null;
+			resolve();
+		}
 	}
 
 	/**
