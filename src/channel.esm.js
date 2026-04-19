@@ -999,6 +999,7 @@ export class Channel extends Eventable {
 		if (immediate) {
 			// Send ACK now
 			this.#readyToAck = false;
+			if (this.state === Channel.STATE_CLOSED || this.state === Channel.STATE_DISCONNECTED) return 0;
 			return this.#_.transport.sendAckMessage(this.#_.token, this.#_.flowControl);
 		}
 		if (!this.#readyToAck) {
