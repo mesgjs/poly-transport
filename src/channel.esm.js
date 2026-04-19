@@ -1035,7 +1035,8 @@ export class Channel extends Eventable {
 	 * @param {Object} options
 	 * @param {number} options.byteLength - Data size (for function source)
 	 * @param {boolean} options.eom=true - Last chunk of message
-	 * @param {Object} options.options - Additional options
+	 * @param {boolean} options.ifOpen=false - Write only if open (quietly skip if closed)
+	 * @returns {boolean} Whether the write took place (for use with options.ifOpen)
 	 */
 	/* async */ write (messageType, source, options = {}) {
 		return this.#write(messageType, source, { ...options, type: HDR_TYPE_CHAN_DATA });
@@ -1044,6 +1045,7 @@ export class Channel extends Eventable {
 	async #write (messageType, source, options = {}) {
 		// Reject if channel is closing or closed
 		if (this.#state !== Channel.STATE_OPEN) {
+			if (options.ifOpen) return false;
 			throw new StateError('Cannot write to closing or closed channel', {
 				state: this.#state
 			});
@@ -1179,6 +1181,7 @@ export class Channel extends Eventable {
 				if (remaining <= 0) break;
 			}
 		}
+		return true;
 	}
 }
 
