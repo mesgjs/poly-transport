@@ -1159,30 +1159,33 @@ export class Channel extends Eventable {
 		const writeQueue = this.#writeQueue;
 		const { type, eom = true, together = true } = options;
 		const sendAChunk = async () => {
-			flowControl.inFlight(1);
 			if (this.#readyToAck) await this.#sendAckMessage(true);
 			const bytesToReserve = chunker.bytesToReserve();
 			await flowControl.writable(bytesToReserve);
 			const header = { type, flags: 0, messageType };
 			const remaining = await transport.sendChunk(this.#_.token, flowControl, header, chunker, { eom });
-			flowControl.inFlight(-1);
 			return remaining;
 		};
 
 		// Now send the chunks (as long as we're not closing in discard mode)
-		if (together) { // Send all chunks together in a single channel task
-			await writeQueue.add(async () => {
+		flowControl.inFlight(1);
+		try {
+			if (together) { // Send all chunks together in a single channel task
+				await writeQueue.add(async () => {
+					while (!this.#discard) {
+						const remainingAfter = await sendAChunk();
+						if (remainingAfter <= 0) break;
+					}
+				});
+			} else {
+				// Send each chunk in a separate channel task
 				while (!this.#discard) {
-					const remainingAfter = await sendAChunk();
-					if (remainingAfter <= 0) break;
+					const remaining = await writeQueue.add(sendAChunk);
+					if (remaining <= 0) break;
 				}
-			});
-		} else {
-			// Send each chunk in a separate channel task
-			while (!this.#discard) {
-				const remaining = await writeQueue.add(sendAChunk);
-				if (remaining <= 0) break;
 			}
+		} finally {
+			flowControl.inFlight(-1);
 		}
 		return true;
 	}
