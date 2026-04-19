@@ -258,17 +258,11 @@ export function registerChannelCloseTests (makeTransportPair) {
 		// Start close on A
 		const closeA = channelA.close();
 
-		// Write should throw StateError immediately
-		assert(
-			(() => {
-				try {
-					channelA.write(2, 'should fail');
-					return false;
-				} catch (e) {
-					return e instanceof StateError;
-				}
-			})(),
-			'write should throw StateError after close initiated'
+		// Write should reject with StateError (write() returns a promise, not a sync throw)
+		await assertRejects(
+			() => channelA.write(2, 'should fail'),
+			StateError,
+			'Cannot write to closing or closed channel'
 		);
 
 		// Complete close

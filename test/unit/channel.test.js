@@ -771,8 +771,8 @@ Deno.test('Channel - write throws StateError after close initiated', async () =>
 	// Start close
 	const closePromise = channel.close();
 
-	// write should throw StateError now
-	assertThrows(
+	// write should reject with StateError now (write() returns a promise)
+	await assertRejects(
 		() => channel.write(2, 'hello'),
 		StateError
 	);
@@ -1400,8 +1400,8 @@ Deno.test('Channel - write throws StateError when channel is closed', async () =
 
 	assertEquals(channel.state, Channel.STATE_CLOSED);
 
-	// write should throw StateError
-	assertThrows(
+	// write should reject with StateError (write() returns a promise)
+	await assertRejects(
 		() => channel.write(2, 'hello'),
 		StateError
 	);
@@ -1599,7 +1599,7 @@ Deno.test('Channel - write throws StateError after disconnect', async () => {
 
 	assertEquals(channel.state, Channel.STATE_DISCONNECTED);
 
-	assertThrows(
+	await assertRejects(
 		() => channel.write(2, 'hello'),
 		StateError
 	);

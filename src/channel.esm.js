@@ -1038,16 +1038,17 @@ export class Channel extends Eventable {
 	 * @param {Object} options.options - Additional options
 	 */
 	/* async */ write (messageType, source, options = {}) {
+		return this.#write(messageType, source, { ...options, type: HDR_TYPE_CHAN_DATA });
+	}
+
+	async #write (messageType, source, options = {}) {
 		// Reject if channel is closing or closed
 		if (this.#state !== Channel.STATE_OPEN) {
 			throw new StateError('Cannot write to closing or closed channel', {
 				state: this.#state
 			});
 		}
-		return this.#write(messageType, source, { ...options, type: HDR_TYPE_CHAN_DATA });
-	}
 
-	async #write (messageType, source, options = {}) {
 		const _thys = this.#_;
 		if (typeof messageType === 'string') {
 			const { messageTypes } = _thys;
@@ -1058,6 +1059,7 @@ export class Channel extends Eventable {
 				throw new RangeError(`Unknown message type "${messageType}" for channel.write`);
 			}
 		}
+
 		const transport = this.#_.transport;
 		const maxDataBytes = this.#maxDataBytes;
 		let offset = 0, remaining = 0, chunkSize;
