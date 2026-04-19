@@ -1163,6 +1163,10 @@ export class Channel extends Eventable {
 			const bytesToReserve = chunker.bytesToReserve();
 			await flowControl.writable(bytesToReserve);
 			const header = { type, flags: 0, messageType };
+			if (this.state === Channel.STATE_CLOSED || this.state === Channel.STATE_DISCONNECTED) {
+				// Don't write any more data if the channel closed while we were waiting on the transport
+				return 0;
+			}
 			return await transport.sendChunk(this.#_.token, flowControl, header, chunker, { eom });
 		};
 
