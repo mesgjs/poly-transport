@@ -288,6 +288,7 @@ export class Transport extends Eventable {
 			}
 		}
 
+		if (_thys.state === Transport.STATE_DISCONNECTED) return;
 		_thys.state = Transport.STATE_STOPPED;
 
 		// Clear write batch timer (must happen after tranStopped is scheduled)
@@ -935,25 +936,34 @@ export class Transport extends Eventable {
 			let timer;
 			await Promise.race([
 				Promise.all(channelClosePromises),
-				new Promise((_, reject) =>
-					timer = setTimeout(() => reject('Transport shutdown timeout'), timeout)
-				)
+				new Promise((resolve, reject) => timer = setTimeout(() => {
+					if (_thys.state === Transport.STATE_DISCONNECTED) {
+						// #onDisconnect can't take over the main promise if we reject here
+						resolve();
+					} else {
+						// Allow a new .stop after a timeout to get a fresh promise
+						_thys.stopped = null;
+						reject('Transport shutdown timeout');
+					}
+				}, timeout))
 			]);
 			clearTimeout(timer);
 		} else {
 			await Promise.all(channelClosePromises);
 		}
 
-		// Notify remote that our side is fully stopped (last write before clearing timer)
-		if (tcc) await this.#sendTransportTccMessage(TCC_DTAM_TRAN_STOPPED[0]);
+		if (_thys.state !== Transport.STATE_DISCONNECTED) {
+			// Notify remote that our side is fully stopped (last write before clearing timer)
+			if (tcc) await this.#sendTransportTccMessage(TCC_DTAM_TRAN_STOPPED[0]);
 
-		if (!tcc || _thys.state === Transport.STATE_LOCAL_STOPPING) {
-			// Either there's no TCC (because the handshake never completed)
-			// or the remote already sent tranStopped - both sides done
-			await this.#finalizeStop();
-		} else {
-			// Waiting for remote's tranStopped
-			_thys.state = Transport.STATE_REMOTE_STOPPING;
+			if (!tcc || _thys.state === Transport.STATE_LOCAL_STOPPING) {
+				// Either there's no TCC (because the handshake never completed)
+				// or the remote already sent tranStopped - both sides done
+				await this.#finalizeStop();
+			} else {
+				// Waiting for remote's tranStopped
+				_thys.state = Transport.STATE_REMOTE_STOPPING;
+			}
 		}
 		return stopped.promise;
 	}

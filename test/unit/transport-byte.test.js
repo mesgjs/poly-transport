@@ -1007,4 +1007,5 @@ Deno.test('ByteTransport - handles buffer pool exhaustion gracefully', async () 
 	// (by allocating new buffers as needed)
 	assertExists(buf1);
 	assertExists(buf2);
+	bufferPool.stop();
 });
