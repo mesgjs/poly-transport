@@ -152,7 +152,7 @@ export class Transport extends Eventable {
 			}
 
 			if (channel.state === Channel.STATE_CLOSED || channel.state === Channel.STATE_DISCONNECTED) {
-				const message = `Received message for closed channel ID ${channelId}`;
+				const message = `Received message for closed channel ID ${channelId} ${channel?.name}`;
 				thys.logger.error(message);
 				await thys.stop();
 				return;
