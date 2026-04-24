@@ -63,7 +63,7 @@ transport.addEventListener('newChannel', (event) => {
 await transport.start();
 
 const channel = await transport.requestChannel('my-channel');
-await channel.write(0, 'Hello from main thread!', { eom: true });
+await channel.write(0, 'Hello from main thread!');
 
 const reply = await channel.read();
 console.log(reply.text); // "Hello from worker!"
@@ -88,7 +88,7 @@ const channel = await transport.requestChannel('my-channel');
 const msg = await channel.read();
 console.log(msg.text); // "Hello from main thread!"
 
-await channel.write(0, 'Hello from worker!', { eom: true });
+await channel.write(0, 'Hello from worker!');
 await channel.close();
 await transport.stop();
 ```
@@ -118,7 +118,7 @@ transport.addEventListener('newChannel', (event) => {
 await transport.start();
 
 const channel = await transport.requestChannel('data');
-await channel.write(0, JSON.stringify({ hello: 'world' }), { eom: true });
+await channel.write(0, JSON.stringify({ hello: 'world' }));
 
 const response = await channel.read({ decode: true });
 console.log(response.text);
@@ -147,7 +147,7 @@ const msg = await channel.read({ decode: true });
 const data = JSON.parse(msg.text);
 console.error('Received:', data); // stderr (not captured)
 
-await channel.write(0, JSON.stringify({ received: true }), { eom: true });
+await channel.write(0, JSON.stringify({ received: true }));
 await channel.close();
 await transport.stop();
 ```
@@ -166,12 +166,13 @@ Deno.serve((req) => {
         event.accept();
     });
 
+    // IMPORTANT: Do NOT await transport.start() before the reponse has been sent!
     transport.start().then(async () => {
         const channel = await transport.requestChannel('chat');
         const msg = await channel.read({ decode: true });
         console.log('Client says:', msg.text);
 
-        await channel.write(0, 'Hello from server!', { eom: true });
+        await channel.write(0, 'Hello from server!');
         await channel.close();
         await transport.stop();
     });
@@ -194,7 +195,7 @@ transport.addEventListener('newChannel', (event) => {
 await transport.start();
 
 const channel = await transport.requestChannel('chat');
-await channel.write(0, 'Hello from client!', { eom: true });
+await channel.write(0, 'Hello from client!');
 
 const reply = await channel.read({ decode: true });
 console.log('Server says:', reply.text);
@@ -226,7 +227,7 @@ nestedB.addEventListener('newChannel', (event) => {
 await Promise.all([nestedA.start(), nestedB.start()]);
 
 const channel = await nestedA.requestChannel('inner');
-await channel.write(0, 'Nested message!', { eom: true });
+await channel.write(0, 'Nested message!');
 
 const msg = await (await nestedB.requestChannel('inner')).read({ decode: true });
 console.log(msg.text); // "Nested message!"
@@ -253,7 +254,7 @@ A **channel** is a logical bidirectional communication stream over a transport. 
 
 ### Messages and Chunks
 
-A **message** is an application-defined unit of content. Large messages are automatically split into **chunks** for transmission. The `eom: true` flag marks the last chunk of a message. By default, `channel.read()` reassembles chunks into complete messages automatically.
+A **message** is an application-defined unit of content. Large messages are automatically split into **chunks** for transmission. The `eom: true` flag in an optional third options parameter to `.write` marks the last chunk of a message. `eom: true` is the default (applied to the last chunk), so you only need to included the `eom: false` option if you are sending the non-final portion of a message (streaming chunks, for example). By default, `channel.read()` reassembles chunks into complete messages automatically. Use the `dechunk: false` option of `.read` to prevent this.
 
 ### Flow Control
 
@@ -312,6 +313,8 @@ Starts the transport. For byte-stream transports, performs the protocol handshak
 await transport.stop({ discard = false, timeout } = {})
 ```
 Gracefully stops the transport. Closes all channels, exchanges stop handshake with remote, then resolves. Pass `discard: true` to skip waiting for in-flight data.
+
+> **Note**: If a channel message will trigger a transport stop, call `message.done()` before awaiting `stop()`. See [Closing a Channel or Stopping a Transport in Response to an In-Band Message](#closing-a-channel-or-stopping-a-transport-in-response-to-an-in-band-message).
 
 #### Channel Methods
 
@@ -445,6 +448,8 @@ await channel.close({ discard = false } = {})
 ```
 Closes the channel. Waits for all in-flight writes to be acknowledged, then exchanges close handshake with remote. Pass `discard: true` to immediately discard buffered input.
 
+> **Note**: If a channel message will trigger a channel close, call `message.done()` before awaiting `close()`. See [Closing a Channel or Stopping a Transport in Response to an In-Band Message](#closing-a-channel-or-stopping-a-transport-in-response-to-an-in-band-message).
+
 #### Channel Events
 
 ```javascript
@@ -475,6 +480,27 @@ channel.name   // Channel name
 channel.id     // Active channel ID (lowest)
 channel.ids    // All channel IDs (array)
 ```
+
+---
+
+## Important Notes
+
+### Closing a Channel or Stopping a Transport in Response to an In-Band Message
+
+**Warning**: Do not await `channel.close()` or `transport.stop()` from inside a `message.process()` callback without first calling `message.done()`. Doing so will cause a deadlock — the close or stop will never complete.
+
+If a channel message triggers a channel close or transport stop, save any data you need from the message, call `message.done()` explicitly, and then proceed with the close or stop. Calling `done()` inside `process()` is safe — it is idempotent.
+
+```javascript
+// Correct: call done() before awaiting close or stop
+await msg.process(async (m) => {
+    const command = m.text;
+    m.done(); // Release flow control budget before closing
+    if (command === 'shutdown') await transport.stop();
+});
+```
+
+> **Technical explanation**: `channel.close()` and `transport.stop()` wait for all in-flight writes to be acknowledged. Acknowledgements are sent when `message.done()` is called, which `message.process()` defers until after the callback returns. If the callback awaits the close or stop, it never returns, `done()` is never called, and the close or stop never completes.
 
 ---
 

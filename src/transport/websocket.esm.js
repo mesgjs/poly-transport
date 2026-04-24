@@ -7,13 +7,14 @@
  *   // Client-side (browser or Deno)
  *   const ws = new WebSocket('ws://localhost:8080');
  *   const transport = new WebSocketTransport({ ws });
+ *   await transport.start();
  *
  *   // Server-side (Deno)
  *   const handler = (req) => {
  *     const { socket, response } = Deno.upgradeWebSocket(req);
  *     const transport = new WebSocketTransport({ ws: socket });
- *     transport.start();
- *     return response;
+ *     return { response, transport };
+ *     // await transport.start() will hang if the response has not been sent
  *   };
  *
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
@@ -86,6 +87,7 @@ export class WebSocketTransport extends ByteTransport {
 	}, super.__protected));
 
 	#_; // WebSocketTransport-level view of shared protected state
+	#openWait;
 	#ws; // WebSocket instance
 
 	/**
@@ -155,6 +157,29 @@ export class WebSocketTransport extends ByteTransport {
 		}
 
 		this.#ws = null;
+	}
+
+	/*
+	 * Start the transport when the WebSocket connection is open
+	 * IMPORTANT: Do not await transport.start() until the WS response has been sent!
+	 */
+	async start () {
+		const ws = this.#ws;
+		if (ws.readyState !== WebSocket.OPEN) {
+			// Wait for the socket connection to be open
+			if (!this.#openWait) {
+				const open = this.#openWait = { promise: null, resolve: null };
+				open.promise = new Promise((resolve) => open.resolve = resolve);
+				ws.onopen = () => {
+					const resolve = open.resolve;
+					this.#openWait = null;
+					ws.onopen = null;
+					resolve();
+				};
+			}
+			await this.#openWait.promise;
+		}
+		return super.start(); // Start the transport
 	}
 
 	/**
