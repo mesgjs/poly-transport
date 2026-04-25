@@ -316,7 +316,9 @@ export class ByteTransport extends Transport {
 						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
 						firstConfig = false;
 						await _thys.onRemoteConfig(config);
-					} catch (_) { /**/ }
+					} catch (err) {
+						this.#logger.error(err);
+					}
 				} else {
 					await this.dispatchEvent('outOfBandData', { data: line });
 				}
