@@ -145,7 +145,7 @@ export class Transport extends Eventable {
 			const channelId = header.channelId, channel = _thys.channels.get(channelId);
 
 			if (!channel) {
-				const message = `Unknown channel ID ${this.idTail} (${this.role}) ${this.stateString} ` + JSON.stringify(header);
+				const message = `Unknown channel ID ${thys.idTail} (${thys.role}) ${thys.stateString} ` + JSON.stringify(header);
 				thys.logger.error(message);
 				await thys.stop();
 				return;
