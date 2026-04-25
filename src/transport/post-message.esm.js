@@ -94,7 +94,7 @@ export class PostMessageTransport extends Transport {
 			// Process handshake configuration from remote endpoint
 			const config = rawData;
 			if (config && typeof config === 'object') {
-				_thys.onRemoteConfig(config);
+				queue.add(() => _thys.onRemoteConfig(config));
 			}
 			break;
 		}
@@ -131,6 +131,7 @@ export class PostMessageTransport extends Transport {
 		}
 		}
 	}
+
 	/**
 	 * Send an ACK message by itself
 	 * @param {symbol} token - The channel ID token
