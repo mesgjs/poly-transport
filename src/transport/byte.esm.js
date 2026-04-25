@@ -317,7 +317,7 @@ export class ByteTransport extends Transport {
 						firstConfig = false;
 						await _thys.onRemoteConfig(config);
 					} catch (err) {
-						this.#logger.error(err);
+						this.logger.error(err);
 					}
 				} else {
 					await this.dispatchEvent('outOfBandData', { data: line });
