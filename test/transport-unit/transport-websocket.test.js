@@ -7,13 +7,13 @@ import { makeMemoryWebSocketPair, makeWebSocketTransportPair } from '../transpor
 
 // ─── Constructor Tests ────────────────────────────────────────────────────────
 
-Deno.test('WebSocketTransport - constructor requires ws', () => {
+Deno.test('WebSocketTransport - constructor requires socket', () => {
 	try {
 		new WebSocketTransport({});
 		assert(false, 'Should have thrown');
 	} catch (err) {
 		assert(err instanceof TypeError);
-		assert(err.message.includes('ws'));
+		assert(err.message.includes('socket'));
 	}
 });
 

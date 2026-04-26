@@ -68,6 +68,13 @@ class MockGateway {
  */
 class MockPostMessageTransport extends PostMessageTransport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
+		async startMessageMode () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			_thys.onRemoteReady();
+			return super.startMessageMode();
+		},
+
 		receiveMessage (header, data) {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');

@@ -21,6 +21,7 @@ export const HDR_TYPE_ACK = 0;
 export const HDR_TYPE_CHAN_CONTROL = 1;
 export const HDR_TYPE_CHAN_DATA = 2;
 export const HDR_TYPE_HANDSHAKE = 'handshake'; // For object-stream transports
+export const HDR_TYPE_READY = 'ready'; // For object-stream transports
 
 // Byte-stream-transport greeting and start-byte-stream sequences
 export const PROTOCOL = 'PolyTransport';

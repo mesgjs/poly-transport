@@ -5,14 +5,14 @@
  *
  * Usage:
  *   // Client-side (browser or Deno)
- *   const ws = new WebSocket('ws://localhost:8080');
- *   const transport = new WebSocketTransport({ ws });
+ *   const socket = new WebSocket('ws://localhost:8080');
+ *   const transport = new WebSocketTransport({ socket });
  *   await transport.start();
  *
  *   // Server-side (Deno)
  *   const handler = (req) => {
  *     const { socket, response } = Deno.upgradeWebSocket(req);
- *     const transport = new WebSocketTransport({ ws: socket });
+ *     const transport = new WebSocketTransport({ socket });
  *     return { response, transport };
  *     // await transport.start() will hang if the response has not been sent
  *   };
@@ -92,13 +92,14 @@ export class WebSocketTransport extends ByteTransport {
 
 	/**
 	 * @param {object} options
-	 * @param {WebSocket} options.ws - WebSocket instance (must be open or opening)
+	 * @param {WebSocket} options.socket - WebSocket instance (must be open or opening)
+	 * @param {WebSocket} options.ws - Alternative WebSocket option name
 	 */
 	constructor (options = {}) {
 		super(options);
 		this._get_();
-		const { ws } = options;
-		if (!ws) throw new TypeError('WebSocketTransport: options.ws is required');
+		const ws = options.socket || options.ws;
+		if (!ws) throw new TypeError('WebSocketTransport: options.socket is required');
 		this.#ws = ws;
 		// Receive binary messages as ArrayBuffer (not Blob)
 		ws.binaryType = 'arraybuffer';

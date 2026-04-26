@@ -14,6 +14,13 @@ import {
 // Mock byte transport with controllable I/O
 class MockByteTransport extends ByteTransport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
+		async startMessageMode () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			_thys.onRemoteReady();
+			return super.startMessageMode();
+		},
+
 		// Override writeBytes to capture output
 		async writeBytes () {
 			const [thys, _thys] = [this.__this, this];
@@ -44,6 +51,21 @@ class MockByteTransport extends ByteTransport {
 		this._get_();
 	}
 
+	// Clear captured writes
+	clearWrites () {
+		this.#writeBuffer = [];
+	}
+
+	// Access protected state for testing
+	getProtectedState () {
+		return this.#_;
+	}
+
+	// Get captured writes
+	getWrites () {
+		return this.#writeBuffer;
+	}
+
 	// Simulate receiving bytes from remote
 	simulateReceive (data) {
 		const _thys = this.#_;
@@ -57,21 +79,6 @@ class MockByteTransport extends ByteTransport {
 		} else if (Array.isArray(data)) {
 			_thys.receiveBytes(new Uint8Array(data));
 		}
-	}
-
-	// Get captured writes
-	getWrites () {
-		return this.#writeBuffer;
-	}
-
-	// Clear captured writes
-	clearWrites () {
-		this.#writeBuffer = [];
-	}
-
-	// Access protected state for testing
-	getProtectedState () {
-		return this.#_;
 	}
 
 	// Simulate remote sending tranStopped so stop() handshake can complete
@@ -185,12 +192,12 @@ Deno.test('ByteTransport - sendHandshake schedules immediate write', async () =>
 	await transport.stop();
 });
 
-// Tests for startByteStream
-Deno.test('ByteTransport - startByteStream sends marker', async () => {
+// Tests for startMessageMode
+Deno.test('ByteTransport - startMessageMode sends marker', async () => {
 	const transport = new MockByteTransport();
 	const _thys = transport.getProtectedState();
 
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 
 	// Trigger write
 	await transport.writeBytes();
@@ -403,7 +410,7 @@ Deno.test('ByteTransport - sendAckMessage encodes ACK header', async () => {
 	// Start transport to create TCC
 	const startPromise = transport.start();
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,
@@ -458,7 +465,7 @@ Deno.test('ByteTransport - sendChunk encodes channel header', async () => {
 	// Start transport
 	const startPromise = transport.start();
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,
@@ -657,7 +664,7 @@ Deno.test('ByteTransport - byteReader decodes ACK messages', async () => {
 	// Start and complete handshake
 	const startPromise = transport.start();
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,
@@ -713,7 +720,7 @@ Deno.test('ByteTransport - byteReader decodes channel data messages', async () =
 	// Start and complete handshake
 	const startPromise = transport.start();
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,
@@ -809,7 +816,7 @@ Deno.test('ByteTransport - supports start lifecycle', async () => {
 
 	// Complete handshake
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,
@@ -880,7 +887,7 @@ Deno.test('ByteTransport - sendAckMessage uses write queue', async () => {
 	// Start transport
 	const startPromise = transport.start();
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,
@@ -917,7 +924,7 @@ Deno.test('ByteTransport - sendChunk uses write queue', async () => {
 	// Start transport
 	const startPromise = transport.start();
 	await _thys.sendHandshake();
-	await _thys.startByteStream();
+	await _thys.startMessageMode();
 	await _thys.onRemoteConfig({
 		transportId: 'remote-id',
 		minChannelId: 1024,

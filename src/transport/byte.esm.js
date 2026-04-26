@@ -183,9 +183,10 @@ export class ByteTransport extends Transport {
 		},
 
 		/**
-		 * Send start of byte stream
+		 * Send start-byte-stream to start message-mode.
+		 * Called by base #_.onRemoteConfig.
 		 */
-		async startByteStream () {
+		async startMessageMode () {
 			const [thys, _thys] = [this.__this, this];
 			if (_thys !== thys.#_) throw new Error('Unauthorized');
 
@@ -288,7 +289,7 @@ export class ByteTransport extends Transport {
 			const state = _thys.state;
 			return state !== Transport.STATE_STOPPED && state !== Transport.STATE_DISCONNECTED;
 		};
-		let firstConfig = true;
+		let firstConfig = true; // No configuration seen yet
 		let offset = 0;
 
 		// Line-based config/handshake loop
@@ -310,7 +311,12 @@ export class ByteTransport extends Transport {
 				inputBuffer.release(offset);
 				offset = 0;
 
-				if (line === START_BYTE_STREAM) break;
+				if (line === START_BYTE_STREAM) {
+					if (!firstConfig) break;
+					this.logger.error(`${this.constructor.name} ${this.idTail}: Received start but not configuration`);
+					await this.stop();
+					return;
+				}
 				if (line.startsWith(GREET_CONFIG_PREFIX) && line.endsWith(GREET_CONFIG_SUFFIX) && firstConfig) {
 					try {
 						const config = JSON.parse(line.slice(GREET_CONFIG_PREFIX.length, -GREET_CONFIG_SUFFIX.length));
@@ -327,6 +333,8 @@ export class ByteTransport extends Transport {
 
 			++offset;
 		}
+
+		_thys.onRemoteReady();
 
 		// Byte-stream-based message loop
 		const tcc = channels.get(0);

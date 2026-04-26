@@ -44,15 +44,15 @@ export class Transport extends Eventable {
 
 	static __protected = Object.freeze({ // `protected` prototype
 		// Base stubs
+
+		/*
+		 * Implemented by sub-classes to perform post-write actions such as waking waiters
+		 */
 		afterWrite () { },
-		startByteStream () { },
-		startReader () { },
-		startWriter () { },
-		stop () { },
 
 		/**
 		 * Called by subclasses when they detect a connection drop.
-		 * Default implementation calls stop({ disconnected: true }).
+		 * Default implementation just calls stop({ disconnected: true }).
 		 */
 		async onDisconnect () {
 			const [thys, _thys] = [this.__this, this];
@@ -63,7 +63,7 @@ export class Transport extends Eventable {
 		/**
 		* Calculate operating values and activate foundational channels upon receiving
 		* remote configuration
-		* @param {object} config 
+		* @param {object} config
 		*/
 		async onRemoteConfig (config) {
 			const [thys, _thys] = [this.__this, this];
@@ -84,7 +84,7 @@ export class Transport extends Eventable {
 				_thys.role = Transport.ROLE_ODD;
 			} else {
 				_thys.state = Transport.STATE_CREATED;
-				_thys.started.reject(new Error('Received own transport ID in remote config'));
+				_thys.started?.reject(new Error('Received own transport ID in remote config'));
 				return;
 			}
 
@@ -119,14 +119,23 @@ export class Transport extends Eventable {
 				channelTokens.set(c2c, c2cToken);
 			}
 
-			_thys.state = Transport.STATE_ACTIVE;
-
-			await _thys.startByteStream();
+			// Notify remote to switch to message-mode
+			await _thys.startMessageMode();
 
 			// Start TCC reader loop (moved from ControlChannel)
 			thys.#tccReader();
 
-			_thys.started.resolve();
+		},
+
+		/*
+		 * Called by sub-classes to complete transport activation upon receipt of start-message-mode.
+		 */
+		onRemoteReady () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+
+			_thys.state = Transport.STATE_ACTIVE;
+			_thys.started?.resolve(); // Wake up anyone who was waiting
 		},
 
 		/**
@@ -163,7 +172,23 @@ export class Transport extends Eventable {
 			const token = _thys.channelTokens.get(channel);
 			if (Array.isArray(data)) data = new VirtualBuffer(data);
 			channel.receiveMessage(token, header, data);
-		}
+		},
+
+		/*
+		 * Implemented by sub-classes to notify remote to start message-mode.
+		 */
+		startMessageMode() { },
+
+		/*
+		 * Hook to start a transport-specific reader.
+		 */
+		startReader () { },
+
+		/*
+		 * Hook for custom shutdown cleanup.
+		 * Called from .stop's .#finalizeStop and .#onDisconnect.
+		 */
+		stop () { },
 	});
 
 	#_; // Base-class view of protected state (sub-classes must have one also)
@@ -668,7 +693,7 @@ export class Transport extends Eventable {
 		for (const [channel, token] of channelTokens) {
 			if (!(channel instanceof Channel)) continue;
 			if (channel.id === CHANNEL_TCC || channel.id === CHANNEL_C2C) continue;
-			channel.close({ disconnected: token }).catch(() => { });
+			channel.close({ disconnected: token }).catch((err) => this.logger.debug(err));
 		}
 
 		// Disconnect TCC and C2C
@@ -676,7 +701,7 @@ export class Transport extends Eventable {
 			const channel = channels.get(channelId);
 			if (channel && typeof channel.close === 'function') {
 				const token = channelTokens.get(channel);
-				if (token) channel.close({ disconnected: token }).catch(() => { });
+				if (token) channel.close({ disconnected: token }).catch((err) => this.logger.debug(err));
 			}
 		}
 
@@ -858,6 +883,7 @@ export class Transport extends Eventable {
 		case Transport.STATE_LOCAL_STOPPING:
 		case Transport.STATE_REMOTE_STOPPING:
 		case Transport.STATE_STOPPED:
+		case Transport.STATE_DISCONNECTED:
 			throw new StateError('Transport is unavailable');
 		}
 
@@ -865,10 +891,8 @@ export class Transport extends Eventable {
 		_thys.state = Transport.STATE_STARTING;
 		const started = _thys.started = { promise: null };
 		const promise = started.promise = new Promise((...r) => [started.resolve, started.reject] = r);
-		promise.then(() => _thys.state = Transport.STATE_ACTIVE, () => { });
 
 		_thys.startReader();
-		_thys.startWriter();
 		await _thys.sendHandshake();
 		return promise;
 	}
@@ -985,58 +1009,52 @@ export class Transport extends Eventable {
 		const { logger } = this;
 
 		for (;;) {
+			// Read complete message (de-chunked by default, decoded to text)
+			const message = await tcc.read({ decode: true });
+			if (!message) break; // Channel closed
+
+			const { messageTypeId, text } = message;
+
+			let skipAck = false;
 			try {
-				// Read complete message (de-chunked by default, decoded to text)
-				const message = await tcc.read({ decode: true });
-				if (!message) break; // Channel closed
+				// Parse JSON data (already complete message thanks to default de-chunking)
+				const parsed = text?.length ? JSON.parse(text) : {};
 
-				const { messageTypeId, text } = message;
-
-				let skipAck = false;
-				try {
-					// Parse JSON data (already complete message thanks to default de-chunking)
-					const parsed = text?.length ? JSON.parse(text) : {};
-
-					// Handle control messages
-					switch (messageTypeId) {
-					case TCC_DTAM_CHAN_REQUEST[0]:
-						await this.#onChannelRequest(parsed);
-						break;
-					case TCC_DTAM_CHAN_RESPONSE[0]:
-						await this.#onChannelResponse(parsed);
-						break;
-					case TCC_DTAM_CHAN_CLOSE[0]:
-						await this.#onChannelClose(parsed);
-						break;
-					case TCC_DTAM_CHAN_CLOSED[0]:
-						await this.#onChannelClosed(parsed);
-						break;
-					case TCC_DTAM_TRAN_STOP[0]:
-						await this.#onTransportStop(parsed);
-						skipAck = true;
-						break;
-					case TCC_DTAM_TRAN_STOPPED[0]:
-						await this.#onTransportStopped(parsed);
-						skipAck = true; // tranStopped is the final message; no need to ACK
-						break;
-					case TCC_CTLM_MESG_TYPE_REG_REQ[0]:
-						// Message-type registration currently unsupported on TCC
-						break;
-					case TCC_CTLM_MESG_TYPE_REG_RESP[0]:
-						break;
-					default:
-						// Unknown message type - protocol violation
-						logger.error(`Unknown TCC message type ${messageTypeId}; stopping transport`);
-						await this.stop();
-					}
-				} finally {
-					// Mark message as processed (enables backpressure) unless skipping ACK
-					if (!skipAck) message.done();
+				// Handle control messages
+				switch (messageTypeId) {
+				case TCC_DTAM_CHAN_REQUEST[0]:
+					await this.#onChannelRequest(parsed);
+					break;
+				case TCC_DTAM_CHAN_RESPONSE[0]:
+					await this.#onChannelResponse(parsed);
+					break;
+				case TCC_DTAM_CHAN_CLOSE[0]:
+					await this.#onChannelClose(parsed);
+					break;
+				case TCC_DTAM_CHAN_CLOSED[0]:
+					await this.#onChannelClosed(parsed);
+					break;
+				case TCC_DTAM_TRAN_STOP[0]:
+					await this.#onTransportStop(parsed);
+					skipAck = true;
+					break;
+				case TCC_DTAM_TRAN_STOPPED[0]:
+					await this.#onTransportStopped(parsed);
+					skipAck = true; // tranStopped is the final message; no need to ACK
+					break;
+				case TCC_CTLM_MESG_TYPE_REG_REQ[0]:
+					// Message-type registration currently unsupported on TCC
+					break;
+				case TCC_CTLM_MESG_TYPE_REG_RESP[0]:
+					break;
+				default:
+					// Unknown message type - protocol violation
+					logger.error(`Unknown TCC message type ${messageTypeId}; stopping transport`);
+					await this.stop();
 				}
-			} catch (err) {
-				// Channel closed or error - exit reader loop
-				if (err instanceof Error) logger.error('TCC reader error:', err);
-				break;
+			} finally {
+				// Mark message as processed (enables backpressure) unless skipping ACK
+				if (!skipAck) message.done();
 			}
 		}
 	}

@@ -7,7 +7,8 @@
 import { Channel } from '../channel.esm.js';
 import { Transport } from './base.esm.js';
 import {
-	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, HDR_TYPE_HANDSHAKE,
+	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
+	HDR_TYPE_HANDSHAKE, HDR_TYPE_READY,
 	DATA_HEADER_BYTES, FLAG_EOM, PROTOCOL, CHANNEL_TCC, TCC_DTAM_CHAN_RESPONSE,
 	ackHeaderSize,
 } from '../protocol.esm.js';
@@ -39,6 +40,20 @@ export class PostMessageTransport extends Transport {
 				protocol: PROTOCOL,
 				header: { type: HDR_TYPE_HANDSHAKE },
 				data: config
+			});
+		},
+
+		/*
+		 * Notify remote to start message-mode.
+		 * Called by base #_.onRemoteConfig.
+		 */
+		startMessageMode() {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+
+			thys.#gateway.postMessage({
+				protocol: PROTOCOL,
+				header: { type: HDR_TYPE_READY }
 			});
 		}
 	}, super.__protected));
@@ -94,10 +109,18 @@ export class PostMessageTransport extends Transport {
 			// Process handshake configuration from remote endpoint
 			const config = rawData;
 			if (config && typeof config === 'object') {
-				queue.add(() => _thys.onRemoteConfig(config));
+				_thys.onRemoteConfig(config);
 			}
 			break;
 		}
+		case HDR_TYPE_READY:
+			if (this.role != null) {
+				_thys.onRemoteReady();
+			} else {
+				this.logger.error(`${this.constructor.name} ${this.idTail}: Received ready but not configuration`);
+				this.stop();
+			}
+			break;
 		case HDR_TYPE_ACK:
 		{
 			const ranges = header?.ranges || [], rangeSize = ranges?.length || 0;

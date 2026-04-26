@@ -21,6 +21,7 @@
 
 import { ByteTransport } from './byte.esm.js';
 import { Transport, StateError } from './base.esm.js';
+import { Channel } from '../channel.esm.js';
 
 export class NestedTransport extends ByteTransport {
 	static __protected = Object.freeze(Object.setPrototypeOf({
@@ -71,12 +72,15 @@ export class NestedTransport extends ByteTransport {
 					if (!channel) break;
 					for (const buf of buffers) {
 						// Write with eom: false - PTOC is a raw byte stream
+						// console.log('nested write', thys.idTail, buf);
 						await channel.write(thys.#messageType, buf, { eom: false });
 					}
 				} catch (err) {
 					// Write failed - connection lost or channel closing
 					// StateError is expected when the parent channel is closing/closed during shutdown
-					if (!(err instanceof StateError)) {
+					if (err instanceof StateError) {
+						thys.logger.debug('NestedTransport: write error', err);
+					} else {
 						thys.logger.error('NestedTransport: write error', err);
 					}
 					_thys.onDisconnect();
@@ -104,9 +108,12 @@ export class NestedTransport extends ByteTransport {
 		super(options);
 		this._get_();
 		const { channel, messageType } = options;
-		if (!channel) throw new TypeError('NestedTransport: options.channel is required');
-		if (messageType === undefined || messageType === null) {
-			throw new TypeError('NestedTransport: options.messageType is required');
+		if (!(channel instanceof Channel)) throw new TypeError('NestedTransport: options.channel is required');
+		if (typeof messageType !== 'number' && typeof messageType !== 'string') {
+			throw new TypeError('NestedTransport: string or numeric options.messageType is required');
+		}
+		if (typeof messageType === 'string' && !channel.getMessageType(messageType)) {
+			throw new RangeError(`NestedTransport: message type "${messageType}" is not registered`);
 		}
 		this.#channel = channel;
 		this.#messageType = messageType;
@@ -147,49 +154,30 @@ export class NestedTransport extends ByteTransport {
 
 		try {
 			while (true) { // Read until closed by transport or channel
-				let message;
-				try {
-					message = await channel.read({ only: messageType, dechunk: false });
-				} catch (err) {
-					// Read error or channel closed/disconnected
-					const state = _thys.state;
-					if (state !== Transport.STATE_STOPPED && state !== Transport.STATE_DISCONNECTED) {
-						if (err instanceof Error) {
-							this.logger.error('NestedTransport: channel read error', err);
-						}
-						_thys.onDisconnect();
+				const message = await channel.read({ only: messageType, dechunk: false });
+				if (!message) break;
+
+				message.process(() => {
+					// Feed binary data into the PTOC input buffer
+					if (message.data) {
+						// Copy data before calling message.done() - the VirtualBuffer segments are
+						// backed by pool buffers that may be released (zeroed) after message.done().
+						// Use toPool() if a buffer pool is available (efficient reuse), otherwise
+						// fall back to toUint8Array() (allocates a new buffer).
+						const copiedData = bufferPool
+							? message.data.toPool(bufferPool)
+							: message.data.toUint8Array();
+						// console.log('nested read', this.idTail, copiedData);
+						_thys.receiveBytes(copiedData);
+					// } else {
+						// this.logger.debug('NestedTransport: read without data on', this.idTail);
 					}
-					break;
-				}
-
-				if (!message) {
-					// Channel closed normally
-					const state = _thys.state;
-					if (state !== Transport.STATE_STOPPED && state !== Transport.STATE_REMOTE_STOPPING) {
-						_thys.onDisconnect();
-					}
-					break;
-				}
-
-				// Feed binary data into the PTOC input buffer
-				if (message.data) {
-					// Copy data before calling message.done() - the VirtualBuffer segments are
-					// backed by pool buffers that may be released (zeroed) after message.done().
-					// Use toPool() if a buffer pool is available (efficient reuse), otherwise
-					// fall back to toUint8Array() (allocates a new buffer).
-					const copiedData = bufferPool
-						? message.data.toPool(bufferPool)
-						: message.data.toUint8Array();
-					_thys.receiveBytes(copiedData);
-				}
-
-				// Mark chunk as processed (enables flow control ACKs on parent channel)
-				message.done();
+				});
 			}
-		} catch (err) {
-			// Unexpected error in reader loop
-			if (err instanceof Error) {
-				this.logger.error('NestedTransport: unexpected error in channel reader', err);
+		} finally {
+			const state = _thys.state;
+			if (state !== Transport.STATE_STOPPED && state !== Transport.STATE_REMOTE_STOPPING) {
+				_thys.onDisconnect();
 			}
 		}
 	}

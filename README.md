@@ -160,7 +160,7 @@ import { WebSocketTransport } from './src/transport/websocket.esm.js';
 
 Deno.serve((req) => {
     const { socket, response } = Deno.upgradeWebSocket(req);
-    const transport = new WebSocketTransport({ ws: socket });
+    const transport = new WebSocketTransport({ socket });
 
     transport.addEventListener('newChannel', (event) => {
         event.accept();
@@ -185,8 +185,8 @@ Deno.serve((req) => {
 ```javascript
 import { WebSocketTransport } from './src/transport/websocket.esm.js';
 
-const ws = new WebSocket('ws://localhost:8000');
-const transport = new WebSocketTransport({ ws });
+const socket = new WebSocket('ws://localhost:8000');
+const transport = new WebSocketTransport({ socket });
 
 transport.addEventListener('newChannel', (event) => {
     event.accept();
@@ -293,7 +293,8 @@ PolyTransport uses per-channel sliding-window flow control. Each channel has an 
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
-| `ws` | `WebSocket` | ✓ | WebSocket instance (open or opening) |
+| `socket` | `WebSocket` | ✓ | WebSocket instance (open or opening) |
+| `ws` | `WebSocket` |  | Alias for `socket` |
 
 **`NestedTransport`**
 

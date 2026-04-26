@@ -13,12 +13,15 @@ class MockTransport extends Transport {
 			// Mock handshake
 		},
 
-		startReader () {
-			// Mock reader
+		async startMessageMode () {
+			const [thys, _thys] = [this.__this, this];
+			if (_thys !== thys.#_) throw new Error('Unauthorized');
+			_thys.onRemoteReady();
+			return super.startMessageMode();
 		},
 
-		startWriter () {
-			// Mock writer
+		startReader () {
+			// Mock reader
 		},
 	}, Transport.__protected));
 
