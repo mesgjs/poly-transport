@@ -85,7 +85,7 @@ export class PipeTransport extends ByteTransport {
 					}
 				} catch (err) {
 					// Write failed — connection lost
-					thys.logger.error('PipeTransport: write error', err);
+					thys.logger.error(`${thys.constructor.name}: write error`, err);
 					_thys.onDisconnect();
 					return;
 				}
@@ -134,7 +134,7 @@ export class PipeTransport extends ByteTransport {
 					result = await reader.read();
 				} catch (err) {
 					// Read error — unexpected connection loss
-					this.logger.error('PipeTransport: read error', err);
+					this.logger.error(`${this.constructor.name}: read error`, err);
 					_thys.onDisconnect();
 					break;
 				}

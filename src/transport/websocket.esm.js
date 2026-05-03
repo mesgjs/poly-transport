@@ -74,7 +74,7 @@ export class WebSocketTransport extends ByteTransport {
 					}
 				} catch (err) {
 					// Write failed — connection lost
-					thys.logger.error('WebSocketTransport: write error', err);
+					thys.logger.error(`${thys.constructor.name}: write error`, err);
 					_thys.onDisconnect();
 					return;
 				}
@@ -121,7 +121,7 @@ export class WebSocketTransport extends ByteTransport {
 				_thys.receiveBytes(data);
 			} else {
 				// Unexpected non-binary message — ignore
-				this.logger.warn('WebSocketTransport: received non-binary message, ignoring');
+				this.logger.warn(`${this.constructor.name}: received non-binary message, ignoring`);
 			}
 		};
 
@@ -133,7 +133,7 @@ export class WebSocketTransport extends ByteTransport {
 		};
 
 		ws.onerror = (event) => {
-			this.logger.error('WebSocketTransport: WebSocket error', event);
+			this.logger.error(`${this.constructor.name}: WebSocket error`, event);
 			_thys.onDisconnect();
 		};
 	}

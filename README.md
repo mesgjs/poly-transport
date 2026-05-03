@@ -2,12 +2,12 @@
 
 A versatile, bidirectional, multi-transport, content-streaming library with sliding-window flow control for JavaScript.
 
-PolyTransport provides a unified API for communication over multiple transport mechanisms — WebSockets, IPC pipes, Web Workers (via `postMessage`), and nested transports — with automatic backpressure, multi-channel multiplexing, and structured message types.
+PolyTransport provides a unified API for communication over multiple transport mechanisms — WebSockets, TCP sockets, IPC pipes, Web Workers (via `postMessage`), and nested transports — with automatic backpressure, multi-channel multiplexing, and structured message types.
 
 ## Features
 
 - **Unified API** across all transport types
-- **Multiple transports**: WebSocket, IPC pipes, Web Workers (`postMessage`), and nested (PolyTransport-over-Channel)
+- **Multiple transports**: WebSocket, TCP sockets, IPC pipes, Web Workers (`postMessage`), and nested (PolyTransport-over-Channel)
 - **Multi-channel multiplexing**: Many logical channels over a single transport connection
 - **Sliding-window flow control**: Automatic backpressure prevents buffer overflow
 - **Bidirectional streaming**: Both sides can send and receive on every channel
@@ -32,6 +32,9 @@ import { PostMessageTransport } from './src/transport/post-message.esm.js';
 
 // IPC pipe transport (Deno)
 import { PipeTransport } from './src/transport/pipe.esm.js';
+
+// TCP socket transport (Deno)
+import { TcpTransport } from './src/transport/tcp.esm.js';
 
 // WebSocket transport
 import { WebSocketTransport } from './src/transport/websocket.esm.js';
@@ -204,6 +207,58 @@ await channel.close();
 await transport.stop();
 ```
 
+### TCP Socket (Deno)
+
+**Server:**
+```javascript
+import { TcpTransport } from './src/transport/tcp.esm.js';
+
+const listener = Deno.listen({ port: 8080 });
+const conn = await listener.accept();
+listener.close();
+
+const transport = new TcpTransport({ conn });
+
+transport.addEventListener('newChannel', (event) => {
+    event.accept();
+});
+
+await transport.start();
+
+const channel = await transport.requestChannel('data');
+const msg = await channel.read({ decode: true });
+console.log('Client says:', msg.text);
+msg.done();
+
+await channel.write(0, 'Hello from server!');
+await channel.close();
+await transport.stop();
+```
+
+**Client:**
+```javascript
+import { TcpTransport } from './src/transport/tcp.esm.js';
+
+const conn = await Deno.connect({ hostname: 'localhost', port: 8080 });
+const transport = new TcpTransport({ conn });
+
+transport.addEventListener('newChannel', (event) => {
+    event.accept();
+});
+
+await transport.start();
+
+const channel = await transport.requestChannel('data');
+await channel.write(0, 'Hello from client!');
+
+const reply = await channel.read({ decode: true });
+console.log('Server says:', reply.text);
+reply.done();
+
+await channel.close();
+await transport.stop();
+```
+
 ### Nested Transport (PolyTransport-over-Channel)
 
 A `NestedTransport` runs a full PolyTransport session over a dedicated message type on an existing channel. This enables complex routing scenarios.
@@ -295,6 +350,12 @@ PolyTransport uses per-channel sliding-window flow control. Each channel has an 
 |--------|------|----------|-------------|
 | `socket` | `WebSocket` | ✓ | WebSocket instance (open or opening) |
 | `ws` | `WebSocket` |  | Alias for `socket` |
+
+**`TcpTransport`**
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `conn` | `Deno.TcpConn` | ✓ | Open Deno TCP connection (from `Deno.connect()` or `Deno.Listener.accept()`) |
 
 **`NestedTransport`**
 
@@ -543,7 +604,7 @@ Transport Base (transport/base.esm.js)
 ByteTransport / PostMessageTransport
     │  Byte-stream encoding or postMessage dispatch
     ▼
-PipeTransport / WebSocketTransport / NestedTransport
+PipeTransport / TcpTransport / WebSocketTransport / NestedTransport
     │  Concrete I/O
     ▼
 OS / Browser / Parent Channel
@@ -557,6 +618,7 @@ OS / Browser / Parent Channel
 | [`src/transport/byte.esm.js`](src/transport/byte.esm.js) | Byte-stream transport base (ring buffer, handshake) |
 | [`src/transport/post-message.esm.js`](src/transport/post-message.esm.js) | Web Worker / `postMessage` transport |
 | [`src/transport/pipe.esm.js`](src/transport/pipe.esm.js) | IPC pipe transport |
+| [`src/transport/tcp.esm.js`](src/transport/tcp.esm.js) | TCP socket transport (Deno) |
 | [`src/transport/websocket.esm.js`](src/transport/websocket.esm.js) | WebSocket transport |
 | [`src/transport/nested.esm.js`](src/transport/nested.esm.js) | Nested (PTOC) transport |
 | [`src/channel.esm.js`](src/channel.esm.js) | Channel implementation |
