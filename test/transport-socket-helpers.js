@@ -1,19 +1,18 @@
 /*
- * TCP Transport Test Helpers
+ * Socket Transport Test Helpers
  *
  * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
-import { TcpTransport } from '../src/transport/tcp.esm.js';
+import { SocketTransport } from '../src/transport/socket.esm.js';
 import { BufferPool } from '../src/buffer-pool.esm.js';
 import { PromiseTracer } from '../src/promise-tracer.esm.js';
 
 /**
  * Create a pair of connected Deno TCP connections using a loopback listener.
- * Returns { serverConn, clientConn, listener } — caller should close listener
- * after accepting (it is closed automatically by makeTcpTransportPair).
+ * Returns { serverConn, clientConn } — the listener is closed automatically.
  */
-export async function makeLoopbackTcpPair () {
+export async function makeLoopbackSocketPair () {
 	const listener = Deno.listen({ hostname: '127.0.0.1', port: 0 });
 	const port = listener.addr.port;
 
@@ -28,12 +27,12 @@ export async function makeLoopbackTcpPair () {
 }
 
 /**
- * Create a pair of connected TcpTransport instances and start them.
+ * Create a pair of connected SocketTransport instances and start them.
  * Returns [transportA, transportB] both in STATE_ACTIVE.
  */
-export async function makeTcpTransportPair (optionsA = {}, optionsB = {}) {
+export async function makeSocketTransportPair (optionsA = {}, optionsB = {}) {
 	const bufferPool = new BufferPool();
-	const { serverConn, clientConn } = await makeLoopbackTcpPair();
+	const { serverConn, clientConn } = await makeLoopbackSocketPair();
 
 	// Create separate promise tracers for each transport (5 second threshold, with rejection logging)
 	const promiseTracerA = new PromiseTracer(5000, {
@@ -46,7 +45,7 @@ export async function makeTcpTransportPair (optionsA = {}, optionsB = {}) {
 		logRejections: true
 	});
 
-	const transportA = new TcpTransport({
+	const transportA = new SocketTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
@@ -55,7 +54,7 @@ export async function makeTcpTransportPair (optionsA = {}, optionsB = {}) {
 		conn: serverConn,
 	});
 
-	const transportB = new TcpTransport({
+	const transportB = new SocketTransport({
 		bufferPool,
 		maxChunkBytes: 16 * 1024,
 		lowBufferBytes: 4 * 1024,
