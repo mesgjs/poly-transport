@@ -735,19 +735,19 @@ Deno.test('Channel - close while closing switches to discard mode', async () => 
 	assertEquals(channel.state, Channel.STATE_CLOSED);
 });
 
-Deno.test('Channel - close dispatches beforeClose event', async () => {
+Deno.test('Channel - close dispatches beforeClosing event', async () => {
 	const { channel, token } = makeChannel();
-	let beforeCloseReceived = false;
+	let beforeClosingReceived = false;
 
-	channel.addEventListener('beforeClose', () => {
-		beforeCloseReceived = true;
+	channel.addEventListener('beforeClosing', () => {
+		beforeClosingReceived = true;
 	});
 
 	const closePromise = channel.close();
 	await channel.onRemoteChanClosed(token);
 	await closePromise;
 
-	assert(beforeCloseReceived);
+	assert(beforeClosingReceived);
 });
 
 Deno.test('Channel - close dispatches closed event', async () => {

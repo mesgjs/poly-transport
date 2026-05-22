@@ -19,7 +19,7 @@ import { Channel } from '../../../src/channel.esm.js';
  */
 export function registerRaceConditionTests (makeTransportPair) {
 
-	// ─── Test: Simultaneous bidirectional channel creation ────────────────────────
+	// --- Test: Simultaneous bidirectional channel creation ------------------------
 
 	Deno.test('simultaneous bidirectional channel creation succeeds', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -49,7 +49,7 @@ export function registerRaceConditionTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Simultaneous bidirectional channel creation + message type registration ──
+	// --- Test: Simultaneous bidirectional channel creation + message type registration --
 
 	Deno.test('simultaneous channel creation and message type registration', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -100,7 +100,7 @@ export function registerRaceConditionTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Simultaneous channel creation + message type registration + data exchange ──
+	// --- Test: Simultaneous channel creation + message type registration + data exchange --
 
 	Deno.test('simultaneous channel creation, message type registration, and data exchange', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -154,7 +154,7 @@ export function registerRaceConditionTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Multiple simultaneous channel creations + message type registrations ──
+	// --- Test: Multiple simultaneous channel creations + message type registrations --
 
 	Deno.test('multiple simultaneous channel creations with message type registration', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();

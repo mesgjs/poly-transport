@@ -139,7 +139,7 @@ class MockPostMessageTransport extends PostMessageTransport {
 	}
 }
 
-// ─── Constructor Tests ────────────────────────────────────────────────────────
+// --- Constructor Tests --------------------------------------------------------
 
 Deno.test('PostMessageTransport - constructor creates transport with gateway', () => {
 	const gateway = new MockGateway();
@@ -184,7 +184,7 @@ Deno.test('PostMessageTransport - constructor starts in CREATED state', () => {
 	assertEquals(transport.state, Transport.STATE_CREATED);
 });
 
-// ─── needsEncodedText Tests ───────────────────────────────────────────────────
+// --- needsEncodedText Tests ---------------------------------------------------
 
 Deno.test('PostMessageTransport - needsEncodedText returns false', () => {
 	const gateway = new MockGateway();
@@ -202,7 +202,7 @@ Deno.test('PostMessageTransport - needsEncodedText differs from ByteTransport (t
 	assertEquals(transport.needsEncodedText, false);
 });
 
-// ─── sendHandshake Tests ──────────────────────────────────────────────────────
+// --- sendHandshake Tests ------------------------------------------------------
 
 Deno.test('PostMessageTransport - sendHandshake sends handshake message via postMessage', async () => {
 	const gateway = new MockGateway();
@@ -270,7 +270,7 @@ Deno.test('PostMessageTransport - sendHandshake c2cEnabled is true when c2cSymbo
 	assertEquals(data.data.c2cEnabled, true);
 });
 
-// ─── onMessage / Handshake Reception Tests ───────────────────────────────────
+// --- onMessage / Handshake Reception Tests -----------------------------------
 
 Deno.test('PostMessageTransport - ignores messages with wrong protocol', () => {
 	const gateway = new MockGateway();
@@ -375,7 +375,7 @@ Deno.test('PostMessageTransport - ignores handshake with non-object data', async
 	assertEquals(transport.state, Transport.STATE_CREATED);
 });
 
-// ─── onMessage / ACK Reception Tests ─────────────────────────────────────────
+// --- onMessage / ACK Reception Tests -----------------------------------------
 
 Deno.test('PostMessageTransport - processes ACK message and routes to channel', async () => {
 	const gateway = new MockGateway();
@@ -535,7 +535,7 @@ Deno.test('PostMessageTransport - ACK message with no ranges has correct headerS
 	await transport.stop();
 });
 
-// ─── onMessage / Channel Data Reception Tests ─────────────────────────────────
+// --- onMessage / Channel Data Reception Tests ---------------------------------
 
 Deno.test('PostMessageTransport - processes TCC data message (chanRequest)', async () => {
 	const gateway = new MockGateway();
@@ -720,7 +720,7 @@ Deno.test('PostMessageTransport - channel data message with null data has zero d
 	await transport.stop();
 });
 
-// ─── sendAckMessage Tests ─────────────────────────────────────────────────────
+// --- sendAckMessage Tests -----------------------------------------------------
 
 Deno.test('PostMessageTransport - sendAckMessage requires symbol token', async () => {
 	const gateway = new MockGateway();
@@ -879,7 +879,7 @@ Deno.test('PostMessageTransport - sendAckMessage includes baseSequence and range
 	await transport.stop();
 });
 
-// ─── sendChunk Tests ──────────────────────────────────────────────────────────
+// --- sendChunk Tests ----------------------------------------------------------
 
 Deno.test('PostMessageTransport - sendChunk requires symbol token', async () => {
 	const gateway = new MockGateway();
@@ -1191,7 +1191,7 @@ Deno.test('PostMessageTransport - sendChunk returns byte count', async () => {
 	await transport.stop();
 });
 
-// ─── Transport Lifecycle Tests ────────────────────────────────────────────────
+// --- Transport Lifecycle Tests ------------------------------------------------
 
 Deno.test('PostMessageTransport - start transitions to STARTING state', async () => {
 	const gateway = new MockGateway();
@@ -1342,7 +1342,7 @@ Deno.test('PostMessageTransport - calling start twice returns same promise', asy
 	await transport.stop();
 });
 
-// ─── Channel Management Tests ─────────────────────────────────────────────────
+// --- Channel Management Tests -------------------------------------------------
 
 Deno.test('PostMessageTransport - TCC channel created after handshake', async () => {
 	const gateway = new MockGateway();
@@ -1462,7 +1462,7 @@ Deno.test('PostMessageTransport - getChannel returns undefined before handshake'
 	assertEquals(transport.getChannel('nonexistent'), undefined);
 });
 
-// ─── Protocol Violation Tests ─────────────────────────────────────────────────
+// --- Protocol Violation Tests -------------------------------------------------
 
 Deno.test('PostMessageTransport - unknown channel ID stops transport', async () => {
 	const gateway = new MockGateway();
@@ -1501,7 +1501,7 @@ Deno.test('PostMessageTransport - unknown channel ID stops transport', async () 
 	assertEquals(transport.state, Transport.STATE_STOPPED, 'Transport should stop when unknown channel ID is received');
 });
 
-// ─── Inheritance Tests ────────────────────────────────────────────────────────
+// --- Inheritance Tests --------------------------------------------------------
 
 Deno.test('PostMessageTransport - extends Transport base class', () => {
 	const gateway = new MockGateway();

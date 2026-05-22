@@ -639,7 +639,7 @@ Deno.test('Transport - onDisconnect protected method calls stop({ disconnected: 
 	assertEquals(transport.state, Transport.STATE_DISCONNECTED);
 });
 
-// ─── newChannel event: accept/reject redesign ─────────────────────────────────
+// --- newChannel event: accept/reject redesign ---------------------------------
 
 // Helper: simulate an incoming channel request on a started MockTransport
 function simulateChannelRequest (transport, channelName = 'test-channel') {

@@ -19,7 +19,7 @@ import { makeConnectedChannel } from '../helpers.js';
  */
 export function registerMessageTypeTests (makeTransportPair) {
 
-	// ─── Test: Request message type - accepted ────────────────────────────────────
+	// --- Test: Request message type - accepted ------------------------------------
 
 	Deno.test('request message type - accepted', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -41,7 +41,7 @@ export function registerMessageTypeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Accepted type has a numeric ID ─────────────────────────────────────
+	// --- Test: Accepted type has a numeric ID -------------------------------------
 
 	Deno.test('accepted type has a numeric ID', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -64,7 +64,7 @@ export function registerMessageTypeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Request message type - rejected ────────────────────────────────────
+	// --- Test: Request message type - rejected ------------------------------------
 
 	Deno.test('request message type - rejected', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -86,7 +86,7 @@ export function registerMessageTypeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Request multiple types - one accepted, one rejected ────────────────
+	// --- Test: Request multiple types - one accepted, one rejected ----------------
 
 	Deno.test('request multiple types - one accepted, one rejected', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -116,7 +116,7 @@ export function registerMessageTypeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Accepted type can be used in write ─────────────────────────────────
+	// --- Test: Accepted type can be used in write ---------------------------------
 
 	Deno.test('accepted type can be used in write', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -142,7 +142,7 @@ export function registerMessageTypeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Rejected type cannot be used in write ──────────────────────────────
+	// --- Test: Rejected type cannot be used in write ------------------------------
 
 	Deno.test('rejected type cannot be used in write', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();

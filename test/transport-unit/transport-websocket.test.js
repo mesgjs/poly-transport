@@ -5,7 +5,7 @@ import { Transport } from '../../src/transport/base.esm.js';
 import { BufferPool } from '../../src/buffer-pool.esm.js';
 import { makeMemoryWebSocketPair, makeWebSocketTransportPair } from '../transport-websocket-helpers.js';
 
-// ─── Constructor Tests ────────────────────────────────────────────────────────
+// --- Constructor Tests --------------------------------------------------------
 
 Deno.test('WebSocketTransport - constructor requires socket', () => {
 	try {
@@ -50,7 +50,7 @@ Deno.test('WebSocketTransport - sets binaryType to arraybuffer', () => {
 	assertEquals(ws.binaryType, 'arraybuffer');
 });
 
-// ─── Lifecycle Tests ──────────────────────────────────────────────────────────
+// --- Lifecycle Tests ----------------------------------------------------------
 
 Deno.test('WebSocketTransport - start and stop (paired)', async () => {
 	const [transportA, transportB] = await makeWebSocketTransportPair();
@@ -103,7 +103,7 @@ Deno.test('WebSocketTransport - stopped event fires after stop', async () => {
 	assertEquals(stoppedFired, true);
 });
 
-// ─── Channel Tests ────────────────────────────────────────────────────────────
+// --- Channel Tests ------------------------------------------------------------
 
 Deno.test('WebSocketTransport - requestChannel creates channel on both sides', async () => {
 	const [transportA, transportB] = await makeWebSocketTransportPair();
@@ -141,7 +141,7 @@ Deno.test('WebSocketTransport - requestChannel rejected by remote', async () => 
 	await Promise.all([transportA.stop(), transportB.stop()]);
 });
 
-// ─── Data Exchange Tests ──────────────────────────────────────────────────────
+// --- Data Exchange Tests ------------------------------------------------------
 
 Deno.test('WebSocketTransport - write and read a message', async () => {
 	const [transportA, transportB] = await makeWebSocketTransportPair();
@@ -248,7 +248,7 @@ Deno.test('WebSocketTransport - multiple messages in sequence', async () => {
 	await Promise.all([transportA.stop(), transportB.stop()]);
 });
 
-// ─── Channel Close Tests ──────────────────────────────────────────────────────
+// --- Channel Close Tests ------------------------------------------------------
 
 Deno.test('WebSocketTransport - channel close completes gracefully', async () => {
 	const [transportA, transportB] = await makeWebSocketTransportPair();
@@ -271,7 +271,7 @@ Deno.test('WebSocketTransport - channel close completes gracefully', async () =>
 	await Promise.all([transportA.stop(), transportB.stop()]);
 });
 
-// ─── Disconnect Tests ─────────────────────────────────────────────────────────
+// --- Disconnect Tests ---------------------------------------------------------
 
 Deno.test('WebSocketTransport - WebSocket close triggers disconnect', async () => {
 	const { a: wsA, b: wsB } = makeMemoryWebSocketPair();
@@ -305,7 +305,7 @@ Deno.test('WebSocketTransport - WebSocket close triggers disconnect', async () =
 	try { await transportB.stop(); } catch (_) { /* may already be stopped */ }
 });
 
-// ─── Role Assignment Tests ────────────────────────────────────────────────────
+// --- Role Assignment Tests ----------------------------------------------------
 
 Deno.test('WebSocketTransport - transports get different roles', async () => {
 	const [transportA, transportB] = await makeWebSocketTransportPair();

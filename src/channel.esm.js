@@ -216,8 +216,8 @@ export class Channel extends Eventable {
 		// console.log(`(${this.#_.transport.role}) channel ${this.id} ${this.name} sending chanClose`);
 		await transport.sendTccMessage(token, TCC_DTAM_CHAN_CLOSE[0], { discard: this.#discard });
 
-		// Notify beforeClose listeners.
-		await this.dispatchEvent('beforeClose', { discard: this.#discard });
+		// Notify beforeClosing listeners.
+		await this.dispatchEvent('beforeClosing', { discard: this.#discard });
 
 		// If in discard mode, immediately ACK and discard all buffered input.
 		if (this.#discard) await this.#discardExistingInput();

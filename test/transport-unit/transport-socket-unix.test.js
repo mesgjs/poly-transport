@@ -6,7 +6,7 @@ import { Transport } from '../../src/transport/base.esm.js';
 import { BufferPool } from '../../src/buffer-pool.esm.js';
 import { makeLoopbackUnixPair, makeUnixSocketTransportPair } from '../transport-unix-helpers.js';
 
-// ─── Constructor Tests ────────────────────────────────────────────────────────
+// --- Constructor Tests --------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - constructor creates transport in STATE_CREATED', async () => {
 	const { serverConn, clientConn } = await makeLoopbackUnixPair();
@@ -56,7 +56,7 @@ Deno.test('SocketTransport (Unix) - has transport id and logger', async () => {
 	}
 });
 
-// ─── Lifecycle Tests ──────────────────────────────────────────────────────────
+// --- Lifecycle Tests ----------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - start and stop (paired)', async () => {
 	const [transportA, transportB] = await makeUnixSocketTransportPair();
@@ -109,7 +109,7 @@ Deno.test('SocketTransport (Unix) - stopped event fires after stop', async () =>
 	assertEquals(stoppedFired, true);
 });
 
-// ─── Channel Tests ────────────────────────────────────────────────────────────
+// --- Channel Tests ------------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - requestChannel creates channel on both sides', async () => {
 	const [transportA, transportB] = await makeUnixSocketTransportPair();
@@ -147,7 +147,7 @@ Deno.test('SocketTransport (Unix) - requestChannel rejected by remote', async ()
 	await Promise.all([transportA.stop(), transportB.stop()]);
 });
 
-// ─── Data Exchange Tests ──────────────────────────────────────────────────────
+// --- Data Exchange Tests ------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - write and read a message', async () => {
 	const [transportA, transportB] = await makeUnixSocketTransportPair();
@@ -226,7 +226,7 @@ Deno.test('SocketTransport (Unix) - bidirectional data exchange', async () => {
 	await Promise.all([transportA.stop(), transportB.stop()]);
 });
 
-// ─── Channel Close Tests ──────────────────────────────────────────────────────
+// --- Channel Close Tests ------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - channel close completes gracefully', async () => {
 	const [transportA, transportB] = await makeUnixSocketTransportPair();
@@ -248,7 +248,7 @@ Deno.test('SocketTransport (Unix) - channel close completes gracefully', async (
 	await Promise.all([transportA.stop(), transportB.stop()]);
 });
 
-// ─── Disconnect Tests ─────────────────────────────────────────────────────────
+// --- Disconnect Tests ---------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - connection close triggers disconnect', async () => {
 	const { serverConn, clientConn } = await makeLoopbackUnixPair();
@@ -276,7 +276,7 @@ Deno.test('SocketTransport (Unix) - connection close triggers disconnect', async
 	try { await transportB.stop(); } catch (_) { /* may already be stopped */ }
 });
 
-// ─── Role Assignment Tests ────────────────────────────────────────────────────
+// --- Role Assignment Tests ----------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - transports get different roles', async () => {
 	const [transportA, transportB] = await makeUnixSocketTransportPair();

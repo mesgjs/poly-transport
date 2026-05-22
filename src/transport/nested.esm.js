@@ -119,10 +119,10 @@ export class NestedTransport extends ByteTransport {
 		this.#messageType = messageType;
 
 		// Listen for parent channel lifecycle events
-		channel.addEventListener('beforeClose', () => {
+		channel.addEventListener('beforeClosing', () => {
 			// Parent channel is about to close - initiate graceful PTOC stop
 			this.stop().catch((err) => {
-				this.logger.error('NestedTransport: error stopping on channel beforeClose', err);
+				this.logger.error('NestedTransport: error stopping on channel beforeClosing', err);
 			});
 		});
 

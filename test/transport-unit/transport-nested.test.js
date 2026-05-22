@@ -6,7 +6,7 @@ import { BufferPool } from '../../src/buffer-pool.esm.js';
 import { makeNestedTransportPair } from '../transport-nested-helpers.js';
 import { makeByteTransportPair, makeConnectedChannel } from '../integration/helpers.js';
 
-// ─── Constructor Tests ────────────────────────────────────────────────────────
+// --- Constructor Tests --------------------------------------------------------
 
 Deno.test('NestedTransport - constructor requires channel', () => {
 	try {
@@ -76,7 +76,7 @@ Deno.test('NestedTransport - has transport id and logger', async () => {
 	await Promise.all([parentA.stop(), parentB.stop()]);
 });
 
-// ─── Lifecycle Tests ──────────────────────────────────────────────────────────
+// --- Lifecycle Tests ----------------------------------------------------------
 
 Deno.test('NestedTransport - start and stop (paired)', async () => {
 	const { nested: [nestedA, nestedB], parents: [parentA, parentB] } = await makeNestedTransportPair();
@@ -152,7 +152,7 @@ Deno.test('NestedTransport - stop({ disconnected: true }) redirects to graceful 
 	await Promise.all([parentA.stop(), parentB.stop()]);
 });
 
-// ─── Channel Tests ────────────────────────────────────────────────────────────
+// --- Channel Tests ------------------------------------------------------------
 
 Deno.test('NestedTransport - requestChannel creates channel on both sides', async () => {
 	const { nested: [nestedA, nestedB], parents: [parentA, parentB] } = await makeNestedTransportPair();
@@ -192,7 +192,7 @@ Deno.test('NestedTransport - requestChannel rejected by remote', async () => {
 	await Promise.all([parentA.stop(), parentB.stop()]);
 });
 
-// ─── Data Exchange Tests ──────────────────────────────────────────────────────
+// --- Data Exchange Tests ------------------------------------------------------
 
 Deno.test('NestedTransport - write and read a message', async () => {
 	const { nested: [nestedA, nestedB], parents: [parentA, parentB] } = await makeNestedTransportPair();
@@ -303,7 +303,7 @@ Deno.test('NestedTransport - multiple messages in sequence', async () => {
 	await Promise.all([parentA.stop(), parentB.stop()]);
 });
 
-// ─── Channel Close Tests ──────────────────────────────────────────────────────
+// --- Channel Close Tests ------------------------------------------------------
 
 Deno.test('NestedTransport - channel close completes gracefully', async () => {
 	const { nested: [nestedA, nestedB], parents: [parentA, parentB] } = await makeNestedTransportPair();
@@ -327,7 +327,7 @@ Deno.test('NestedTransport - channel close completes gracefully', async () => {
 	await Promise.all([parentA.stop(), parentB.stop()]);
 });
 
-// ─── Parent Channel Lifecycle Tests ──────────────────────────────────────────
+// --- Parent Channel Lifecycle Tests ------------------------------------------
 
 Deno.test('NestedTransport - parent channel close triggers PTOC stop', async () => {
 	const bufferPool = new BufferPool();
@@ -366,7 +366,7 @@ Deno.test('NestedTransport - parent channel close triggers PTOC stop', async () 
 	await Promise.all([parentA.stop(), parentB.stop()]);
 });
 
-// ─── Role Assignment Tests ────────────────────────────────────────────────────
+// --- Role Assignment Tests ----------------------------------------------------
 
 Deno.test('NestedTransport - transports get different roles', async () => {
 	const { nested: [nestedA, nestedB], parents: [parentA, parentB] } = await makeNestedTransportPair();

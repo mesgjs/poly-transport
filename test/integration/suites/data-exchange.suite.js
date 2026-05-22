@@ -19,7 +19,7 @@ import { makeConnectedChannel } from '../helpers.js';
  */
 export function registerDataExchangeTests (makeTransportPair) {
 
-	// ─── Test: Send/receive chunk (eom=false) with message type 0 ─────────────────
+	// --- Test: Send/receive chunk (eom=false) with message type 0 -----------------
 
 	Deno.test('send/receive chunk (eom=false) with message type 0', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -46,7 +46,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Send/receive complete message (eom=true) with message type 0 ───────
+	// --- Test: Send/receive complete message (eom=true) with message type 0 -------
 
 	Deno.test('send/receive complete message (eom=true) with message type 0', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -67,7 +67,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Multiple messages in sequence ──────────────────────────────────────
+	// --- Test: Multiple messages in sequence --------------------------------------
 
 	Deno.test('multiple messages in sequence', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -94,7 +94,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Bidirectional data exchange ────────────────────────────────────────
+	// --- Test: Bidirectional data exchange ----------------------------------------
 
 	Deno.test('bidirectional data exchange', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -125,7 +125,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Send/receive message with accepted registered string type ──────────
+	// --- Test: Send/receive message with accepted registered string type ----------
 
 	Deno.test('send/receive message with accepted registered string type', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -154,7 +154,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Read filtered by registered string type ────────────────────────────
+	// --- Test: Read filtered by registered string type ----------------------------
 
 	Deno.test('read filtered by registered string type', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -190,7 +190,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Multi-chunk message reassembled correctly ─────────────────────────
+	// --- Test: Multi-chunk message reassembled correctly -------------------------
 
 	Deno.test('multi-chunk message reassembled correctly', async () => {
 		// Use small maxChunkBytes to force multi-chunk messages
@@ -219,7 +219,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Send/receive binary data (Uint8Array) ──────────────────────────────
+	// --- Test: Send/receive binary data (Uint8Array) ------------------------------
 
 	Deno.test('send/receive binary data (Uint8Array)', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();
@@ -249,7 +249,7 @@ export function registerDataExchangeTests (makeTransportPair) {
 		await cleanup?.();
 	});
 
-	// ─── Test: Interleaved writes on multiple channels with mixed text/binary ─────
+	// --- Test: Interleaved writes on multiple channels with mixed text/binary -----
 
 	Deno.test('interleaved writes on multiple channels with mixed text and binary data', async () => {
 		const [transportA, transportB, cleanup] = await makeTransportPair();

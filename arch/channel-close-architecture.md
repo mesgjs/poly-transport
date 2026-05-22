@@ -35,7 +35,7 @@ open → closing → localClosing/remoteClosing → closed
 
 - **`open`**: Normal operation, data flowing bidirectionally
 - **`closing`**: Close initiated (locally or remotely), both sides working on closure (no `chanClosed` from either yet)
-- **`localClosing`**: Remote sent `chanClosed`, we're still finishing our side (waiting on write ring, readers, `beforeClose` handlers)
+- **`localClosing`**: Remote sent `chanClosed`, we're still finishing our side (waiting on write ring, readers, `beforeClosing` handlers)
 - **`remoteClosing`**: We sent `chanClosed`, waiting for remote to finish their side
 - **`closed`**: Both `chanClosed` messages exchanged, channel fully closed and synchronized
 
@@ -64,11 +64,11 @@ The `close({ discard })` method accepts a single parameter:
 
 **Behavior**:
 - Send `chanClose` with `discard: false` flag
-- Emit `beforeClose` event
+- Emit `beforeClosing` event
 - No new writes accepted (throw `StateError`)
 - Wait to receive ACKs for all pending writes (`await flowControl.allWritesAcked()`)
 - Wait for all reads to be consumed by application
-- Wait for `beforeClose` event handlers to complete
+- Wait for `beforeClosing` event handlers to complete
 - Send `chanClosed` when all conditions met
 
 **Use Case**: Normal channel shutdown, ensure all data is processed
@@ -79,7 +79,7 @@ The `close({ discard })` method accepts a single parameter:
 
 **Behavior**:
 - Send `chanClose` with `discard: true` flag
-- Emit `beforeClose` event
+- Emit `beforeClosing` event
 - **Input side**: Treat read buffers and any new input as consumed (ACK immediately)
 - **Output side**: Wait to receive ACKs for all pending writes (output must complete)
   - Data leaves sender's ring → becomes receiver's input → receiver discards it (but still ACKs)
@@ -132,7 +132,7 @@ The `close({ discard })` method accepts a single parameter:
 **Local conditions that must be met before sending `chanClosed`**:
 1. ~~Write ring empties (all data sent)~~ [We only know if all of our ACKs have been received]
 2. All ACKs received for our sent data
-3. `beforeClose` event handlers complete
+3. `beforeClosing` event handlers complete
 
 **Note**: We do NOT wait for reads to be consumed:
 - We don't know what might still be coming from remote
@@ -349,7 +349,7 @@ Thrown when attempting operations incompatible with current channel state:
 4. **Send closure messages**: Send `chanClose` and `chanClosed` at appropriate times
 5. **Handle cross-close**: Detect and switch to discard input mode when remote sends `discard: true`
 6. **Clear message types**: Clear registrations at `closed` state
-7. **Dispatch events**: Fire `beforeClose` and `closed` events
+7. **Dispatch events**: Fire `beforeClosing` and `closed` events
 8. **Release resources**: Release Channel object and all associated resources at `closed` state
 9. **Maintain channel record**: Keep "nulled" record with name, ID, and token for reopening
 
@@ -358,7 +358,7 @@ Thrown when attempting operations incompatible with current channel state:
 1. **Expose close API**: `close({ discard })` method
 2. **Delegate to transport**: Channel.close() calls Transport._closeChannel()
 3. **Provide state query**: `channel.state` property
-4. **Event registration**: Support `beforeClose` and `closed` event listeners
+4. **Event registration**: Support `beforeClosing` and `closed` event listeners
 5. **Resource cleanup**: Release buffers, clear internal state when closed
 
 ## State Transition Diagram
@@ -449,7 +449,7 @@ Thrown when attempting operations incompatible with current channel state:
 5. **Reopening**: Verify channel can be reopened after `closed`
 6. **Error conditions**: Verify `StateError` thrown appropriately
 7. **Late messages**: Verify handling during closure vs after `closed`
-8. **Event dispatch**: Verify `beforeClose` and `closed` events fire correctly
+8. **Event dispatch**: Verify `beforeClosing` and `closed` events fire correctly
 9. **Flow control**: Verify budget restoration during closure
 10. **Protocol violations**: Verify detection and handling
 

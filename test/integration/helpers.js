@@ -14,7 +14,7 @@ import { Channel } from '../../src/channel.esm.js';
 import { VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
 import { PromiseTracer } from '../../src/promise-tracer.esm.js';
 
-// ─── PostMessageTransport Helpers ─────────────────────────────────────────────
+// --- PostMessageTransport Helpers ---------------------------------------------
 
 /**
  * A pair of gateways that are connected to each other.
@@ -120,7 +120,7 @@ export async function makeMessageTransportPair (optionsA = {}, optionsB = {}) {
 	return [transportA, transportB];
 }
 
-// ─── ByteTransport Helpers ────────────────────────────────────────────────────
+// --- ByteTransport Helpers ----------------------------------------------------
 
 /**
  * Connected ByteTransport for integration testing.
@@ -249,7 +249,7 @@ export async function makeByteTransportPair (optionsA = {}, optionsB = {}) {
 	return [transportA, transportB];
 }
 
-// ─── Shared Channel Helpers ───────────────────────────────────────────────────
+// --- Shared Channel Helpers ---------------------------------------------------
 
 /**
  * Request a channel from A and accept it on B.

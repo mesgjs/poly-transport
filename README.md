@@ -532,7 +532,7 @@ Closes the channel. Waits for all in-flight writes to be acknowledged, then exch
 #### Channel Events
 
 ```javascript
-channel.addEventListener('beforeClose', (event) => { /* ... */ });
+channel.addEventListener('beforeClosing', (event) => { /* ... */ });
 channel.addEventListener('closed', (event) => { /* ... */ });
 ```
 

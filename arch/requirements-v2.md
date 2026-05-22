@@ -729,7 +729,7 @@ Response arrives (rejected) → no channel exists, reject promise → delete pen
 2. Validate channel state (must be open)
 3. Transition to 'closing' state
 4. Send TCC data message (type: chanClose, discard flag) via transport.sendTccMessage()
-5. Emit 'beforeClose' event
+5. Emit 'beforeClosing' event
 6. If discard mode: immediately ACK and discard all buffered input
 7. Wait for all in-flight writes to be ACK'd (flowControl.allWritesAcked())
 8. Send TCC data message (type: chanClosed) via transport.sendTccMessage()
@@ -1124,9 +1124,9 @@ hasReader(only = null)
 
 #### Events
 
-**`beforeClose`**: Emitted before channel closes
+**`beforeClosing`**: Emitted before channel closes
 ```javascript
-channel.addEventListener('beforeClose', (event) => {
+channel.addEventListener('beforeClosing', (event) => {
   // Cleanup before close
 });
 ```
