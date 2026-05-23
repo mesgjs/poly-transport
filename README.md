@@ -12,6 +12,7 @@ PolyTransport provides a unified API for communication over multiple transport m
 - **Sliding-window flow control**: Automatic backpressure prevents buffer overflow
 - **Bidirectional streaming**: Both sides can send and receive on every channel
 - **Structured message types**: Register named message types for organized communication
+- **Signal API**: Lightweight out-of-band signaling on transports and channels without leaving unread messages
 - **Async/await friendly**: All I/O operations return Promises
 - **Zero-copy output**: Ring-buffer-based encoding for byte-stream transports
 - **Security-conscious**: Per-channel budget isolation prevents misbehaving channels from affecting others
@@ -432,6 +433,26 @@ transport.addEventListener('stopped', (event) => { /* ... */ });
 ```
 Transport lifecycle events.
 
+```javascript
+transport.addEventListener('signal', (event) => {
+    const text = event.detail; // string or null
+    // Handle transport-level signal
+});
+```
+Fired when the remote sends a transport-level signal via `transport.signal(text)`. The `event.detail` is the raw text string sent by the remote, or `null` if no text was provided. Signal handlers may be async and are awaited before the message is marked as processed.
+
+#### Transport Signal Method
+
+```javascript
+await transport.signal(text)
+```
+Sends a transport-level signal to the remote peer. `text` may be any string (including JSON or SLID) or `undefined`. Throws `StateError` if the transport is not active.
+
+```javascript
+// Example: notify remote of impending shutdown
+transport.signal(JSON.stringify({ event: 'beforeStopping', timeout: 30 }));
+```
+
 #### Transport State
 
 ```javascript
@@ -534,6 +555,26 @@ Closes the channel. Waits for all in-flight writes to be acknowledged, then exch
 ```javascript
 channel.addEventListener('beforeClosing', (event) => { /* ... */ });
 channel.addEventListener('closed', (event) => { /* ... */ });
+```
+
+```javascript
+channel.addEventListener('signal', (event) => {
+    const text = event.detail; // string or null
+    // Handle channel-level signal
+});
+```
+Fired when the remote sends a channel-level signal via `channel.signal(text)`. The `event.detail` is the raw text string sent by the remote, or `null` if no text was provided. Signal handlers may be async and are awaited before the message is marked as processed.
+
+#### Channel Signal Method
+
+```javascript
+await channel.signal(text)
+```
+Sends a channel-level signal to the remote peer. `text` may be any string (including JSON or SLID) or `undefined`. Throws `StateError` if the channel is closing or closed.
+
+```javascript
+// Example: notify remote of impending channel closure
+channel.signal(JSON.stringify({ event: 'beforeClosing' }));
 ```
 
 ```javascript
