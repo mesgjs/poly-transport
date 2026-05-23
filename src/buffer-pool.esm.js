@@ -265,6 +265,7 @@ export class BufferPool {
 
 		let runAgain = false;
 		for (const size of this.#manageSizes) {
+			if (this.#stopped) break;
 			if (runAgain) {
 				// Yield to the event queue between sizes
 				await new Promise((resolve) => setTimeout(resolve, 0));

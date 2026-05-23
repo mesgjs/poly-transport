@@ -58,6 +58,7 @@ export const TCC_DTAM_CHAN_CLOSE = [5, 'chanClose']; // channel close initiation
 export const TCC_DTAM_CHAN_CLOSED = [6, 'chanClosed']; // channel close completion
 export const TCC_DTAM_TRAN_STOP = [7, 'tranStop']; // transport stop initiation
 export const TCC_DTAM_TRAN_STOPPED = [8, 'tranStopped']; // transport stop completion
+export const TCC_CADM_SIGNAL = [9, 'signal']; // signal (transport-level data or channel-level control)
 
 // C2C pre-defined (foundational) message types (requirements.md:495-505)
 // (Message-types not required at transport start should be registered/mapped)

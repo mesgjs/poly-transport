@@ -3,8 +3,6 @@
  *
  * Tests for race conditions involving simultaneous channel creation and
  * simultaneous message-type registration on both ends of the same channel.
- *
- * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
 import {

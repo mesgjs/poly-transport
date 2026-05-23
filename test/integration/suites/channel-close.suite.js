@@ -3,8 +3,6 @@
  *
  * Shared test suite for channel close scenarios across all transport types.
  * Tests are registered by calling registerChannelCloseTests(makeTransportPair).
- *
- * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
 import {

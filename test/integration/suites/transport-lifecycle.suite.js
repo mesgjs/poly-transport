@@ -3,8 +3,6 @@
  *
  * Shared test suite for transport lifecycle and channel request scenarios.
  * Tests are registered by calling registerTransportLifecycleTests(makeTransportPair).
- *
- * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
 import {

@@ -59,52 +59,57 @@ Deno.test('SocketTransport (Unix) - has transport id and logger', async () => {
 // --- Lifecycle Tests ----------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - start and stop (paired)', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	assertEquals(transportA.state, Transport.STATE_ACTIVE);
 	assertEquals(transportB.state, Transport.STATE_ACTIVE);
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 
 	assertEquals(transportA.state, Transport.STATE_STOPPED);
 	assertEquals(transportB.state, Transport.STATE_STOPPED);
 });
 
 Deno.test('SocketTransport (Unix) - start resolves when both sides complete handshake', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 	assertEquals(transportA.state, Transport.STATE_ACTIVE);
 	assertEquals(transportB.state, Transport.STATE_ACTIVE);
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 Deno.test('SocketTransport (Unix) - stop resolves cleanly', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 	const stopPromise = Promise.all([transportA.stop(), transportB.stop()]);
 	await stopPromise;
+	cleanup();
 	assertEquals(transportA.state, Transport.STATE_STOPPED);
 	assertEquals(transportB.state, Transport.STATE_STOPPED);
 });
 
 Deno.test('SocketTransport (Unix) - beforeStopping event fires before stopped', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const events = [];
 	transportA.addEventListener('beforeStopping', () => events.push('beforeStopping'));
 	transportA.addEventListener('stopped', () => events.push('stopped'));
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 
 	assertEquals(events[0], 'beforeStopping');
 	assertEquals(events[1], 'stopped');
 });
 
 Deno.test('SocketTransport (Unix) - stopped event fires after stop', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	let stoppedFired = false;
 	transportA.addEventListener('stopped', () => { stoppedFired = true; });
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 
 	assertEquals(stoppedFired, true);
 });
@@ -112,7 +117,7 @@ Deno.test('SocketTransport (Unix) - stopped event fires after stop', async () =>
 // --- Channel Tests ------------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - requestChannel creates channel on both sides', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
@@ -129,10 +134,11 @@ Deno.test('SocketTransport (Unix) - requestChannel creates channel on both sides
 	assertEquals(channelB.name, 'test');
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 Deno.test('SocketTransport (Unix) - requestChannel rejected by remote', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	transportB.addEventListener('newChannel', (event) => {
 		event.reject();
@@ -145,12 +151,13 @@ Deno.test('SocketTransport (Unix) - requestChannel rejected by remote', async ()
 	);
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 // --- Data Exchange Tests ------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - write and read a message', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
@@ -169,10 +176,11 @@ Deno.test('SocketTransport (Unix) - write and read a message', async () => {
 	message.done();
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 Deno.test('SocketTransport (Unix) - write and read binary data', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
@@ -197,10 +205,11 @@ Deno.test('SocketTransport (Unix) - write and read binary data', async () => {
 	message.done();
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 Deno.test('SocketTransport (Unix) - bidirectional data exchange', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
@@ -224,12 +233,13 @@ Deno.test('SocketTransport (Unix) - bidirectional data exchange', async () => {
 	msgOnA.done();
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 // --- Channel Close Tests ------------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - channel close completes gracefully', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const channelBPromise = new Promise((resolve) => {
 		transportB.addEventListener('newChannel', (event) => {
@@ -246,6 +256,7 @@ Deno.test('SocketTransport (Unix) - channel close completes gracefully', async (
 	assertEquals(channelB.state, 'closed');
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });
 
 // --- Disconnect Tests ---------------------------------------------------------
@@ -274,12 +285,13 @@ Deno.test('SocketTransport (Unix) - connection close triggers disconnect', async
 
 	// Clean up B
 	try { await transportB.stop(); } catch (_) { /* may already be stopped */ }
+	bufferPool.stop();
 });
 
 // --- Role Assignment Tests ----------------------------------------------------
 
 Deno.test('SocketTransport (Unix) - transports get different roles', async () => {
-	const [transportA, transportB] = await makeUnixSocketTransportPair();
+	const [transportA, transportB, cleanup] = await makeUnixSocketTransportPair();
 
 	const roles = new Set([transportA.role, transportB.role]);
 	assert(roles.has(Transport.ROLE_EVEN), 'One transport should be ROLE_EVEN');
@@ -287,4 +299,5 @@ Deno.test('SocketTransport (Unix) - transports get different roles', async () =>
 	assert(transportA.role !== transportB.role, 'Transports should have different roles');
 
 	await Promise.all([transportA.stop(), transportB.stop()]);
+	cleanup();
 });

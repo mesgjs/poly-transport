@@ -6,10 +6,10 @@ import {
 	HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA,
 	DATA_HEADER_BYTES, FLAG_EOM,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
-	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED,
+	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED, TCC_CADM_SIGNAL,
 	StateError,
 } from '../../src/protocol.esm.js';
-import { VirtualBuffer } from '../../src/virtual-buffer.esm.js';
+import { VirtualBuffer, VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
 
 // ============================================================================
 // Test helpers
@@ -39,11 +39,19 @@ function makeMockTransport (options = {}) {
 		sentAcks,
 		nulledChannels,
 		tccMessages,
-		async sendChunk (token, header, chunker, opts) {
+		async sendChunk (token, flowControl, header, chunker, opts) {
 			const bytesToReserve = chunker.bytesToReserve();
 			const sentBytes = bytesToReserve;
+			// Consume the chunk (advance the chunker's position)
+			if (chunker.bufferSize !== null && chunker.bufferSize > 0) {
+				const buf = new VirtualRWBuffer(new Uint8Array(chunker.bufferSize));
+				chunker.nextChunk(buf);
+			} else if (chunker.bufferSize === null) {
+				chunker.nextChunk();
+			}
+			flowControl.sent(sentBytes);
 			sentChunks.push({ token, header, opts, sentBytes });
-			return sentBytes;
+			return chunker.remaining;
 		},
 		async sendAckMessage (token, flowControl) {
 			sentAcks.push({ token, flowControl });
@@ -1616,4 +1624,163 @@ Deno.test('Channel - addMessageTypes throws StateError after disconnect', async 
 		() => channel.addMessageTypes(['myType']),
 		StateError
 	);
+});
+
+// ============================================================================
+// Channel signal() method
+// ============================================================================
+
+// Helper: simulate an incoming channel signal control message
+function simulateChannelSignal (channel, token, text, seq) {
+	const data = text ?? '';
+	channel.receiveMessage(token, {
+		type: HDR_TYPE_CHAN_CONTROL,
+		headerSize: DATA_HEADER_BYTES,
+		dataSize: data.length * 2,
+		flags: FLAG_EOM,
+		channelId: channel.id,
+		sequence: seq,
+		messageType: TCC_CADM_SIGNAL[0],
+		eom: true,
+	}, data);
+}
+
+Deno.test('Channel - signal() throws StateError when channel is closing', async () => {
+	const { channel, token } = makeChannel();
+
+	// Start close (puts channel in CLOSING state)
+	const closePromise = channel.close();
+
+	await assertRejects(
+		() => channel.signal('x'),
+		StateError
+	);
+
+	// Clean up
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+});
+
+Deno.test('Channel - signal() throws StateError when channel is closed', async () => {
+	const { channel, token } = makeChannel();
+
+	// Close the channel
+	const closePromise = channel.close();
+	await channel.onRemoteChanClosed(token);
+	await closePromise;
+
+	assertEquals(channel.state, Channel.STATE_CLOSED);
+
+	await assertRejects(
+		() => channel.signal('x'),
+		StateError
+	);
+});
+
+Deno.test('Channel - signal() sends a control message with correct type', async () => {
+	const { channel, transport } = makeChannel();
+
+	await channel.signal('hello');
+
+	// Verify a chunk was sent with the correct message type
+	const sentChunk = transport.sentChunks.find(c => c.header.messageType === TCC_CADM_SIGNAL[0]);
+	assertExists(sentChunk);
+	assertEquals(sentChunk.header.messageType, TCC_CADM_SIGNAL[0]);
+});
+
+Deno.test('Channel - signal(undefined) sends a control message with correct type', async () => {
+	const { channel, transport } = makeChannel();
+
+	await channel.signal(undefined);
+
+	const sentChunk = transport.sentChunks.find(c => c.header.messageType === TCC_CADM_SIGNAL[0]);
+	assertExists(sentChunk);
+	assertEquals(sentChunk.header.messageType, TCC_CADM_SIGNAL[0]);
+});
+
+Deno.test('Channel - signal event fires with correct detail', async () => {
+	const { channel, token } = makeChannel();
+	let receivedDetail = 'NOT_SET';
+
+	channel.addEventListener('signal', (event) => {
+		receivedDetail = event.detail;
+	});
+
+	simulateChannelSignal(channel, token, 'payload', 1);
+
+	// Yield microtasks to allow async dispatch
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	assertEquals(receivedDetail, 'payload');
+});
+
+Deno.test('Channel - signal event fires with null detail for empty body', async () => {
+	const { channel, token } = makeChannel();
+	let receivedDetail = 'NOT_SET';
+
+	channel.addEventListener('signal', (event) => {
+		receivedDetail = event.detail;
+	});
+
+	simulateChannelSignal(channel, token, '', 1);
+
+	// Yield microtasks to allow async dispatch
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	assertEquals(receivedDetail, null);
+});
+
+Deno.test('Channel - signal event is awaited before markProcessed', async () => {
+	const { channel, token } = makeChannel();
+	let handlerCompleted = false;
+
+	channel.addEventListener('signal', async (_event) => {
+		await new Promise(resolve => setTimeout(resolve, 0));
+		handlerCompleted = true;
+	});
+
+	simulateChannelSignal(channel, token, 'async test', 1);
+
+	// Yield enough time for the async handler to complete
+	await new Promise(resolve => setTimeout(resolve, 10));
+
+	assert(handlerCompleted, 'Async signal handler should have completed');
+});
+
+Deno.test('Channel - multi-chunk signal message is reassembled before dispatch', async () => {
+	const { channel, token } = makeChannel();
+	let receivedDetail = 'NOT_SET';
+
+	channel.addEventListener('signal', (event) => {
+		receivedDetail = event.detail;
+	});
+
+	// Send first chunk (no EOM)
+	channel.receiveMessage(token, {
+		type: HDR_TYPE_CHAN_CONTROL,
+		headerSize: DATA_HEADER_BYTES,
+		dataSize: 'hello '.length * 2,
+		flags: 0, // no EOM
+		channelId: channel.id,
+		sequence: 1,
+		messageType: TCC_CADM_SIGNAL[0],
+		eom: false,
+	}, 'hello ');
+
+	// Send second chunk (EOM)
+	channel.receiveMessage(token, {
+		type: HDR_TYPE_CHAN_CONTROL,
+		headerSize: DATA_HEADER_BYTES,
+		dataSize: 'world'.length * 2,
+		flags: FLAG_EOM,
+		channelId: channel.id,
+		sequence: 2,
+		messageType: TCC_CADM_SIGNAL[0],
+		eom: true,
+	}, 'world');
+
+	// Yield microtasks to allow async dispatch
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	assertEquals(receivedDetail, 'hello world');
 });

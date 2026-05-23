@@ -28,7 +28,8 @@ export async function makeLoopbackUnixPair () {
 
 /**
  * Create a pair of connected SocketTransport instances over Unix domain sockets and start them.
- * Returns [transportA, transportB] both in STATE_ACTIVE.
+ * Returns [transportA, transportB, cleanup] both in STATE_ACTIVE.
+ * cleanup() stops the shared BufferPool after the transports have been stopped.
  */
 export async function makeUnixSocketTransportPair (optionsA = {}, optionsB = {}) {
 	const bufferPool = new BufferPool();
@@ -64,5 +65,6 @@ export async function makeUnixSocketTransportPair (optionsA = {}, optionsB = {})
 
 	await Promise.all([transportA.start(), transportB.start()]);
 
-	return [transportA, transportB];
+	const cleanup = () => bufferPool.stop();
+	return [transportA, transportB, cleanup];
 }

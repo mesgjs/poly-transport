@@ -12,6 +12,7 @@ import {
 	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED,
 	TCC_DTAM_TRAN_STOP, TCC_DTAM_TRAN_STOPPED,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
+	TCC_CADM_SIGNAL,
 	StateError, toEven, toOdd, addRoleId
 } from '../protocol.esm.js';
 import { Channel } from '../channel.esm.js';
@@ -870,6 +871,20 @@ export class Transport extends Eventable {
 	}
 
 	/**
+	 * Send a transport-level signal to the remote peer.
+	 * @param {string|undefined} text - Signal payload (any string, or undefined)
+	 * @returns {Promise<void>}
+	 */
+	async signal (text) {
+		const _thys = this.#_;
+		if (_thys.state !== Transport.STATE_ACTIVE) {
+			throw new StateError(`Cannot signal: transport is not active (${this.stateString})`);
+		}
+		const tcc = _thys.channels.get(CHANNEL_TCC);
+		await tcc.write(TCC_CADM_SIGNAL[0], text ?? null);
+	}
+
+	/**
 	 * Common code to start the transport (begin reading and writing)
 	 * @returns {Promise<void>} Promise resolving when the transport is started
 	 */
@@ -1014,38 +1029,40 @@ export class Transport extends Eventable {
 			if (!message) break; // Channel closed
 
 			const { messageTypeId, text } = message;
+			const parsed = () => text?.length ? JSON.parse(text) : {};
 
 			let skipAck = false;
 			try {
-				// Parse JSON data (already complete message thanks to default de-chunking)
-				const parsed = text?.length ? JSON.parse(text) : {};
 
 				// Handle control messages
 				switch (messageTypeId) {
 				case TCC_DTAM_CHAN_REQUEST[0]:
-					await this.#onChannelRequest(parsed);
+					await this.#onChannelRequest(parsed());
 					break;
 				case TCC_DTAM_CHAN_RESPONSE[0]:
-					await this.#onChannelResponse(parsed);
+					await this.#onChannelResponse(parsed());
 					break;
 				case TCC_DTAM_CHAN_CLOSE[0]:
-					await this.#onChannelClose(parsed);
+					await this.#onChannelClose(parsed());
 					break;
 				case TCC_DTAM_CHAN_CLOSED[0]:
-					await this.#onChannelClosed(parsed);
+					await this.#onChannelClosed(parsed());
 					break;
 				case TCC_DTAM_TRAN_STOP[0]:
-					await this.#onTransportStop(parsed);
+					await this.#onTransportStop(parsed());
 					skipAck = true;
 					break;
 				case TCC_DTAM_TRAN_STOPPED[0]:
-					await this.#onTransportStopped(parsed);
+					await this.#onTransportStopped(parsed());
 					skipAck = true; // tranStopped is the final message; no need to ACK
 					break;
 				case TCC_CTLM_MESG_TYPE_REG_REQ[0]:
 					// Message-type registration currently unsupported on TCC
 					break;
 				case TCC_CTLM_MESG_TYPE_REG_RESP[0]:
+					break;
+				case TCC_CADM_SIGNAL[0]:
+					await this.dispatchEvent('signal', text?.length ? text : undefined);
 					break;
 				default:
 					// Unknown message type - protocol violation

@@ -2,7 +2,7 @@ import { assertEquals, assertRejects, assert, assertExists } from 'https://deno.
 import { Transport, StateError } from '../../src/transport/base.esm.js';
 import {
 	HDR_TYPE_CHAN_DATA, FLAG_EOM, DATA_HEADER_BYTES,
-	TCC_DTAM_TRAN_STOPPED, CHANNEL_TCC,
+	TCC_DTAM_TRAN_STOPPED, TCC_CADM_SIGNAL, CHANNEL_TCC,
 } from '../../src/protocol.esm.js';
 import { VirtualRWBuffer } from '../../src/virtual-buffer.esm.js';
 
@@ -74,10 +74,10 @@ class MockTransport extends Transport {
 		if (chunker.bufferSize !== null) {
 			// Binary/encoded chunk - provide a real buffer for encodeFrom
 			const buf = new VirtualRWBuffer(new Uint8Array(bytesToReserve));
-			chunker.nextChunk(buf);
+			chunker.nextChunk?.(buf);
 		} else {
 			// String chunk - consume it
-			chunker.nextChunk();
+			chunker.nextChunk?.();
 		}
 		flowControl.sent(bytesToReserve);
 
@@ -820,5 +820,120 @@ Deno.test('Transport - newChannel event: accept() before reject() still creates 
 	const channelFromAccept = await channelPromise;
 	assertExists(channelFromAccept);
 	assertEquals(channelFromAccept.name, 'reject-then-accept-channel');
+	await transport.stop({ disconnected: true });
+});
+
+// --- signal() method tests ---------------------------------------------------
+
+// Helper: simulate an incoming TCC signal message
+function simulateTransportSignal (transport, text) {
+	const _thys = transport.getProtectedState();
+	const tcc = _thys.channels.get(CHANNEL_TCC);
+	const data = text ?? '';
+	_thys.receiveMessage({
+		type: HDR_TYPE_CHAN_DATA,
+		headerSize: DATA_HEADER_BYTES,
+		dataSize: data.length * 2,
+		flags: FLAG_EOM,
+		channelId: CHANNEL_TCC,
+		sequence: tcc.nextReadSeq,
+		messageType: TCC_CADM_SIGNAL[0],
+		eom: true,
+	}, data);
+}
+
+Deno.test('Transport - signal() throws StateError when not active', async () => {
+	const transport = new MockTransport();
+	// Transport is in STATE_CREATED (not active)
+	await assertRejects(
+		() => transport.signal('hello'),
+		StateError,
+		'Cannot signal'
+	);
+});
+
+Deno.test('Transport - signal() sends a TCC message with correct type', async () => {
+	const { transport } = await startMockTransport();
+	let capturedMessageType = null;
+
+	// Spy on sendChunk to capture the message type
+	const origSendChunk = transport.sendChunk.bind(transport);
+	transport.sendChunk = (token, flowControl, header, chunker, opts) => {
+		capturedMessageType = header.messageType;
+		return origSendChunk(token, flowControl, header, chunker, opts);
+	};
+
+	await transport.signal('hello');
+
+	assertEquals(capturedMessageType, TCC_CADM_SIGNAL[0]);
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - signal(undefined) sends a TCC message with correct type', async () => {
+	const { transport } = await startMockTransport();
+	let capturedMessageType = null;
+
+	const origSendChunk = transport.sendChunk.bind(transport);
+	transport.sendChunk = (token, flowControl, header, chunker, opts) => {
+		capturedMessageType = header.messageType;
+		return origSendChunk(token, flowControl, header, chunker, opts);
+	};
+
+	await transport.signal(undefined);
+
+	assertEquals(capturedMessageType, TCC_CADM_SIGNAL[0]);
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - signal event fires with correct detail', async () => {
+	const { transport } = await startMockTransport();
+	let receivedDetail = 'NOT_SET';
+
+	transport.addEventListener('signal', (event) => {
+		receivedDetail = event.detail;
+	});
+
+	simulateTransportSignal(transport, 'test payload');
+
+	// Yield microtasks to allow the async #tccReader handler to process
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	assertEquals(receivedDetail, 'test payload');
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - signal event fires with null detail for empty body', async () => {
+	const { transport } = await startMockTransport();
+	let receivedDetail = 'NOT_SET';
+
+	transport.addEventListener('signal', (event) => {
+		receivedDetail = event.detail;
+	});
+
+	simulateTransportSignal(transport, '');
+
+	// Yield microtasks to allow the async #tccReader handler to process
+	await new Promise(resolve => setTimeout(resolve, 0));
+
+	assertEquals(receivedDetail, null);
+	await transport.stop({ disconnected: true });
+});
+
+Deno.test('Transport - signal event is awaited before message.done()', async () => {
+	const { transport } = await startMockTransport();
+	let handlerCompleted = false;
+
+	transport.addEventListener('signal', async (_event) => {
+		// Simulate async work
+		await new Promise(resolve => setTimeout(resolve, 0));
+		handlerCompleted = true;
+	});
+
+	simulateTransportSignal(transport, 'async test');
+
+	// Yield enough microtasks for the handler to complete
+	await new Promise(resolve => setTimeout(resolve, 10));
+
+	assert(handlerCompleted, 'Async signal handler should have completed');
 	await transport.stop({ disconnected: true });
 });

@@ -8,7 +8,7 @@ import { ChannelFlowControl } from './channel-flow-control.esm.js';
 import {
 	FLAG_EOM, HDR_TYPE_ACK, HDR_TYPE_CHAN_CONTROL, HDR_TYPE_CHAN_DATA, DATA_HEADER_BYTES,
 	TCC_CTLM_MESG_TYPE_REG_REQ, TCC_CTLM_MESG_TYPE_REG_RESP,
-	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED, StateError, addRoleId,
+	TCC_DTAM_CHAN_CLOSE, TCC_DTAM_CHAN_CLOSED, TCC_CADM_SIGNAL, StateError, addRoleId,
 } from './protocol.esm.js';
 import { AsyncAppEvent, Eventable } from '@eventable';
 import { TaskQueue } from '@task-queue';
@@ -603,28 +603,32 @@ export class Channel extends Eventable {
 	}
 
 	/**
-	 * Parse JSON from an array of message chunks
-	 * @param {{header, data:(string|VirtualBuffer)}[]} messages
+	 * Parse JSON from an array of message chunks (wrapper around #parseChunkedText)
+	 * @param {{header, data:(string|VirtualBuffer)}[]} chunks
 	 * @returns {Object}
 	 */
 	#parseChunkedJSON (chunks) {
-		// Collect any chunked string or buffer data, decoding the latter.
-		const jsonText = chunks.reduce((acc, chunk) => {
-			if (typeof chunk.data === 'string') { // string chunks
+		const jsonText = this.#parseChunkedText(chunks);
+		return (jsonText && JSON.parse(jsonText)) || {};
+	}
+
+	/**
+	 * Extract raw text from an array of control-message chunks (no JSON parsing)
+	 * @param {{header, data:(string|VirtualBuffer)}[]} chunks
+	 * @returns {string|undefined}
+	 */
+	#parseChunkedText (chunks) {
+		const text = chunks.reduce((acc, chunk) => {
+			if (typeof chunk.data === 'string') {
 				acc ||= [];
 				acc.push(chunk.data);
+			} else if (chunk.data instanceof VirtualBuffer) {
+				acc ||= [];
+				acc.push(chunk.data.decode());
 			}
 			return acc;
-		}, null)?.join('') ??
-		chunks.reduce((acc, chunk) => {
-			if (typeof chunk.data === 'object' && chunk.data !== null) { // buffer chunks
-				acc ||= new VirtualBuffer();
-				acc.append(chunk.data);
-			}
-			return acc;
-		}, null)?.decode();
-		const parsed = jsonText && JSON.parse(jsonText);
-		return parsed || {};
+		}, null)?.join('');
+		return text ?? undefined;
 	}
 
 	/**
@@ -848,7 +852,7 @@ export class Channel extends Eventable {
 	 * @param {Object} header
 	 * @param {*} data
 	 */
-	#receiveControlMessage (header, data) {
+	async #receiveControlMessage (header, data) {
 		const logger = this.#_.transport.logger;
 		const { dataSize, flags, headerSize, messageType, sequence } = header;
 		const eom = header.eom = !!(flags & FLAG_EOM);
@@ -856,6 +860,8 @@ export class Channel extends Eventable {
 		case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
 			break;
 		case TCC_CTLM_MESG_TYPE_REG_RESP[0]: // Message-type registration response
+			break;
+		case TCC_CADM_SIGNAL[0]: // Signal
 			break;
 		default:
 		 	logger.error(`Unknown control message (type ${messageType})`);
@@ -888,15 +894,22 @@ export class Channel extends Eventable {
 		 * Message-type registration requests and responses both require JSON-parsed text.
 		 */
 		try {
-			const parsed = this.#parseChunkedJSON(controlChunks);
+			const text = () => this.#parseChunkedText(controlChunks);
+			const parsed = () => this.#parseChunkedJSON(controlChunks);
 
 			switch (messageType) {
 			case TCC_CTLM_MESG_TYPE_REG_REQ[0]: // Message-type registration request
-				this.#onMesgTypeRegRequest(parsed);
+				this.#onMesgTypeRegRequest(parsed());
 				break;
 			case TCC_CTLM_MESG_TYPE_REG_RESP[0]: // Message-type registration response
-				this.#onMesgTypeRegResponse(parsed);
+				this.#onMesgTypeRegResponse(parsed());
 				break;
+			case TCC_CADM_SIGNAL[0]:
+			{
+				const signalText = text();
+				await this.dispatchEvent('signal', signalText?.length ? signalText : undefined);
+				break;
+			}
 			}
 		} finally {
 			// Mark all chunks as processed
@@ -1022,6 +1035,15 @@ export class Channel extends Eventable {
 		// Make sure an existing filtered reader is present under the new active type
 		const filteredReaders = this.#filteredReaders, reader = filteredReaders.get(higher);
 		if (reader) filteredReaders.set(lower, reader);
+	}
+
+	/**
+	 * Send a channel-level signal to the remote peer.
+	 * @param {string|undefined} text - Signal payload (any string, or undefined)
+	 * @returns {Promise<void>}
+	 */
+	/* async */ signal (text) {
+		return this.#write(TCC_CADM_SIGNAL[0], text ?? null, { type: HDR_TYPE_CHAN_CONTROL });
 	}
 
 	get state () { return this.#state; }

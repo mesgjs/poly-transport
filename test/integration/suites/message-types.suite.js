@@ -3,8 +3,6 @@
  *
  * Shared test suite for message type registration scenarios across all transport types.
  * Tests are registered by calling registerMessageTypeTests(makeTransportPair).
- *
- * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
 import {

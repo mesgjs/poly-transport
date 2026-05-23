@@ -3,8 +3,6 @@
  *
  * Shared test suite for data exchange scenarios across all transport types.
  * Tests are registered by calling registerDataExchangeTests(makeTransportPair).
- *
- * Copyright 2026 Kappa Computer Solutions, LLC and Brian Katzung
  */
 
 import {
