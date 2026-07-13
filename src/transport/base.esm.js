@@ -428,9 +428,14 @@ export class Transport extends Eventable {
 		// Find channel by ID
 		const channel = channels.get(channelId);
 		if (!channel || typeof channel.close !== 'function') {
-			// Unknown channel or nulled record - protocol violation, stop transport
-			this.#logger.error(`Received chanClose for unknown or closed channel ${channelId}`);
-			await this.stop();
+			if (_thys.state >= Transport.STATE_STOPPING) {
+				// Channel closure may not always be neat and orderly during transport shutdown
+				this.#logger.debug(`Ignored chanClose for unknown or closed channel ${channelId} during transport shutdown`);
+			} else {
+				// Unknown channel or nulled record - protocol violation, stop transport
+				this.#logger.error(`Received chanClose for unknown or closed channel ${channelId}`);
+				await this.stop();
+			}
 			return;
 		}
 
