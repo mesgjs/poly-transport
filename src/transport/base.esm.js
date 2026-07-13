@@ -428,11 +428,11 @@ export class Transport extends Eventable {
 		// Find channel by ID
 		const channel = channels.get(channelId);
 		if (!channel || typeof channel.close !== 'function') {
-			if (_thys.state >= Transport.STATE_STOPPING) {
-				// Channel closure may not always be neat and orderly during transport shutdown
-				this.#logger.debug(`Ignored chanClose for unknown or closed channel ${channelId} during transport shutdown`);
-			} else {
-				// Unknown channel or nulled record - protocol violation, stop transport
+			if (_thys.state < Transport.STATE_STOPPING) {
+				// An unknown channel or nulled record while the transport is actively
+				// running is a protocol violation; stop the transport.
+				// Silently ignore during shutdown (we might get a remote response after
+				// a local "forced disconnect", and violations are now irrelevant anyway.)
 				this.#logger.error(`Received chanClose for unknown or closed channel ${channelId}`);
 				await this.stop();
 			}
