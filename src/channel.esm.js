@@ -646,7 +646,7 @@ export class Channel extends Eventable {
 		const { dechunk = true, only, timeout } = options;
 		const idSet = this.#getTypeIdSet(only);
 		if (this.hasReader(idSet)) {
-			throw new Error('Conflicting readers');
+			throw new Error(`Conflicting readers on channel #${this.#ids[0]} ${this.#name}`);
 		}
 
 		// If a matching message is already available, return it
