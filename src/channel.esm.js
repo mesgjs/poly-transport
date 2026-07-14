@@ -699,7 +699,7 @@ export class Channel extends Eventable {
 	readSync (options = {}) {
 		const idSet = this.#getTypeIdSet(options.only);
 		if (this.hasReader(idSet)) {
-			throw new Error('Conflicting readers');
+			throw new Error(`Conflicting readers on channel #${this.#ids[0]} ${this.#name}`);
 		}
 		return this.#readSync(idSet, options);
 	}
